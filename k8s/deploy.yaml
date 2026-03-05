@@ -1,0 +1,197 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Manifesto de Deploy
+#
+# Aplique com:
+#   kubectl apply -f k8s/deploy.yaml
+#
+# Acesse via NodePort:
+#   http://<IP-DO-NODE>:30080
+#
+# Ou via port-forward:
+#   kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n k8s-pod-visualizer
+#   http://localhost:8080
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# 1. Namespace dedicado
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+
+---
+# 2. ServiceAccount — identidade do pod dentro do cluster
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+
+---
+# 3. ClusterRole — permissões de leitura necessárias
+#    - pods: listar e ler pods de todos os namespaces
+#    - nodes: listar nodes para o filtro por node
+#    - metrics.k8s.io: ler métricas de CPU e memória (requer metrics-server)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+
+---
+# 4. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+subjects:
+  - kind: ServiceAccount
+    name: k8s-pod-visualizer
+    namespace: k8s-pod-visualizer
+roleRef:
+  kind: ClusterRole
+  name: k8s-pod-visualizer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 5. Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-pod-visualizer
+  template:
+    metadata:
+      labels:
+        app: k8s-pod-visualizer
+        app.kubernetes.io/name: k8s-pod-visualizer
+    spec:
+      serviceAccountName: k8s-pod-visualizer
+
+      # Segurança: roda como usuário não-root
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+
+      containers:
+        - name: k8s-pod-visualizer
+          # Substitua pela sua imagem após o build:
+          # image: seu-registry/k8s-pod-visualizer:1.0.0
+          image: ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+
+          env:
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: "production"
+            - name: K8S_API_URL
+              value: "https://kubernetes.default.svc"
+            - name: USE_SERVICE_ACCOUNT
+              value: "true"
+
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/pods
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+
+      restartPolicy: Always
+
+---
+# 6. Service — expõe o visualizador
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  selector:
+    app: k8s-pod-visualizer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      protocol: TCP
+      # NodePort para acesso direto sem Ingress (remova se usar Ingress)
+      nodePort: 30080
+  type: NodePort
+
+---
+# 7. Ingress (opcional) — acesso via hostname
+# Descomente e ajuste se tiver um Ingress Controller (nginx, traefik, etc.)
+#
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: k8s-pod-visualizer
+#   namespace: k8s-pod-visualizer
+#   annotations:
+#     nginx.ingress.kubernetes.io/rewrite-target: /
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#     - host: k8s-visualizer.seu-dominio.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: k8s-pod-visualizer
+#                 port:
+#                   number: 80

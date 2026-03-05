@@ -152,6 +152,7 @@ export default function Home() {
           nsCounts={nsCounts}
           nodeCounts={nodeCounts}
           nodeMetrics={nodeMetrics}
+          allPods={pods}
         />
 
         {/* Canvas principal */}

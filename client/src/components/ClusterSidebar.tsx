@@ -6,8 +6,9 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server } from "lucide-react";
-import type { ClusterStats } from "@/hooks/usePodData";
+import type { ClusterStats, PodMetrics } from "@/hooks/usePodData";
 import type { ViewMode, LayoutMode } from "./BubbleCanvas";
+import { TopPodsTooltip } from "./TopPodsTooltip";
 
 interface ClusterSidebarProps {
   stats: ClusterStats | null;
@@ -24,6 +25,7 @@ interface ClusterSidebarProps {
   nsCounts?: Record<string, number>;
   nodeCounts?: Record<string, number>;
   nodeMetrics?: Record<string, { avgCpu: number; avgMem: number }>;
+  allPods?: PodMetrics[];
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -80,6 +82,7 @@ export function ClusterSidebar({
   nsCounts = {},
   nodeCounts = {},
   nodeMetrics = {},
+  allPods = [],
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded] = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
@@ -238,17 +241,29 @@ export function ClusterSidebar({
               />
             </div>
 
-            {/* Total de pods */}
-            <div className="rounded-lg p-3 flex items-center gap-3" style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
-              <Box size={16} className="text-slate-500 shrink-0" />
-              <div>
-                <div className="font-mono text-lg font-bold text-slate-100">{stats.totalPods}</div>
-                <div className="text-[10px] text-slate-500">pods totais</div>
+            {/* Total de pods — com tooltip do cluster */}
+            <TopPodsTooltip pods={allPods} label="Cluster" context="cluster" side="right">
+              <div
+                className="rounded-lg p-3 flex items-center gap-3 cursor-default"
+                style={{
+                  background: "oklch(0.16 0.02 250)",
+                  border: "1px solid oklch(0.22 0.03 250)",
+                  transition: "border-color 0.2s",
+                }}
+                onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = "oklch(0.72 0.18 200 / 0.4)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.borderColor = "oklch(0.22 0.03 250)"; }}
+              >
+                <Box size={16} className="text-slate-500 shrink-0" />
+                <div>
+                  <div className="font-mono text-lg font-bold text-slate-100">{stats.totalPods}</div>
+                  <div className="text-[10px] text-slate-500">pods totais</div>
+                </div>
+                <div className="ml-auto flex items-center gap-1">
+                  <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.015 250)" }}>hover</span>
+                  <Server size={14} className="text-slate-600" />
+                </div>
               </div>
-              <div className="ml-auto">
-                <Server size={14} className="text-slate-600" />
-              </div>
-            </div>
+            </TopPodsTooltip>
           </>
         )}
 
@@ -280,26 +295,28 @@ export function ClusterSidebar({
                   const NS_HUE_PALETTE = [200, 280, 160, 320, 40, 100, 240, 60, 340, 180, 260, 20];
                   const hue = NS_HUE_PALETTE[nsIdx % NS_HUE_PALETTE.length];
                   const nsColor = `oklch(0.65 0.20 ${hue})`;
+                  const nsPods = allPods.filter((p) => p.namespace === ns);
                   return (
-                    <button
-                      key={ns}
-                      onClick={() => onNamespaceChange(ns)}
-                      className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2"
-                      style={{
-                        background: selectedNamespace === ns ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
-                        color: selectedNamespace === ns ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
-                        border: `1px solid ${selectedNamespace === ns ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
-                      }}
-                    >
-                      {layoutMode === "constellation" && (
-                        <span
-                          className="w-2 h-2 rounded-full shrink-0"
-                          style={{ background: nsColor, boxShadow: `0 0 4px ${nsColor}`, opacity: 0.85 }}
-                        />
-                      )}
-                      <span className="truncate flex-1" style={{ maxWidth: 'calc(100% - 40px)' }}>{ns}</span>
-                      <span className="text-[10px] text-slate-600 shrink-0">{nsCounts[ns] ?? ''}</span>
-                    </button>
+                    <TopPodsTooltip key={ns} pods={nsPods} label={ns} context="namespace" side="right">
+                      <button
+                        onClick={() => onNamespaceChange(ns)}
+                        className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2"
+                        style={{
+                          background: selectedNamespace === ns ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
+                          color: selectedNamespace === ns ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+                          border: `1px solid ${selectedNamespace === ns ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
+                        }}
+                      >
+                        {layoutMode === "constellation" && (
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ background: nsColor, boxShadow: `0 0 4px ${nsColor}`, opacity: 0.85 }}
+                          />
+                        )}
+                        <span className="truncate flex-1" style={{ maxWidth: 'calc(100% - 40px)' }}>{ns}</span>
+                        <span className="text-[10px] text-slate-600 shrink-0">{nsCounts[ns] ?? ''}</span>
+                      </button>
+                    </TopPodsTooltip>
                   );
                 })}
               </div>
@@ -341,6 +358,7 @@ export function ClusterSidebar({
                   const metrics = nodeMetrics[node] ?? { avgCpu: 0, avgMem: 0 };
                   const cpuPct = Math.min(100, Math.round(metrics.avgCpu));
                   const memPct = Math.min(100, Math.round(metrics.avgMem));
+                  const nodePods = allPods.filter((p) => p.node === node);
 
                   // Cor dinâmica baseada no maior consumo entre CPU e MEM
                   const maxPct = Math.max(cpuPct, memPct);
@@ -362,8 +380,8 @@ export function ClusterSidebar({
                     "oklch(0.72 0.18 200)";
 
                   return (
+                    <TopPodsTooltip key={node} pods={nodePods} label={node} context="node" side="right">
                     <button
-                      key={node}
                       onClick={() => onNodeChange(isSelected ? "" : node)}
                       className="w-full text-left rounded-lg transition-all font-mono"
                       style={{
@@ -440,6 +458,7 @@ export function ClusterSidebar({
                         </div>
                       </div>
                     </button>
+                    </TopPodsTooltip>
                   );
                 })}
               </div>

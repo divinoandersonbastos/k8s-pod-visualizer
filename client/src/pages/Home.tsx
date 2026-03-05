@@ -6,7 +6,7 @@
  */
 
 import { useState, useMemo } from "react";
-import { usePodData } from "@/hooks/usePodData";
+import { usePodData, useClusterMeta } from "@/hooks/usePodData";
 import { BubbleCanvas } from "@/components/BubbleCanvas";
 import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
@@ -25,9 +25,12 @@ export default function Home() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
+
+  // Busca automática de info do cluster e nodes quando rodando in-cluster
+  const { clusterInfo, nodes: realNodes } = useClusterMeta();
   const [refreshInterval, setRefreshInterval] = useState(3000);
 
-  const { pods, stats, loading, isLive, toggleLive, selectedPod, setSelectedPod, refresh } = usePodData({
+  const { pods, stats, loading, isLive, toggleLive, selectedPod, setSelectedPod, refresh, inCluster } = usePodData({
     refreshInterval,
     apiUrl: apiUrl || undefined,
   });
@@ -38,6 +41,9 @@ export default function Home() {
     pods.forEach((p) => { counts[p.namespace] = (counts[p.namespace] || 0) + 1; });
     return counts;
   }, [pods]);
+
+  // Nome do cluster: prioriza configuração manual, depois info automática do cluster
+  const effectiveClusterName = clusterName || clusterInfo?.name || (inCluster ? "kubernetes" : "");
 
   // Contagem de pods por node (sobre todos os pods, sem filtros)
   const nodeCounts = useMemo(() => {
@@ -134,7 +140,7 @@ export default function Home() {
           onSearchChange={setSearchQuery}
           onShowConfig={() => setShowConfig(true)}
           onShowAlerts={() => setShowAlerts(true)}
-          clusterName={clusterName}
+          clusterName={effectiveClusterName}
         />
 
       {/* Body */}
@@ -310,6 +316,8 @@ export default function Home() {
         refreshInterval={refreshInterval}
         clusterName={clusterName}
         onSave={handleSaveConfig}
+        inCluster={inCluster}
+        autoClusterName={clusterInfo?.name}
       />
     </div>
   );

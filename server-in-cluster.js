@@ -3,13 +3,14 @@
  *
  * Servidor Node.js para rodar dentro do cluster Kubernetes.
  * - Serve o frontend estático (dist/public)
- * - Faz proxy das requisições /api/k8s/* para a API do Kubernetes
- *   usando o ServiceAccount token montado automaticamente no pod
- * - Agrega pods + métricas em /api/pods
+ * - /api/pods        → lista pods Running com métricas de CPU e MEM
+ * - /api/nodes       → lista nodes com status e capacidade
+ * - /api/cluster-info → nome do cluster, versão da API e namespace do SA
  *
- * Autenticação: usa o token do ServiceAccount em
- *   /var/run/secrets/kubernetes.io/serviceaccount/token
- * CA:           /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+ * Autenticação automática via ServiceAccount montado no pod:
+ *   token: /var/run/secrets/kubernetes.io/serviceaccount/token
+ *   ca:    /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+ *   ns:    /var/run/secrets/kubernetes.io/serviceaccount/namespace
  */
 
 import http from "http";
@@ -23,119 +24,57 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const K8S_API = process.env.K8S_API_URL || "https://kubernetes.default.svc";
 const SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
-const SA_CA_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+const SA_CA_PATH    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
+const SA_NS_PATH    = "/var/run/secrets/kubernetes.io/serviceaccount/namespace";
 
-// ── Leitura do token do ServiceAccount ────────────────────────────────────────
+// ── Helpers de autenticação ───────────────────────────────────────────────────
 function getToken() {
-  try {
-    return fs.readFileSync(SA_TOKEN_PATH, "utf8").trim();
-  } catch {
-    console.warn("[warn] ServiceAccount token não encontrado. Usando sem autenticação.");
-    return null;
-  }
+  try { return fs.readFileSync(SA_TOKEN_PATH, "utf8").trim(); }
+  catch { return null; }
 }
-
 function getCA() {
-  try {
-    return fs.readFileSync(SA_CA_PATH);
-  } catch {
-    return null;
-  }
+  try { return fs.readFileSync(SA_CA_PATH); }
+  catch { return null; }
+}
+function getSANamespace() {
+  try { return fs.readFileSync(SA_NS_PATH, "utf8").trim(); }
+  catch { return "k8s-pod-visualizer"; }
 }
 
 // ── Requisição para a API do Kubernetes ───────────────────────────────────────
 function k8sRequest(urlPath) {
   return new Promise((resolve, reject) => {
     const token = getToken();
-    const ca = getCA();
+    const ca    = getCA();
+    const apiHost = K8S_API.replace(/^https?:\/\//, "");
+    const isHttps = K8S_API.startsWith("https");
 
     const options = {
-      hostname: K8S_API.replace("https://", "").replace("http://", ""),
-      port: K8S_API.startsWith("https") ? 443 : 80,
+      hostname: apiHost,
+      port: isHttps ? 443 : 80,
       path: urlPath,
       method: "GET",
       headers: {
         "Content-Type": "application/json",
+        Accept: "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      ...(ca
-        ? { ca }
-        : { rejectUnauthorized: false }),
+      ...(ca ? { ca } : { rejectUnauthorized: false }),
     };
 
-    const proto = K8S_API.startsWith("https") ? https : http;
+    const proto = isHttps ? https : http;
     const req = proto.request(options, (res) => {
       let data = "";
-      res.on("data", (chunk) => (data += chunk));
+      res.on("data", (c) => (data += c));
       res.on("end", () => {
-        try {
-          resolve({ status: res.statusCode, body: JSON.parse(data) });
-        } catch {
-          resolve({ status: res.statusCode, body: data });
-        }
+        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, body: data }); }
       });
     });
-
     req.on("error", reject);
+    req.setTimeout(8000, () => { req.destroy(new Error("timeout")); });
     req.end();
   });
-}
-
-// ── Agrega pods + métricas ─────────────────────────────────────────────────────
-async function getPodsWithMetrics() {
-  const [podsRes, metricsRes] = await Promise.allSettled([
-    k8sRequest("/api/v1/pods"),
-    k8sRequest("/apis/metrics.k8s.io/v1beta1/pods"),
-  ]);
-
-  const pods = podsRes.status === "fulfilled" ? podsRes.value.body?.items || [] : [];
-  const metrics = metricsRes.status === "fulfilled" ? metricsRes.value.body?.items || [] : [];
-
-  // Indexa métricas por namespace/name
-  const metricsMap = {};
-  for (const m of metrics) {
-    const key = `${m.metadata.namespace}/${m.metadata.name}`;
-    const cpu = m.containers?.reduce((acc, c) => {
-      const v = c.usage?.cpu || "0";
-      return acc + parseCPU(v);
-    }, 0) || 0;
-    const mem = m.containers?.reduce((acc, c) => {
-      const v = c.usage?.memory || "0";
-      return acc + parseMem(v);
-    }, 0) || 0;
-    metricsMap[key] = { cpu, mem };
-  }
-
-  return pods
-    .filter((p) => p.status?.phase === "Running")
-    .map((p) => {
-      const key = `${p.metadata.namespace}/${p.metadata.name}`;
-      const usage = metricsMap[key] || { cpu: 0, mem: 0 };
-
-      // Extrai requests e limits do primeiro container
-      const container = p.spec?.containers?.[0] || {};
-      const requests = container.resources?.requests || {};
-      const limits = container.resources?.limits || {};
-
-      return {
-        name: p.metadata.name,
-        namespace: p.metadata.namespace,
-        node: p.spec?.nodeName || "unknown",
-        phase: p.status?.phase || "Unknown",
-        cpuUsage: usage.cpu,
-        memoryUsage: usage.mem,
-        resources: {
-          requests: {
-            cpu: requests.cpu ? parseCPU(requests.cpu) : null,
-            memory: requests.memory ? parseMem(requests.memory) : null,
-          },
-          limits: {
-            cpu: limits.cpu ? parseCPU(limits.cpu) : null,
-            memory: limits.memory ? parseMem(limits.memory) : null,
-          },
-        },
-      };
-    });
 }
 
 // ── Parsers de unidades Kubernetes ────────────────────────────────────────────
@@ -146,7 +85,6 @@ function parseCPU(val) {
   if (val.endsWith("m")) return parseInt(val);
   return Math.round(parseFloat(val) * 1000);
 }
-
 function parseMem(val) {
   if (!val) return 0;
   if (val.endsWith("Ki")) return Math.round(parseInt(val) / 1024);
@@ -156,36 +94,149 @@ function parseMem(val) {
   return Math.round(parseInt(val) / (1024 * 1024));
 }
 
+// ── /api/pods ─────────────────────────────────────────────────────────────────
+async function getPodsWithMetrics() {
+  const [podsRes, metricsRes] = await Promise.allSettled([
+    k8sRequest("/api/v1/pods"),
+    k8sRequest("/apis/metrics.k8s.io/v1beta1/pods"),
+  ]);
+
+  const pods    = podsRes.status    === "fulfilled" ? (podsRes.value.body?.items    || []) : [];
+  const metrics = metricsRes.status === "fulfilled" ? (metricsRes.value.body?.items || []) : [];
+
+  // Indexa métricas por namespace/name
+  const metricsMap = {};
+  for (const m of metrics) {
+    const key = `${m.metadata.namespace}/${m.metadata.name}`;
+    metricsMap[key] = {
+      cpu: m.containers?.reduce((a, c) => a + parseCPU(c.usage?.cpu    || "0"), 0) || 0,
+      mem: m.containers?.reduce((a, c) => a + parseMem(c.usage?.memory || "0"), 0) || 0,
+    };
+  }
+
+  return pods
+    .filter((p) => p.status?.phase === "Running")
+    .map((p) => {
+      const key     = `${p.metadata.namespace}/${p.metadata.name}`;
+      const usage   = metricsMap[key] || { cpu: 0, mem: 0 };
+      const container = p.spec?.containers?.[0] || {};
+      const req     = container.resources?.requests || {};
+      const lim     = container.resources?.limits   || {};
+
+      return {
+        name:        p.metadata.name,
+        namespace:   p.metadata.namespace,
+        node:        p.spec?.nodeName || "unknown",
+        phase:       p.status?.phase  || "Unknown",
+        cpuUsage:    usage.cpu,
+        memoryUsage: usage.mem,
+        resources: {
+          requests: {
+            cpu:    req.cpu    ? parseCPU(req.cpu)    : null,
+            memory: req.memory ? parseMem(req.memory) : null,
+          },
+          limits: {
+            cpu:    lim.cpu    ? parseCPU(lim.cpu)    : null,
+            memory: lim.memory ? parseMem(lim.memory) : null,
+          },
+        },
+      };
+    });
+}
+
+// ── /api/nodes ────────────────────────────────────────────────────────────────
+async function getNodes() {
+  const result = await k8sRequest("/api/v1/nodes");
+  const items  = result.body?.items || [];
+
+  return items.map((n) => {
+    const ready = n.status?.conditions?.find((c) => c.type === "Ready");
+    const cpuCap  = n.status?.capacity?.cpu    || "0";
+    const memCap  = n.status?.capacity?.memory || "0";
+    const cpuAlloc = n.status?.allocatable?.cpu    || cpuCap;
+    const memAlloc = n.status?.allocatable?.memory || memCap;
+
+    return {
+      name:   n.metadata.name,
+      status: ready?.status === "True" ? "Ready" : "NotReady",
+      roles:  Object.keys(n.metadata.labels || {})
+                .filter((k) => k.startsWith("node-role.kubernetes.io/"))
+                .map((k) => k.replace("node-role.kubernetes.io/", ""))
+                .join(",") || "worker",
+      capacity: {
+        cpu:    parseCPU(cpuCap) * 1000,   // milicores totais
+        memory: parseMem(memCap),           // MiB totais
+      },
+      allocatable: {
+        cpu:    parseCPU(cpuAlloc) * 1000,
+        memory: parseMem(memAlloc),
+      },
+      labels: n.metadata.labels || {},
+      createdAt: n.metadata.creationTimestamp,
+    };
+  });
+}
+
+// ── /api/cluster-info ─────────────────────────────────────────────────────────
+async function getClusterInfo() {
+  let version = "unknown";
+  try {
+    const vRes = await k8sRequest("/version");
+    if (vRes.body?.gitVersion) version = vRes.body.gitVersion;
+  } catch { /* ignora */ }
+
+  // Tenta ler o nome do cluster do ConfigMap kube-public/cluster-info
+  let clusterName = "kubernetes";
+  try {
+    const cmRes = await k8sRequest("/api/v1/namespaces/kube-public/configmaps/cluster-info");
+    const kubeconfig = cmRes.body?.data?.kubeconfig;
+    if (kubeconfig) {
+      const match = kubeconfig.match(/cluster:\s*(\S+)/);
+      if (match) clusterName = match[1];
+    }
+  } catch { /* usa default */ }
+
+  // Fallback: usa o nome do contexto via env ou namespace do SA
+  if (clusterName === "kubernetes") {
+    clusterName = process.env.CLUSTER_NAME || "kubernetes";
+  }
+
+  return {
+    name:      clusterName,
+    version,
+    namespace: getSANamespace(),
+    apiUrl:    K8S_API,
+    inCluster: fs.existsSync(SA_TOKEN_PATH),
+  };
+}
+
 // ── MIME types ────────────────────────────────────────────────────────────────
 const MIME = {
-  ".html": "text/html",
-  ".js": "application/javascript",
-  ".css": "text/css",
-  ".json": "application/json",
-  ".png": "image/png",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
+  ".html":  "text/html",
+  ".js":    "application/javascript",
+  ".mjs":   "application/javascript",
+  ".css":   "text/css",
+  ".json":  "application/json",
+  ".png":   "image/png",
+  ".jpg":   "image/jpeg",
+  ".svg":   "image/svg+xml",
+  ".ico":   "image/x-icon",
   ".woff2": "font/woff2",
-  ".woff": "font/woff",
-  ".ttf": "font/ttf",
+  ".woff":  "font/woff",
+  ".ttf":   "font/ttf",
 };
 
 // ── Servidor HTTP ─────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://localhost`);
+  const url = new URL(req.url, "http://localhost");
 
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
-  if (req.method === "OPTIONS") {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  // ── API: /api/pods ─────────────────────────────────────────────────────────
+  // ── /api/pods ──────────────────────────────────────────────────────────────
   if (url.pathname === "/api/pods") {
     try {
       const pods = await getPodsWithMetrics();
@@ -199,34 +250,44 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── API: /api/nodes ────────────────────────────────────────────────────────
+  // ── /api/nodes ─────────────────────────────────────────────────────────────
   if (url.pathname === "/api/nodes") {
     try {
-      const result = await k8sRequest("/api/v1/nodes");
-      const nodes = (result.body?.items || []).map((n) => ({
-        name: n.metadata.name,
-        status: n.status?.conditions?.find((c) => c.type === "Ready")?.status === "True" ? "Ready" : "NotReady",
-        cpu: n.status?.capacity?.cpu,
-        memory: n.status?.capacity?.memory,
-      }));
+      const nodes = await getNodes();
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ items: nodes }));
+      res.end(JSON.stringify({ items: nodes, timestamp: Date.now() }));
     } catch (err) {
+      console.error("[error] /api/nodes:", err.message);
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
     }
     return;
   }
 
-  // ── Serve arquivos estáticos ───────────────────────────────────────────────
-  let filePath = path.join(__dirname, "public", url.pathname === "/" ? "index.html" : url.pathname);
+  // ── /api/cluster-info ──────────────────────────────────────────────────────
+  if (url.pathname === "/api/cluster-info") {
+    try {
+      const info = await getClusterInfo();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(info));
+    } catch (err) {
+      console.error("[error] /api/cluster-info:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
 
-  // SPA fallback: qualquer rota não encontrada serve o index.html
+  // ── Arquivos estáticos ─────────────────────────────────────────────────────
+  let filePath = path.join(
+    __dirname, "public",
+    url.pathname === "/" ? "index.html" : url.pathname
+  );
   if (!fs.existsSync(filePath)) {
     filePath = path.join(__dirname, "public", "index.html");
   }
 
-  const ext = path.extname(filePath);
+  const ext  = path.extname(filePath);
   const mime = MIME[ext] || "application/octet-stream";
 
   try {
@@ -240,7 +301,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`[k8s-pod-visualizer] Servidor rodando na porta ${PORT}`);
+  console.log(`[k8s-pod-visualizer] Servidor na porta ${PORT}`);
   console.log(`[k8s-pod-visualizer] API Kubernetes: ${K8S_API}`);
   console.log(`[k8s-pod-visualizer] ServiceAccount token: ${fs.existsSync(SA_TOKEN_PATH) ? "encontrado ✓" : "não encontrado ✗"}`);
+  console.log(`[k8s-pod-visualizer] Namespace: ${getSANamespace()}`);
 });

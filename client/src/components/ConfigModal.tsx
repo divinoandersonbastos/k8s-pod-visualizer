@@ -5,7 +5,7 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Save, Terminal, AlertCircle } from "lucide-react";
+import { X, Save, Terminal, AlertCircle, CheckCircle2 } from "lucide-react";
 
 interface ConfigModalProps {
   open: boolean;
@@ -14,9 +14,14 @@ interface ConfigModalProps {
   refreshInterval: number;
   clusterName?: string;
   onSave: (apiUrl: string, refreshInterval: number, clusterName: string) => void;
+  inCluster?: boolean;
+  autoClusterName?: string;
 }
 
-export function ConfigModal({ open, onClose, apiUrl, refreshInterval, clusterName = "", onSave }: ConfigModalProps) {
+export function ConfigModal({
+  open, onClose, apiUrl, refreshInterval, clusterName = "",
+  onSave, inCluster = false, autoClusterName,
+}: ConfigModalProps) {
   const [localUrl, setLocalUrl] = useState(apiUrl);
   const [localInterval, setLocalInterval] = useState(refreshInterval);
   const [localClusterName, setLocalClusterName] = useState(clusterName);
@@ -83,18 +88,42 @@ export function ConfigModal({ open, onClose, apiUrl, refreshInterval, clusterNam
               </div>
 
               <div className="p-6 space-y-5">
-                {/* Aviso */}
+                {/* Status de conexão */}
                 <div
                   className="flex gap-3 p-3 rounded-lg text-xs"
                   style={{
-                    background: "oklch(0.55 0.22 260 / 0.08)",
-                    border: "1px solid oklch(0.55 0.22 260 / 0.2)",
+                    background: inCluster
+                      ? "oklch(0.72 0.18 142 / 0.08)"
+                      : "oklch(0.55 0.22 260 / 0.08)",
+                    border: inCluster
+                      ? "1px solid oklch(0.72 0.18 142 / 0.25)"
+                      : "1px solid oklch(0.55 0.22 260 / 0.2)",
                   }}
                 >
-                  <AlertCircle size={14} className="shrink-0 mt-0.5" style={{ color: "oklch(0.72 0.18 200)" }} />
-                  <div className="text-slate-400">
-                    Para conectar ao cluster real, inicie o <span className="font-mono text-slate-200">kubectl proxy</span> e
-                    configure a URL abaixo. Sem URL configurada, dados simulados são usados.
+                  {inCluster ? (
+                    <CheckCircle2 size={14} className="shrink-0 mt-0.5" style={{ color: "oklch(0.72 0.18 142)" }} />
+                  ) : (
+                    <AlertCircle size={14} className="shrink-0 mt-0.5" style={{ color: "oklch(0.72 0.18 200)" }} />
+                  )}
+                  <div>
+                    {inCluster ? (
+                      <span className="text-slate-300">
+                        Rodando{" "}
+                        <span className="font-mono" style={{ color: "oklch(0.72 0.18 142)" }}>
+                          dentro do cluster
+                        </span>{" "}
+                        — dados reais sendo buscados automaticamente via ServiceAccount.
+                        {autoClusterName && (
+                          <span className="text-slate-400"> Cluster detectado: <span className="font-mono text-slate-200">{autoClusterName}</span></span>
+                        )}
+                      </span>
+                    ) : (
+                      <span className="text-slate-400">
+                        Para conectar ao cluster real, inicie o{" "}
+                        <span className="font-mono text-slate-200">kubectl proxy</span> e configure a URL abaixo.
+                        Sem URL configurada, dados simulados são usados.
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -107,7 +136,7 @@ export function ConfigModal({ open, onClose, apiUrl, refreshInterval, clusterNam
                     type="text"
                     value={localClusterName}
                     onChange={(e) => setLocalClusterName(e.target.value)}
-                    placeholder="ex: prod-cluster, minikube, kind-local"
+                    placeholder={autoClusterName ?? "ex: prod-cluster, minikube, kind-local"}
                     className="w-full px-3 py-2.5 rounded-lg text-xs font-mono outline-none transition-all"
                     style={{
                       background: "oklch(0.16 0.02 250)",
@@ -118,20 +147,22 @@ export function ConfigModal({ open, onClose, apiUrl, refreshInterval, clusterNam
                     onBlur={(e) => { e.currentTarget.style.borderColor = "oklch(0.28 0.04 250)"; }}
                   />
                   <div className="text-[10px] text-slate-600 font-mono">
-                    Exibido no header para identificar o cluster ativo
+                    {inCluster && autoClusterName
+                      ? `Detectado automaticamente: "${autoClusterName}" — deixe vazio para usar o nome detectado`
+                      : "Exibido no header para identificar o cluster ativo"}
                   </div>
                 </div>
 
                 {/* URL da API */}
                 <div className="space-y-2">
                   <label className="text-[11px] text-slate-400 uppercase tracking-wider">
-                    URL da API Kubernetes
+                    URL da API Kubernetes {inCluster && <span className="text-slate-600">(opcional quando in-cluster)</span>}
                   </label>
                   <input
                     type="text"
                     value={localUrl}
                     onChange={(e) => setLocalUrl(e.target.value)}
-                    placeholder="http://localhost:8001/apis/metrics.k8s.io/v1beta1/pods"
+                    placeholder={inCluster ? "Automático via ServiceAccount" : "http://localhost:8001"}
                     className="w-full px-3 py-2.5 rounded-lg text-xs font-mono outline-none transition-all"
                     style={{
                       background: "oklch(0.16 0.02 250)",
@@ -142,7 +173,7 @@ export function ConfigModal({ open, onClose, apiUrl, refreshInterval, clusterNam
                     onBlur={(e) => { e.currentTarget.style.borderColor = "oklch(0.28 0.04 250)"; }}
                   />
                   <div className="text-[10px] text-slate-600 font-mono">
-                    Deixe vazio para usar dados simulados
+                    {inCluster ? "Deixe vazio para usar o ServiceAccount automático" : "Deixe vazio para usar dados simulados"}
                   </div>
                 </div>
 
@@ -167,25 +198,27 @@ export function ConfigModal({ open, onClose, apiUrl, refreshInterval, clusterNam
                   </div>
                 </div>
 
-                {/* Comandos úteis */}
-                <div className="space-y-2">
-                  <div className="text-[11px] text-slate-400 uppercase tracking-wider">Comandos úteis</div>
-                  <div
-                    className="rounded-lg p-3 space-y-2 text-[11px] font-mono"
-                    style={{ background: "oklch(0.11 0.015 250)", border: "1px solid oklch(0.20 0.025 250)" }}
-                  >
-                    {[
-                      { comment: "# Iniciar proxy do kubectl", cmd: "kubectl proxy --port=8001" },
-                      { comment: "# Ver pods com métricas", cmd: "kubectl top pods -A" },
-                      { comment: "# Instalar metrics-server", cmd: "kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml" },
-                    ].map(({ comment, cmd }) => (
-                      <div key={cmd}>
-                        <div className="text-slate-600">{comment}</div>
-                        <div className="text-green-400">{cmd}</div>
-                      </div>
-                    ))}
+                {/* Comandos úteis — só exibe quando fora do cluster */}
+                {!inCluster && (
+                  <div className="space-y-2">
+                    <div className="text-[11px] text-slate-400 uppercase tracking-wider">Comandos úteis</div>
+                    <div
+                      className="rounded-lg p-3 space-y-2 text-[11px] font-mono"
+                      style={{ background: "oklch(0.11 0.015 250)", border: "1px solid oklch(0.20 0.025 250)" }}
+                    >
+                      {[
+                        { comment: "# Iniciar proxy do kubectl", cmd: "kubectl proxy --port=8001" },
+                        { comment: "# Ver pods com métricas", cmd: "kubectl top pods -A" },
+                        { comment: "# Instalar metrics-server", cmd: "kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml" },
+                      ].map(({ comment, cmd }) => (
+                        <div key={cmd}>
+                          <div className="text-slate-600">{comment}</div>
+                          <div className="text-green-400">{cmd}</div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Footer */}

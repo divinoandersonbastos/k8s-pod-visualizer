@@ -2,20 +2,17 @@
  * usePodData — Hook para dados de pods Kubernetes
  * Design: Terminal Dark / Ops Dashboard
  *
- * Este hook simula dados de pods em tempo real com flutuações realistas.
- * Em produção, substitua a função `generateMockPods` por chamadas reais
- * à API do Kubernetes (kubectl proxy ou metrics-server).
- *
- * Configuração da API real:
- *   const response = await fetch('/api/v1/pods?metrics=true')
- *   ou via kubectl proxy: http://localhost:8001/apis/metrics.k8s.io/v1beta1/pods
+ * Detecção automática de ambiente:
+ *   - Quando rodando DENTRO do cluster (pod), busca /api/pods, /api/nodes e
+ *     /api/cluster-info diretamente do server-in-cluster.js (mesmo origin)
+ *   - Quando rodando FORA do cluster (dev local), usa dados simulados ou
+ *     a URL configurada manualmente no modal de configurações
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
 export type PodStatus = "healthy" | "warning" | "critical";
 
-/** Configuração de resources do deployment (requests + limits) */
 export interface ResourceConfig {
   cpu: number | null;    // millicores; null = não configurado
   memory: number | null; // MiB; null = não configurado
@@ -26,7 +23,6 @@ export interface PodResources {
   limits: ResourceConfig;
 }
 
-/** Tipo de violação de alerta */
 export type AlertType =
   | "cpu_exceeds_limit"
   | "cpu_exceeds_request"
@@ -57,24 +53,39 @@ export interface PodMetrics {
   namespace: string;
   node: string;
   status: PodStatus;
-  cpuUsage: number;       // millicores (m)
-  cpuLimit: number;       // millicores (m) — limite para % do gauge
-  cpuPercent: number;     // 0–100 relativo ao limit
-  memoryUsage: number;    // MiB
-  memoryLimit: number;    // MiB — limite para % do gauge
-  memoryPercent: number;  // 0–100 relativo ao limit
+  cpuUsage: number;
+  cpuLimit: number;
+  cpuPercent: number;
+  memoryUsage: number;
+  memoryLimit: number;
+  memoryPercent: number;
   restarts: number;
   age: string;
   containers: number;
   ready: number;
   labels: Record<string, string>;
-  resources: PodResources; // requests e limits do deployment
-  alerts: PodAlert[];      // alertas ativos para este pod
-  // posição para animação de bolhas
+  resources: PodResources;
+  alerts: PodAlert[];
   x?: number;
   y?: number;
   vx?: number;
   vy?: number;
+}
+
+export interface NodeInfo {
+  name: string;
+  status: string;
+  roles: string;
+  capacity: { cpu: number; memory: number };
+  allocatable: { cpu: number; memory: number };
+}
+
+export interface ClusterInfo {
+  name: string;
+  version: string;
+  namespace: string;
+  apiUrl: string;
+  inCluster: boolean;
 }
 
 export interface ClusterStats {
@@ -93,8 +104,139 @@ export interface ClusterStats {
   criticalAlerts: number;
 }
 
-// Dados de pods realistas para simulação
-// hasLimits/hasRequests: false = simula pod sem configuração (cenário real comum)
+// ── Detecção de ambiente ───────────────────────────────────────────────────────
+// Quando servido pelo server-in-cluster.js, o endpoint /api/pods existe no mesmo origin
+let _inClusterDetected: boolean | null = null;
+
+async function detectInCluster(): Promise<boolean> {
+  if (_inClusterDetected !== null) return _inClusterDetected;
+  try {
+    const res = await fetch("/api/cluster-info", { signal: AbortSignal.timeout(2000) });
+    _inClusterDetected = res.ok;
+  } catch {
+    _inClusterDetected = false;
+  }
+  return _inClusterDetected;
+}
+
+// ── Parsers de unidades Kubernetes ────────────────────────────────────────────
+function parseCPU(val: string | number | null | undefined): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === "number") return val;
+  if (val.endsWith("n")) return Math.round(parseInt(val) / 1_000_000);
+  if (val.endsWith("u")) return Math.round(parseInt(val) / 1_000);
+  if (val.endsWith("m")) return parseInt(val);
+  return Math.round(parseFloat(val) * 1000);
+}
+function parseMem(val: string | number | null | undefined): number {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === "number") return val;
+  if (val.endsWith("Ki")) return Math.round(parseInt(val) / 1024);
+  if (val.endsWith("Mi")) return parseInt(val);
+  if (val.endsWith("Gi")) return Math.round(parseFloat(val) * 1024);
+  return Math.round(parseInt(val) / (1024 * 1024));
+}
+
+// ── Conversão de resposta da API real para PodMetrics ─────────────────────────
+function apiPodToMetrics(raw: Record<string, unknown>, idx: number): PodMetrics {
+  const cpuUsage    = typeof raw.cpuUsage    === "number" ? raw.cpuUsage    : parseCPU(raw.cpuUsage as string);
+  const memoryUsage = typeof raw.memoryUsage === "number" ? raw.memoryUsage : parseMem(raw.memoryUsage as string);
+
+  const resources = (raw.resources as PodResources | undefined) ?? {
+    requests: { cpu: null, memory: null },
+    limits:   { cpu: null, memory: null },
+  };
+
+  // Gauge: usa o limit como teto; se não houver, usa 4× o uso atual
+  const cpuLimit    = resources.limits.cpu    ?? Math.max(cpuUsage * 4, 100);
+  const memoryLimit = resources.limits.memory ?? Math.max(memoryUsage * 4, 64);
+
+  const cpuPercent    = cpuLimit    > 0 ? Math.min(100, (cpuUsage    / cpuLimit)    * 100) : 0;
+  const memoryPercent = memoryLimit > 0 ? Math.min(100, (memoryUsage / memoryLimit) * 100) : 0;
+
+  const getStatus = (c: number, m: number): PodStatus => {
+    if (c >= 85 || m >= 85) return "critical";
+    if (c >= 60 || m >= 60) return "warning";
+    return "healthy";
+  };
+
+  const podBase = {
+    id:           `pod-${idx}-${String(raw.name)}`,
+    name:         String(raw.name ?? "unknown"),
+    namespace:    String(raw.namespace ?? "default"),
+    node:         String(raw.node ?? "unknown"),
+    status:       getStatus(cpuPercent, memoryPercent),
+    cpuUsage,
+    cpuLimit,
+    cpuPercent,
+    memoryUsage,
+    memoryLimit,
+    memoryPercent,
+    restarts:     0,
+    age:          "—",
+    containers:   1,
+    ready:        1,
+    labels:       {},
+    resources,
+  };
+
+  return { ...podBase, alerts: computePodAlerts(podBase) };
+}
+
+// ── Geração de alertas ────────────────────────────────────────────────────────
+export function computePodAlerts(
+  pod: Pick<PodMetrics, "id" | "name" | "namespace" | "node" | "cpuUsage" | "memoryUsage" | "resources">
+): PodAlert[] {
+  const alerts: PodAlert[] = [];
+  const { requests, limits } = pod.resources;
+  const now = new Date();
+
+  if (limits.cpu === null) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "no_cpu_limit", severity: "warning",
+      message: "Sem limit de CPU configurado — pod pode consumir CPU ilimitado", timestamp: now });
+  } else if (pod.cpuUsage >= limits.cpu) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "cpu_exceeds_limit", severity: "critical",
+      message: `CPU excede o limit: ${pod.cpuUsage}m ≥ ${limits.cpu}m`,
+      value: pod.cpuUsage, threshold: limits.cpu, unit: "m", timestamp: now });
+  } else if (requests.cpu !== null && pod.cpuUsage >= requests.cpu * 1.5) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "cpu_exceeds_request", severity: "warning",
+      message: `CPU 50% acima do request: ${pod.cpuUsage}m vs request ${requests.cpu}m`,
+      value: pod.cpuUsage, threshold: requests.cpu, unit: "m", timestamp: now });
+  }
+  if (requests.cpu === null) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "no_cpu_request", severity: "info",
+      message: "Sem request de CPU configurado — scheduler não pode otimizar alocação", timestamp: now });
+  }
+
+  if (limits.memory === null) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "no_mem_limit", severity: "warning",
+      message: "Sem limit de memória configurado — pod pode causar OOMKill no node", timestamp: now });
+  } else if (pod.memoryUsage >= limits.memory * 0.95) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "mem_exceeds_limit", severity: "critical",
+      message: `Memória próxima ao limit: ${pod.memoryUsage}Mi de ${limits.memory}Mi (${Math.round((pod.memoryUsage / limits.memory) * 100)}%)`,
+      value: pod.memoryUsage, threshold: limits.memory, unit: "Mi", timestamp: now });
+  } else if (requests.memory !== null && pod.memoryUsage >= requests.memory * 1.5) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "mem_exceeds_request", severity: "warning",
+      message: `Memória 50% acima do request: ${pod.memoryUsage}Mi vs request ${requests.memory}Mi`,
+      value: pod.memoryUsage, threshold: requests.memory, unit: "Mi", timestamp: now });
+  }
+  if (requests.memory === null) {
+    alerts.push({ podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
+      type: "no_mem_request", severity: "info",
+      message: "Sem request de memória configurado — scheduler não pode otimizar alocação", timestamp: now });
+  }
+
+  return alerts;
+}
+
+// ── Dados simulados (fallback quando fora do cluster) ─────────────────────────
 const POD_TEMPLATES = [
   { prefix: "nginx-ingress-controller", namespace: "ingress-nginx", cpuBase: 45, memBase: 128,
     cpuRequest: 50, memRequest: 128, cpuLimit: 500, memLimit: 512, hasLimits: true, hasRequests: true },
@@ -148,13 +290,12 @@ const POD_TEMPLATES = [
     cpuRequest: 100, memRequest: 256, cpuLimit: 400, memLimit: 512, hasLimits: true, hasRequests: true },
 ];
 
-const NODES = ["node-01", "node-02", "node-03", "node-04", "node-05"];
+const MOCK_NODES = ["node-01", "node-02", "node-03", "node-04", "node-05"];
 
 function formatAge(ms: number): string {
   const h = Math.floor(ms / 3600000);
   if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  return `${d}d`;
+  return `${Math.floor(h / 24)}d`;
 }
 
 function getStatus(cpuPercent: number, memPercent: number): PodStatus {
@@ -163,255 +304,164 @@ function getStatus(cpuPercent: number, memPercent: number): PodStatus {
   return "healthy";
 }
 
-/** Gera alertas para um pod baseado nos recursos configurados vs consumo real */
-export function computePodAlerts(
-  pod: Pick<PodMetrics, "id" | "name" | "namespace" | "node" | "cpuUsage" | "memoryUsage" | "resources">
-): PodAlert[] {
-  const alerts: PodAlert[] = [];
-  const { requests, limits } = pod.resources;
-  const now = new Date();
-
-  // — CPU —
-  if (limits.cpu === null) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "no_cpu_limit", severity: "warning",
-      message: "Sem limit de CPU configurado — pod pode consumir CPU ilimitado",
-      timestamp: now,
-    });
-  } else if (pod.cpuUsage >= limits.cpu) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "cpu_exceeds_limit", severity: "critical",
-      message: `CPU excede o limit: ${pod.cpuUsage}m ≥ ${limits.cpu}m`,
-      value: pod.cpuUsage, threshold: limits.cpu, unit: "m",
-      timestamp: now,
-    });
-  } else if (requests.cpu !== null && pod.cpuUsage >= requests.cpu * 1.5) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "cpu_exceeds_request", severity: "warning",
-      message: `CPU 50% acima do request: ${pod.cpuUsage}m vs request ${requests.cpu}m`,
-      value: pod.cpuUsage, threshold: requests.cpu, unit: "m",
-      timestamp: now,
-    });
-  }
-
-  if (requests.cpu === null) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "no_cpu_request", severity: "info",
-      message: "Sem request de CPU configurado — scheduler não pode otimizar alocação",
-      timestamp: now,
-    });
-  }
-
-  // — Memória —
-  if (limits.memory === null) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "no_mem_limit", severity: "warning",
-      message: "Sem limit de memória configurado — pod pode causar OOMKill no node",
-      timestamp: now,
-    });
-  } else if (pod.memoryUsage >= limits.memory * 0.95) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "mem_exceeds_limit", severity: "critical",
-      message: `Memória próxima ao limit: ${pod.memoryUsage}Mi de ${limits.memory}Mi (${Math.round((pod.memoryUsage / limits.memory) * 100)}%)`,
-      value: pod.memoryUsage, threshold: limits.memory, unit: "Mi",
-      timestamp: now,
-    });
-  } else if (requests.memory !== null && pod.memoryUsage >= requests.memory * 1.5) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "mem_exceeds_request", severity: "warning",
-      message: `Memória 50% acima do request: ${pod.memoryUsage}Mi vs request ${requests.memory}Mi`,
-      value: pod.memoryUsage, threshold: requests.memory, unit: "Mi",
-      timestamp: now,
-    });
-  }
-
-  if (requests.memory === null) {
-    alerts.push({
-      podId: pod.id, podName: pod.name, namespace: pod.namespace, node: pod.node,
-      type: "no_mem_request", severity: "info",
-      message: "Sem request de memória configurado — scheduler não pode otimizar alocação",
-      timestamp: now,
-    });
-  }
-
-  return alerts;
-}
-
 let podIdCounter = 0;
 
 function generateInitialPods(): PodMetrics[] {
   const pods: PodMetrics[] = [];
   const now = Date.now();
-
-  POD_TEMPLATES.forEach((template, idx) => {
-    // Gerar 1-3 réplicas de cada template
+  POD_TEMPLATES.forEach((t, idx) => {
     const replicas = idx < 5 ? 2 : idx < 15 ? Math.floor(Math.random() * 2) + 1 : 1;
     for (let r = 0; r < replicas; r++) {
       const suffix = Math.random().toString(36).substring(2, 7);
-      const cpuNoise = (Math.random() - 0.5) * template.cpuBase * 0.4;
-      const memNoise = (Math.random() - 0.5) * template.memBase * 0.3;
-      const cpuUsage = Math.max(1, template.cpuBase + cpuNoise);
-      const memUsage = Math.max(10, template.memBase + memNoise);
-
-      // Limit para o gauge (usa cpuLimit do template como referência do gauge)
-      const gaugeLimit = template.cpuLimit ?? template.cpuBase * 3;
-      const gaugeMem = template.memLimit ?? template.memBase * 3;
+      const cpuUsage = Math.max(1, t.cpuBase + (Math.random() - 0.5) * t.cpuBase * 0.4);
+      const memUsage = Math.max(10, t.memBase + (Math.random() - 0.5) * t.memBase * 0.3);
+      const gaugeLimit = t.cpuLimit ?? t.cpuBase * 3;
+      const gaugeMem   = t.memLimit ?? t.memBase * 3;
       const cpuPercent = (cpuUsage / gaugeLimit) * 100;
       const memPercent = (memUsage / gaugeMem) * 100;
-
       const resources: PodResources = {
-        requests: {
-          cpu: template.hasRequests ? (template.cpuRequest ?? null) : null,
-          memory: template.hasRequests ? (template.memRequest ?? null) : null,
-        },
-        limits: {
-          cpu: template.hasLimits ? (template.cpuLimit ?? null) : null,
-          memory: template.hasLimits ? (template.memLimit ?? null) : null,
-        },
+        requests: { cpu: t.hasRequests ? (t.cpuRequest ?? null) : null, memory: t.hasRequests ? (t.memRequest ?? null) : null },
+        limits:   { cpu: t.hasLimits   ? (t.cpuLimit   ?? null) : null, memory: t.hasLimits   ? (t.memLimit   ?? null) : null },
       };
-
-      const podBase = {
-        id: `pod-${++podIdCounter}`,
-        name: `${template.prefix}-${suffix}`,
-        namespace: template.namespace,
-        node: NODES[Math.floor(Math.random() * NODES.length)],
+      const base = {
+        id: `pod-${++podIdCounter}`, name: `${t.prefix}-${suffix}`,
+        namespace: t.namespace, node: MOCK_NODES[Math.floor(Math.random() * MOCK_NODES.length)],
         status: getStatus(cpuPercent, memPercent),
-        cpuUsage: Math.round(cpuUsage),
-        cpuLimit: gaugeLimit,
-        cpuPercent: Math.min(100, cpuPercent),
-        memoryUsage: Math.round(memUsage),
-        memoryLimit: gaugeMem,
-        memoryPercent: Math.min(100, memPercent),
-        restarts: Math.floor(Math.random() * 5),
-        age: formatAge(Math.random() * 7 * 24 * 3600000 + now),
-        containers: Math.floor(Math.random() * 2) + 1,
-        ready: 1,
-        labels: { app: template.prefix, env: template.namespace },
-        resources,
+        cpuUsage: Math.round(cpuUsage), cpuLimit: gaugeLimit, cpuPercent: Math.min(100, cpuPercent),
+        memoryUsage: Math.round(memUsage), memoryLimit: gaugeMem, memoryPercent: Math.min(100, memPercent),
+        restarts: Math.floor(Math.random() * 5), age: formatAge(Math.random() * 7 * 24 * 3600000 + now),
+        containers: Math.floor(Math.random() * 2) + 1, ready: 1,
+        labels: { app: t.prefix, env: t.namespace }, resources,
       };
-
-      pods.push({ ...podBase, alerts: computePodAlerts(podBase) });
+      pods.push({ ...base, alerts: computePodAlerts(base) });
     }
   });
-
   return pods;
 }
 
 function fluctuatePods(pods: PodMetrics[]): PodMetrics[] {
   return pods.map((pod) => {
-    // Pods legados sem resources (estado anterior ao HMR) são reinicializados
-    if (!pod.resources) {
-      return generateInitialPods().find((p) => p.name === pod.name) ?? pod;
-    }
-
-    // Flutuação realista: ±15% do valor atual
+    if (!pod.resources) return pod;
     const cpuDelta = (Math.random() - 0.48) * pod.cpuUsage * 0.15;
     const memDelta = (Math.random() - 0.49) * pod.memoryUsage * 0.08;
-
-    const newCpu = Math.max(1, Math.min(pod.cpuLimit, pod.cpuUsage + cpuDelta));
+    const newCpu = Math.max(1,  Math.min(pod.cpuLimit,    pod.cpuUsage    + cpuDelta));
     const newMem = Math.max(10, Math.min(pod.memoryLimit, pod.memoryUsage + memDelta));
-    const cpuPercent = (newCpu / pod.cpuLimit) * 100;
+    const cpuPercent = (newCpu / pod.cpuLimit)    * 100;
     const memPercent = (newMem / pod.memoryLimit) * 100;
-
-    const updated = {
-      ...pod,
-      cpuUsage: Math.round(newCpu),
-      memoryUsage: Math.round(newMem),
-      cpuPercent: Math.min(100, cpuPercent),
-      memoryPercent: Math.min(100, memPercent),
-      status: getStatus(cpuPercent, memPercent),
-    };
-
+    const updated = { ...pod, cpuUsage: Math.round(newCpu), memoryUsage: Math.round(newMem),
+      cpuPercent: Math.min(100, cpuPercent), memoryPercent: Math.min(100, memPercent),
+      status: getStatus(cpuPercent, memPercent) };
     return { ...updated, alerts: computePodAlerts(updated) };
   });
 }
 
 function computeStats(pods: PodMetrics[]): ClusterStats {
   const namespaces = Array.from(new Set(pods.map((p) => p.namespace))).sort();
-  const nodes = Array.from(new Set(pods.map((p) => p.node))).sort();
-  const allAlerts = pods.flatMap((p) => p.alerts);
+  const nodes      = Array.from(new Set(pods.map((p) => p.node))).sort();
+  const allAlerts  = pods.flatMap((p) => p.alerts);
   return {
     totalPods: pods.length,
-    healthyPods: pods.filter((p) => p.status === "healthy").length,
-    warningPods: pods.filter((p) => p.status === "warning").length,
+    healthyPods:  pods.filter((p) => p.status === "healthy").length,
+    warningPods:  pods.filter((p) => p.status === "warning").length,
     criticalPods: pods.filter((p) => p.status === "critical").length,
-    totalCpuUsage: pods.reduce((s, p) => s + p.cpuUsage, 0),
-    totalCpuCapacity: pods.reduce((s, p) => s + p.cpuLimit, 0),
-    totalMemoryUsage: pods.reduce((s, p) => s + p.memoryUsage, 0),
-    totalMemoryCapacity: pods.reduce((s, p) => s + p.memoryLimit, 0),
-    namespaces,
-    nodes,
-    lastUpdated: new Date(),
+    totalCpuUsage:      pods.reduce((s, p) => s + p.cpuUsage,    0),
+    totalCpuCapacity:   pods.reduce((s, p) => s + p.cpuLimit,    0),
+    totalMemoryUsage:   pods.reduce((s, p) => s + p.memoryUsage, 0),
+    totalMemoryCapacity:pods.reduce((s, p) => s + p.memoryLimit, 0),
+    namespaces, nodes, lastUpdated: new Date(),
     totalAlerts: allAlerts.length,
     criticalAlerts: allAlerts.filter((a) => a.severity === "critical").length,
   };
 }
 
+// ── Hook principal ────────────────────────────────────────────────────────────
 export interface UsePodDataOptions {
-  refreshInterval?: number; // ms, default 3000
-  namespace?: string;       // filtro de namespace
-  apiUrl?: string;          // URL da API real (opcional)
+  refreshInterval?: number;
+  namespace?: string;
+  apiUrl?: string;         // URL externa configurada manualmente (opcional)
 }
 
 export function usePodData(options: UsePodDataOptions = {}) {
   const { refreshInterval = 3000, namespace, apiUrl } = options;
-  const [pods, setPods] = useState<PodMetrics[]>([]);
-  const [stats, setStats] = useState<ClusterStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [isLive, setIsLive] = useState(true);
-  const [selectedPod, setSelectedPod] = useState<PodMetrics | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const initializedRef = useRef(false);
 
-  const fetchFromApi = useCallback(async (): Promise<PodMetrics[] | null> => {
-    if (!apiUrl) return null;
+  const [pods, setPods]       = useState<PodMetrics[]>([]);
+  const [stats, setStats]     = useState<ClusterStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState<string | null>(null);
+  const [isLive, setIsLive]   = useState(true);
+  const [selectedPod, setSelectedPod] = useState<PodMetrics | null>(null);
+  const [inCluster, setInCluster]     = useState(false);
+
+  const intervalRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const initializedRef  = useRef(false);
+
+  // Busca pods da API real (in-cluster ou URL externa)
+  const fetchRealPods = useCallback(async (): Promise<PodMetrics[] | null> => {
+    const url = inCluster ? "/api/pods" : (apiUrl ? `${apiUrl}/api/pods` : null);
+    if (!url) return null;
     try {
-      const res = await fetch(apiUrl);
+      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      return data as PodMetrics[];
+      const items: Record<string, unknown>[] = data.items ?? data ?? [];
+      return items.map((raw, i) => apiPodToMetrics(raw, i));
     } catch (e) {
-      console.warn("API fetch failed, using mock data:", e);
+      console.warn("[usePodData] fetch falhou, usando mock:", e);
       return null;
     }
-  }, [apiUrl]);
+  }, [inCluster, apiUrl]);
 
   const refresh = useCallback(async () => {
-    const apiData = await fetchFromApi();
-    if (apiData) {
-      const filtered = namespace ? apiData.filter((p) => p.namespace === namespace) : apiData;
-      setPods(filtered);
+    const real = await fetchRealPods();
+    if (real) {
+      const filtered = namespace ? real.filter((p) => p.namespace === namespace) : real;
+      setPods(real);
       setStats(computeStats(filtered));
       setError(null);
     } else {
       setPods((prev) => {
-        const updated = fluctuatePods(prev);
+        const updated  = fluctuatePods(prev.length ? prev : generateInitialPods());
         const filtered = namespace ? updated.filter((p) => p.namespace === namespace) : updated;
         setStats(computeStats(filtered));
         return updated;
       });
     }
-  }, [namespace, fetchFromApi]);
+  }, [namespace, fetchRealPods]);
 
-  // Inicialização
+  // Inicialização: detecta ambiente e carrega dados
   useEffect(() => {
     if (initializedRef.current) return;
     initializedRef.current = true;
 
-    // Sempre reinicializa para garantir que pods tenham o campo resources
-    const initial = generateInitialPods();
-    const filtered = namespace ? initial.filter((p) => p.namespace === namespace) : initial;
-    setPods(initial);
-    setStats(computeStats(filtered));
-    setLoading(false);
+    (async () => {
+      const ic = await detectInCluster();
+      setInCluster(ic);
+
+      if (ic) {
+        // Dentro do cluster: busca dados reais imediatamente
+        try {
+          const res  = await fetch("/api/pods", { signal: AbortSignal.timeout(5000) });
+          const data = await res.json();
+          const items: Record<string, unknown>[] = data.items ?? data ?? [];
+          const realPods = items.map((raw, i) => apiPodToMetrics(raw, i));
+          const filtered = namespace ? realPods.filter((p) => p.namespace === namespace) : realPods;
+          setPods(realPods);
+          setStats(computeStats(filtered));
+        } catch (e) {
+          console.error("[usePodData] erro ao buscar pods reais:", e);
+          setError("Erro ao buscar pods do cluster");
+          const mock = generateInitialPods();
+          setPods(mock);
+          setStats(computeStats(mock));
+        }
+      } else {
+        // Fora do cluster: dados simulados
+        const mock = generateInitialPods();
+        setPods(mock);
+        setStats(computeStats(mock));
+      }
+      setLoading(false);
+    })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -422,25 +472,41 @@ export function usePodData(options: UsePodDataOptions = {}) {
       return;
     }
     intervalRef.current = setInterval(refresh, refreshInterval);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
+    return () => { if (intervalRef.current) clearInterval(intervalRef.current); };
   }, [isLive, refresh, refreshInterval]);
 
   const toggleLive = useCallback(() => setIsLive((v) => !v), []);
-
   const filteredPods = namespace ? pods.filter((p) => p.namespace === namespace) : pods;
 
-  return {
-    pods: filteredPods,
-    allPods: pods,
-    stats,
-    loading,
-    error,
-    isLive,
-    toggleLive,
-    selectedPod,
-    setSelectedPod,
-    refresh,
-  };
+  return { pods: filteredPods, allPods: pods, stats, loading, error, isLive, toggleLive,
+           selectedPod, setSelectedPod, refresh, inCluster };
+}
+
+// ── Hook para informações do cluster e nodes ──────────────────────────────────
+export function useClusterMeta() {
+  const [clusterInfo, setClusterInfo] = useState<ClusterInfo | null>(null);
+  const [nodes, setNodes]             = useState<NodeInfo[]>([]);
+
+  useEffect(() => {
+    (async () => {
+      const ic = await detectInCluster();
+      if (!ic) return;
+
+      // Busca info do cluster
+      try {
+        const res  = await fetch("/api/cluster-info", { signal: AbortSignal.timeout(4000) });
+        const data = await res.json();
+        setClusterInfo(data as ClusterInfo);
+      } catch { /* ignora */ }
+
+      // Busca nodes
+      try {
+        const res  = await fetch("/api/nodes", { signal: AbortSignal.timeout(4000) });
+        const data = await res.json();
+        setNodes((data.items ?? []) as NodeInfo[]);
+      } catch { /* ignora */ }
+    })();
+  }, []);
+
+  return { clusterInfo, nodes };
 }

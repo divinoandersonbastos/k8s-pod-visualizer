@@ -1,12 +1,17 @@
 /**
  * ClusterHeader — Header com status do cluster, busca e controles
  * Design: Terminal Dark / Ops Dashboard
+ *
+ * Adicionado: filtro de status (crítico / alerta / ambos) com botões pill no header.
+ * O estado `statusFilter` é gerenciado em Home.tsx e passado como prop.
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
+
+export type StatusFilter = "" | "critical" | "warning" | "non-healthy";
 
 interface ClusterHeaderProps {
   stats: ClusterStats | null;
@@ -17,14 +22,36 @@ interface ClusterHeaderProps {
   onShowConfig: () => void;
   onShowAlerts?: () => void;
   clusterName?: string;
+  statusFilter: StatusFilter;
+  onStatusFilterChange: (f: StatusFilter) => void;
 }
 
-export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchChange, onShowConfig, onShowAlerts, clusterName }: ClusterHeaderProps) {
+export function ClusterHeader({
+  stats,
+  isLive,
+  onRefresh,
+  searchQuery,
+  onSearchChange,
+  onShowConfig,
+  onShowAlerts,
+  clusterName,
+  statusFilter,
+  onStatusFilterChange,
+}: ClusterHeaderProps) {
   const [showInfo, setShowInfo] = useState(false);
+
+  const criticalCount = stats?.criticalPods ?? 0;
+  const warningCount  = stats?.warningPods  ?? 0;
+  const nonHealthy    = criticalCount + warningCount;
+
+  // Alterna o filtro: clica no mesmo botão → limpa; clica em outro → ativa
+  const toggleFilter = (f: StatusFilter) => {
+    onStatusFilterChange(statusFilter === f ? "" : f);
+  };
 
   return (
     <header
-      className="shrink-0 flex items-center gap-3 px-4 h-14"
+      className="shrink-0 flex items-center gap-2 px-4 h-14"
       style={{
         background: "oklch(0.13 0.018 250 / 0.95)",
         borderBottom: "1px solid oklch(0.22 0.03 250)",
@@ -46,36 +73,85 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
         </span>
       </div>
 
-      {/* Separador */}
       <div className="w-px h-5 shrink-0" style={{ background: "oklch(0.28 0.04 250)" }} />
 
-      {/* Métricas rápidas */}
+      {/* Métricas rápidas — total de pods */}
       {stats && (
-        <div className="hidden md:flex items-center gap-4 shrink-0">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">Pods</span>
-            <span className="font-mono text-sm font-bold text-slate-200">{stats.totalPods}</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className="w-2 h-2 rounded-full"
-              style={{ background: "oklch(0.62 0.22 25)", boxShadow: "0 0 5px oklch(0.62 0.22 25)" }}
-            />
-            <span className="font-mono text-sm font-bold" style={{ color: "oklch(0.72 0.18 25)" }}>
-              {stats.criticalPods}
-            </span>
-            <span className="text-[10px] text-slate-500">críticos</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span
-              className="w-2 h-2 rounded-full"
-              style={{ background: "oklch(0.72 0.18 50)", boxShadow: "0 0 5px oklch(0.72 0.18 50)" }}
-            />
-            <span className="font-mono text-sm font-bold" style={{ color: "oklch(0.72 0.18 50)" }}>
-              {stats.warningPods}
-            </span>
-            <span className="text-[10px] text-slate-500">alertas</span>
-          </div>
+        <div className="hidden md:flex items-center gap-1.5 shrink-0">
+          <span className="text-[10px] text-slate-500 uppercase tracking-wider">Pods</span>
+          <span className="font-mono text-sm font-bold text-slate-200">{stats.totalPods}</span>
+        </div>
+      )}
+
+      {/* ── Botões de filtro de status ─────────────────────────────────────── */}
+      {stats && (
+        <div className="hidden md:flex items-center gap-1.5 shrink-0">
+          {/* Críticos */}
+          <button
+            onClick={() => toggleFilter("critical")}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold transition-all"
+            style={{
+              background: statusFilter === "critical"
+                ? "oklch(0.62 0.22 25 / 0.30)"
+                : "oklch(0.62 0.22 25 / 0.10)",
+              border: `1px solid ${statusFilter === "critical"
+                ? "oklch(0.62 0.22 25 / 0.80)"
+                : "oklch(0.62 0.22 25 / 0.30)"}`,
+              color: "oklch(0.78 0.18 25)",
+              boxShadow: statusFilter === "critical" ? "0 0 8px oklch(0.62 0.22 25 / 0.35)" : "none",
+            }}
+            title="Mostrar apenas pods críticos"
+          >
+            <AlertCircle size={11} />
+            <span>{criticalCount}</span>
+            <span className="text-[10px] opacity-70">críticos</span>
+            {statusFilter === "critical" && <X size={10} className="ml-0.5 opacity-60" />}
+          </button>
+
+          {/* Alertas */}
+          <button
+            onClick={() => toggleFilter("warning")}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold transition-all"
+            style={{
+              background: statusFilter === "warning"
+                ? "oklch(0.72 0.18 50 / 0.30)"
+                : "oklch(0.72 0.18 50 / 0.10)",
+              border: `1px solid ${statusFilter === "warning"
+                ? "oklch(0.72 0.18 50 / 0.80)"
+                : "oklch(0.72 0.18 50 / 0.30)"}`,
+              color: "oklch(0.78 0.18 50)",
+              boxShadow: statusFilter === "warning" ? "0 0 8px oklch(0.72 0.18 50 / 0.30)" : "none",
+            }}
+            title="Mostrar apenas pods em alerta"
+          >
+            <AlertTriangle size={11} />
+            <span>{warningCount}</span>
+            <span className="text-[10px] opacity-70">alertas</span>
+            {statusFilter === "warning" && <X size={10} className="ml-0.5 opacity-60" />}
+          </button>
+
+          {/* Críticos + Alertas */}
+          {nonHealthy > 0 && (
+            <button
+              onClick={() => toggleFilter("non-healthy")}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold transition-all"
+              style={{
+                background: statusFilter === "non-healthy"
+                  ? "oklch(0.55 0.22 260 / 0.25)"
+                  : "oklch(0.55 0.22 260 / 0.08)",
+                border: `1px solid ${statusFilter === "non-healthy"
+                  ? "oklch(0.55 0.22 260 / 0.70)"
+                  : "oklch(0.55 0.22 260 / 0.25)"}`,
+                color: "oklch(0.72 0.18 200)",
+                boxShadow: statusFilter === "non-healthy" ? "0 0 8px oklch(0.55 0.22 260 / 0.30)" : "none",
+              }}
+              title="Mostrar críticos + alertas"
+            >
+              <span>{nonHealthy}</span>
+              <span className="text-[10px] opacity-70">problemáticos</span>
+              {statusFilter === "non-healthy" && <X size={10} className="ml-0.5 opacity-60" />}
+            </button>
+          )}
         </div>
       )}
 
@@ -88,18 +164,14 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
               className="w-2 h-2 rounded-full shrink-0"
               style={{ background: "oklch(0.72 0.18 200)", boxShadow: "0 0 5px oklch(0.72 0.18 200)" }}
             />
-            <span
-              className="text-xs font-mono font-semibold"
-              style={{ color: "oklch(0.72 0.18 200)" }}
-            >
+            <span className="text-xs font-mono font-semibold" style={{ color: "oklch(0.72 0.18 200)" }}>
               {clusterName}
             </span>
           </div>
         </>
       )}
 
-      {/* Separador */}
-      {stats && <div className="hidden md:block w-px h-5 shrink-0" style={{ background: "oklch(0.28 0.04 250)" }} />}
+      <div className="hidden md:block w-px h-5 shrink-0" style={{ background: "oklch(0.28 0.04 250)" }} />
 
       {/* Busca */}
       <div className="flex-1 relative max-w-xs">
@@ -115,12 +187,8 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
             border: "1px solid oklch(0.28 0.04 250)",
             color: "oklch(0.85 0.008 250)",
           }}
-          onFocus={(e) => {
-            e.currentTarget.style.borderColor = "oklch(0.55 0.22 260 / 0.6)";
-          }}
-          onBlur={(e) => {
-            e.currentTarget.style.borderColor = "oklch(0.28 0.04 250)";
-          }}
+          onFocus={(e) => { e.currentTarget.style.borderColor = "oklch(0.55 0.22 260 / 0.6)"; }}
+          onBlur={(e)  => { e.currentTarget.style.borderColor = "oklch(0.28 0.04 250)"; }}
         />
       </div>
 
@@ -134,7 +202,7 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
         >
           <RefreshCw size={14} />
         </button>
-        {/* Botão de alertas com badge */}
+
         {onShowAlerts && (
           <button
             onClick={onShowAlerts}
@@ -163,6 +231,7 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
             )}
           </button>
         )}
+
         <button
           onClick={() => setShowInfo((v) => !v)}
           className="p-2 rounded-lg transition-all hover:bg-white/5"
@@ -171,6 +240,7 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
         >
           <Info size={14} />
         </button>
+
         <button
           onClick={onShowConfig}
           className="p-2 rounded-lg transition-all hover:bg-white/5"

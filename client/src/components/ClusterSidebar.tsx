@@ -7,12 +7,14 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server } from "lucide-react";
 import type { ClusterStats } from "@/hooks/usePodData";
-import type { ViewMode } from "./BubbleCanvas";
+import type { ViewMode, LayoutMode } from "./BubbleCanvas";
 
 interface ClusterSidebarProps {
   stats: ClusterStats | null;
   viewMode: ViewMode;
   onViewModeChange: (mode: ViewMode) => void;
+  layoutMode: LayoutMode;
+  onLayoutModeChange: (mode: LayoutMode) => void;
   selectedNamespace: string;
   onNamespaceChange: (ns: string) => void;
   isLive: boolean;
@@ -63,6 +65,8 @@ export function ClusterSidebar({
   stats,
   viewMode,
   onViewModeChange,
+  layoutMode,
+  onLayoutModeChange,
   selectedNamespace,
   onNamespaceChange,
   isLive,
@@ -144,6 +148,49 @@ export function ClusterSidebar({
           </div>
         </div>
 
+        {/* Modo de layout */}
+        <div className="space-y-2">
+          <div className="text-[10px] text-slate-500 uppercase tracking-widest">Layout</div>
+          <div className="grid grid-cols-2 gap-1.5">
+            <button
+              onClick={() => onLayoutModeChange("free")}
+              className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: layoutMode === "free" ? "oklch(0.55 0.22 260 / 0.25)" : "oklch(0.16 0.02 250)",
+                border: `1px solid ${layoutMode === "free" ? "oklch(0.55 0.22 260 / 0.6)" : "oklch(0.22 0.03 250)"}`,
+                color: layoutMode === "free" ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+              }}
+            >
+              <Activity size={12} />
+              Livre
+            </button>
+            <button
+              onClick={() => onLayoutModeChange("constellation")}
+              className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: layoutMode === "constellation" ? "oklch(0.55 0.22 260 / 0.25)" : "oklch(0.16 0.02 250)",
+                border: `1px solid ${layoutMode === "constellation" ? "oklch(0.55 0.22 260 / 0.6)" : "oklch(0.22 0.03 250)"}`,
+                color: layoutMode === "constellation" ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+              }}
+            >
+              <Server size={12} />
+              Namespace
+            </button>
+          </div>
+          {layoutMode === "constellation" && (
+            <div
+              className="text-[10px] font-mono px-2 py-1.5 rounded"
+              style={{
+                background: "oklch(0.55 0.22 260 / 0.08)",
+                border: "1px solid oklch(0.55 0.22 260 / 0.2)",
+                color: "oklch(0.55 0.015 250)",
+              }}
+            >
+              Pods agrupados por namespace
+            </div>
+          )}
+        </div>
+
         {/* Estatísticas do cluster */}
         {stats && (
           <>
@@ -220,20 +267,29 @@ export function ClusterSidebar({
                   <span className="font-mono">Todos</span>
                   <span className="float-right text-[10px] text-slate-600">{stats.totalPods}</span>
                 </button>
-                {stats.namespaces.map((ns) => {
+                {stats.namespaces.map((ns, nsIdx) => {
+                  const NS_HUE_PALETTE = [200, 280, 160, 320, 40, 100, 240, 60, 340, 180, 260, 20];
+                  const hue = NS_HUE_PALETTE[nsIdx % NS_HUE_PALETTE.length];
+                  const nsColor = `oklch(0.65 0.20 ${hue})`;
                   return (
                     <button
                       key={ns}
                       onClick={() => onNamespaceChange(ns)}
-                      className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono"
+                      className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2"
                       style={{
                         background: selectedNamespace === ns ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
                         color: selectedNamespace === ns ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
                         border: `1px solid ${selectedNamespace === ns ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
                       }}
                     >
-                      <span className="truncate block" style={{ maxWidth: 'calc(100% - 24px)', display: 'inline-block' }}>{ns}</span>
-                      <span className="float-right text-[10px] text-slate-600">{nsCounts[ns] ?? ''}</span>
+                      {layoutMode === "constellation" && (
+                        <span
+                          className="w-2 h-2 rounded-full shrink-0"
+                          style={{ background: nsColor, boxShadow: `0 0 4px ${nsColor}`, opacity: 0.85 }}
+                        />
+                      )}
+                      <span className="truncate flex-1" style={{ maxWidth: 'calc(100% - 40px)' }}>{ns}</span>
+                      <span className="text-[10px] text-slate-600 shrink-0">{nsCounts[ns] ?? ''}</span>
                     </button>
                   );
                 })}

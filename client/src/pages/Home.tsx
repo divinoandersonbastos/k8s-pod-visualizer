@@ -12,10 +12,11 @@ import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
 import { PodDetailPanel } from "@/components/PodDetailPanel";
 import { ConfigModal } from "@/components/ConfigModal";
-import type { ViewMode } from "@/components/BubbleCanvas";
+import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>("cpu");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("free");
   const [selectedNamespace, setSelectedNamespace] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showConfig, setShowConfig] = useState(false);
@@ -107,6 +108,8 @@ export default function Home() {
           stats={stats}
           viewMode={viewMode}
           onViewModeChange={setViewMode}
+          layoutMode={layoutMode}
+          onLayoutModeChange={setLayoutMode}
           selectedNamespace={selectedNamespace}
           onNamespaceChange={setSelectedNamespace}
           isLive={isLive}
@@ -135,7 +138,11 @@ export default function Home() {
             />
             <span className="uppercase tracking-widest">{viewMode === "cpu" ? "CPU" : "Memória"}</span>
             <span style={{ color: "oklch(0.28 0.04 250)" }}>|</span>
-            <span className="text-slate-300">{filteredPods.length} pods</span>
+            {layoutMode === "constellation" ? (
+              <span style={{ color: "oklch(0.72 0.18 200)" }}>Constelações</span>
+            ) : (
+              <span className="text-slate-300">{filteredPods.length} pods</span>
+            )}
             {filteredPods.filter(p => p.status === 'critical').length > 0 && (
               <>
                 <span style={{ color: "oklch(0.28 0.04 250)" }}>|</span>
@@ -151,6 +158,7 @@ export default function Home() {
             <BubbleCanvas
               pods={filteredPods}
               viewMode={viewMode}
+              layoutMode={layoutMode}
               onSelectPod={setSelectedPod}
               selectedPodId={selectedPod?.id}
             />

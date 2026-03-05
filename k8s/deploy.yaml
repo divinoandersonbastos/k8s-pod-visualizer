@@ -44,8 +44,11 @@ metadata:
     app.kubernetes.io/name: k8s-pod-visualizer
 rules:
   - apiGroups: [""]
-    resources: ["pods", "nodes", "namespaces"]
+    resources: ["pods", "nodes", "namespaces", "events"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods", "nodes"]
     verbs: ["get", "list"]
@@ -76,7 +79,7 @@ metadata:
   namespace: k8s-pod-visualizer
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
-    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/version: "1.2.1"
 spec:
   replicas: 1
   selector:

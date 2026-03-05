@@ -3,9 +3,9 @@
  * Design: Terminal Dark / Ops Dashboard
  */
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
-import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server } from "lucide-react";
+import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server, Search } from "lucide-react";
 import type { ClusterStats, PodMetrics } from "@/hooks/usePodData";
 import type { ViewMode, LayoutMode } from "./BubbleCanvas";
 import { TopPodsTooltip } from "./TopPodsTooltip";
@@ -86,6 +86,15 @@ export function ClusterSidebar({
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded] = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
+  const [nsSearch, setNsSearch] = useState("");
+
+  // Namespaces filtrados pela busca
+  const filteredNamespaces = useMemo(() => {
+    if (!stats) return [];
+    const q = nsSearch.trim().toLowerCase();
+    if (!q) return stats.namespaces;
+    return stats.namespaces.filter((ns) => ns.toLowerCase().includes(q));
+  }, [stats, nsSearch]);
 
   return (
     <aside
@@ -279,6 +288,30 @@ export function ClusterSidebar({
             </button>
             {nsExpanded && (
               <div className="space-y-1">
+                {/* Campo de busca de namespace */}
+                <div
+                  className="flex items-center gap-1.5 px-2 py-1 rounded"
+                  style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.24 0.03 250)" }}
+                >
+                  <Search size={10} style={{ color: "oklch(0.45 0.015 250)", flexShrink: 0 }} />
+                  <input
+                    type="text"
+                    placeholder="Filtrar namespace..."
+                    value={nsSearch}
+                    onChange={(e) => setNsSearch(e.target.value)}
+                    className="flex-1 bg-transparent text-[11px] font-mono outline-none placeholder:text-slate-600"
+                    style={{ color: "oklch(0.75 0.012 250)" }}
+                  />
+                  {nsSearch && (
+                    <button
+                      onClick={() => setNsSearch("")}
+                      className="text-[10px] font-mono"
+                      style={{ color: "oklch(0.45 0.015 250)" }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
                 <button
                   onClick={() => onNamespaceChange("")}
                   className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all"
@@ -291,9 +324,14 @@ export function ClusterSidebar({
                   <span className="font-mono">Todos</span>
                   <span className="float-right text-[10px] text-slate-600">{stats.totalPods}</span>
                 </button>
-                {stats.namespaces.map((ns, nsIdx) => {
+                {filteredNamespaces.length === 0 && nsSearch && (
+                  <div className="text-[10px] font-mono text-center py-2" style={{ color: "oklch(0.40 0.015 250)" }}>
+                    Nenhum namespace encontrado
+                  </div>
+                )}
+                 {filteredNamespaces.map((ns, nsIdx) => {
                   const NS_HUE_PALETTE = [200, 280, 160, 320, 40, 100, 240, 60, 340, 180, 260, 20];
-                  const hue = NS_HUE_PALETTE[nsIdx % NS_HUE_PALETTE.length];
+                  const hue = NS_HUE_PALETTE[nsIdx % NS_HUE_PALETTE.length];;
                   const nsColor = `oklch(0.65 0.20 ${hue})`;
                   const nsPods = allPods.filter((p) => p.namespace === ns);
                   return (
@@ -410,6 +448,7 @@ export function ClusterSidebar({
                         <span
                           className="flex-1 truncate text-[11px]"
                           style={{ color: isSelected ? "oklch(0.85 0.008 250)" : "oklch(0.65 0.012 250)" }}
+                          title={node}
                         >
                           {node}
                         </span>

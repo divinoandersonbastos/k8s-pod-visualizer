@@ -44,6 +44,25 @@ export default function Home() {
     return counts;
   }, [pods]);
 
+  // Métricas médias de CPU e memória por node
+  const nodeMetrics = useMemo(() => {
+    const acc: Record<string, { cpuSum: number; memSum: number; count: number }> = {};
+    pods.forEach((p) => {
+      if (!acc[p.node]) acc[p.node] = { cpuSum: 0, memSum: 0, count: 0 };
+      acc[p.node].cpuSum += p.cpuPercent;
+      acc[p.node].memSum += p.memoryPercent;
+      acc[p.node].count += 1;
+    });
+    const result: Record<string, { avgCpu: number; avgMem: number }> = {};
+    Object.entries(acc).forEach(([node, { cpuSum, memSum, count }]) => {
+      result[node] = {
+        avgCpu: count > 0 ? cpuSum / count : 0,
+        avgMem: count > 0 ? memSum / count : 0,
+      };
+    });
+    return result;
+  }, [pods]);
+
   const filteredPods = useMemo(() => {
     let result = pods;
     if (selectedNamespace) {
@@ -132,6 +151,7 @@ export default function Home() {
           onToggleLive={toggleLive}
           nsCounts={nsCounts}
           nodeCounts={nodeCounts}
+          nodeMetrics={nodeMetrics}
         />
 
         {/* Canvas principal */}

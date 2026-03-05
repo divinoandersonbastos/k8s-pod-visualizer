@@ -23,6 +23,7 @@ interface ClusterSidebarProps {
   onToggleLive: () => void;
   nsCounts?: Record<string, number>;
   nodeCounts?: Record<string, number>;
+  nodeMetrics?: Record<string, { avgCpu: number; avgMem: number }>;
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -78,6 +79,7 @@ export function ClusterSidebar({
   onToggleLive,
   nsCounts = {},
   nodeCounts = {},
+  nodeMetrics = {},
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded] = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
@@ -332,48 +334,111 @@ export function ClusterSidebar({
                   <span className="text-[10px] text-slate-600 shrink-0">{stats.totalPods}</span>
                 </button>
 
-                {/* Lista de nodes */}
+                {/* Lista de nodes com barras de progresso */}
                 {stats.nodes.map((node) => {
                   const isSelected = selectedNode === node;
                   const count = nodeCounts[node] ?? 0;
-                  // Calcular uso médio de CPU dos pods neste node para colorir o indicador
-                  const nodeColor = isSelected
-                    ? "oklch(0.72 0.18 200)"
-                    : "oklch(0.55 0.015 250)";
+                  const metrics = nodeMetrics[node] ?? { avgCpu: 0, avgMem: 0 };
+                  const cpuPct = Math.min(100, Math.round(metrics.avgCpu));
+                  const memPct = Math.min(100, Math.round(metrics.avgMem));
+
+                  // Cor dinâmica baseada no maior consumo entre CPU e MEM
+                  const maxPct = Math.max(cpuPct, memPct);
+                  const statusColor =
+                    maxPct >= 85
+                      ? "oklch(0.62 0.22 25)"   // vermelho — crítico
+                      : maxPct >= 60
+                      ? "oklch(0.72 0.18 50)"   // laranja — atenção
+                      : "oklch(0.72 0.18 142)"; // verde — saudável
+
+                  const cpuBarColor =
+                    cpuPct >= 85 ? "oklch(0.62 0.22 25)" :
+                    cpuPct >= 60 ? "oklch(0.72 0.18 50)" :
+                    "oklch(0.72 0.18 142)";
+
+                  const memBarColor =
+                    memPct >= 85 ? "oklch(0.62 0.22 25)" :
+                    memPct >= 60 ? "oklch(0.72 0.18 50)" :
+                    "oklch(0.72 0.18 200)";
+
                   return (
                     <button
                       key={node}
                       onClick={() => onNodeChange(isSelected ? "" : node)}
-                      className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2 group"
+                      className="w-full text-left rounded-lg transition-all font-mono"
                       style={{
-                        background: isSelected ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
-                        color: nodeColor,
-                        border: `1px solid ${isSelected ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
+                        background: isSelected ? "oklch(0.55 0.22 260 / 0.15)" : "oklch(0.14 0.018 250)",
+                        border: `1px solid ${isSelected ? "oklch(0.55 0.22 260 / 0.5)" : "oklch(0.22 0.03 250)"}`,
+                        padding: "8px 10px",
                       }}
                       onMouseEnter={(e) => {
-                        if (!isSelected) e.currentTarget.style.background = "oklch(0.16 0.02 250)";
+                        if (!isSelected) e.currentTarget.style.background = "oklch(0.17 0.022 250)";
                       }}
                       onMouseLeave={(e) => {
-                        if (!isSelected) e.currentTarget.style.background = "transparent";
+                        e.currentTarget.style.background = isSelected
+                          ? "oklch(0.55 0.22 260 / 0.15)"
+                          : "oklch(0.14 0.018 250)";
                       }}
                     >
-                      <span
-                        className="w-1.5 h-1.5 rounded-full shrink-0"
-                        style={{
-                          background: isSelected ? "oklch(0.72 0.18 200)" : "oklch(0.45 0.015 250)",
-                          boxShadow: isSelected ? "0 0 5px oklch(0.72 0.18 200)" : "none",
-                        }}
-                      />
-                      <span className="truncate flex-1">{node}</span>
-                      <span
-                        className="text-[10px] shrink-0 px-1.5 py-0.5 rounded"
-                        style={{
-                          background: isSelected ? "oklch(0.55 0.22 260 / 0.3)" : "oklch(0.16 0.02 250)",
-                          color: isSelected ? "oklch(0.72 0.18 200)" : "oklch(0.45 0.015 250)",
-                        }}
-                      >
-                        {count}
-                      </span>
+                      {/* Linha superior: nome + status dot + contagem */}
+                      <div className="flex items-center gap-1.5 mb-2">
+                        <span
+                          className="w-1.5 h-1.5 rounded-full shrink-0"
+                          style={{
+                            background: statusColor,
+                            boxShadow: `0 0 5px ${statusColor}`,
+                          }}
+                        />
+                        <span
+                          className="flex-1 truncate text-[11px]"
+                          style={{ color: isSelected ? "oklch(0.85 0.008 250)" : "oklch(0.65 0.012 250)" }}
+                        >
+                          {node}
+                        </span>
+                        <span
+                          className="text-[10px] shrink-0 px-1 py-0.5 rounded"
+                          style={{
+                            background: "oklch(0.20 0.025 250)",
+                            color: "oklch(0.45 0.015 250)",
+                          }}
+                        >
+                          {count}
+                        </span>
+                      </div>
+
+                      {/* Barra CPU */}
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[9px] uppercase tracking-wider w-6 shrink-0" style={{ color: "oklch(0.45 0.015 250)" }}>CPU</span>
+                          <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: "oklch(0.20 0.025 250)" }}>
+                            <motion.div
+                              className="h-full rounded-full"
+                              animate={{ width: `${cpuPct}%` }}
+                              transition={{ duration: 0.8, ease: "easeOut" }}
+                              style={{ background: cpuBarColor, boxShadow: cpuPct > 60 ? `0 0 4px ${cpuBarColor}` : "none" }}
+                            />
+                          </div>
+                          <span className="text-[9px] font-mono w-7 text-right shrink-0" style={{ color: cpuBarColor }}>
+                            {cpuPct}%
+                          </span>
+                        </div>
+
+                        {/* Barra MEM */}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[9px] uppercase tracking-wider w-6 shrink-0" style={{ color: "oklch(0.45 0.015 250)" }}>MEM</span>
+                          <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: "oklch(0.20 0.025 250)" }}>
+                            <motion.div
+                              className="h-full rounded-full"
+                              animate={{ width: `${memPct}%` }}
+                              transition={{ duration: 0.8, ease: "easeOut" }}
+                              style={{ background: memBarColor, boxShadow: memPct > 60 ? `0 0 4px ${memBarColor}` : "none" }}
+                            />
+                          </div>
+                          <span className="text-[9px] font-mono w-7 text-right shrink-0" style={{ color: memBarColor }}>
+                            {memPct}%
+                          </span>
+                        </div>
+                      </div>
                     </button>
                   );
                 })}

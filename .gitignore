@@ -107,3 +107,10 @@ temp/
 
 # Webdev artifacts (checkpoint zips, migrations, etc.)
 .webdev/
+
+# Manus platform logs
+.manus-logs/
+
+# Screenshots de desenvolvimento
+screenshots/
+page_texts/

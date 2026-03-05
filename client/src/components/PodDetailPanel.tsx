@@ -14,13 +14,16 @@ import {
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
+import type { HistoryPoint } from "@/hooks/usePodHistory";
 import { PodLogsTab } from "./PodLogsTab";
+import { PodHistoryChart } from "./PodHistoryChart";
 
 interface PodDetailPanelProps {
   pod: PodMetrics | null;
   onClose: () => void;
   apiUrl?: string;
   inCluster?: boolean;
+  getHistory?: (podId: string) => HistoryPoint[];
 }
 
 const STATUS_CONFIG = {
@@ -51,7 +54,7 @@ function formatMem(mib: number): string {
 
 type Tab = "details" | "logs";
 
-export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false }: PodDetailPanelProps) {
+export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
 
   // Reset tab ao trocar de pod
@@ -190,6 +193,33 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false }:
                       </span>
                     </div>
                     <MetricBar value={pod.memoryUsage} max={pod.memoryLimit} color="oklch(0.72 0.18 50)" />
+                  </div>
+
+                  {/* Histórico de consumo */}
+                  <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-widest">Histórico (últimos 5 min)</div>
+                      <div className="flex items-center gap-2 text-[9px] font-mono">
+                        <span className="flex items-center gap-1">
+                          <span className="inline-block w-3 h-0.5 rounded" style={{ background: "oklch(0.72 0.18 142)" }} />
+                          <span style={{ color: "oklch(0.72 0.18 142)" }}>CPU</span>
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <span className="inline-block w-3 h-0.5 rounded" style={{ background: "oklch(0.55 0.22 260)" }} />
+                          <span style={{ color: "oklch(0.55 0.22 260)" }}>MEM</span>
+                        </span>
+                      </div>
+                    </div>
+                    <div
+                      className="rounded-lg p-2"
+                      style={{ background: "oklch(0.12 0.018 250)", border: "1px solid oklch(0.20 0.03 250)" }}
+                    >
+                      <PodHistoryChart
+                        history={getHistory ? getHistory(pod.id) : []}
+                        mode="percent"
+                      />
+                    </div>
                   </div>
 
                   {/* Resources: Requests e Limits */}

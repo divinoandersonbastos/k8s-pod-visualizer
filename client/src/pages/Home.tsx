@@ -5,8 +5,9 @@
  * Layout: Sidebar esquerda | Canvas central | Painel direito (condicional)
  */
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { usePodData, useClusterMeta } from "@/hooks/usePodData";
+import { usePodHistory } from "@/hooks/usePodHistory";
 import { BubbleCanvas } from "@/components/BubbleCanvas";
 import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
@@ -70,6 +71,14 @@ export default function Home() {
     });
     return result;
   }, [pods]);
+
+  // Histórico de métricas por pod (acumulado a cada refresh)
+  const { getHistory, recordSnapshot } = usePodHistory();
+
+  // Registrar snapshot sempre que os pods forem atualizados
+  useEffect(() => {
+    if (pods.length > 0) recordSnapshot(pods);
+  }, [pods, recordSnapshot]);
 
   const filteredPods = useMemo(() => {
     let result = pods;
@@ -229,6 +238,7 @@ export default function Home() {
             onClose={() => setSelectedPod(null)}
             apiUrl={apiUrl}
             inCluster={inCluster}
+            getHistory={getHistory}
           />
 
           {/* Painel de alertas */}

@@ -12,6 +12,7 @@ import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
 import { PodDetailPanel } from "@/components/PodDetailPanel";
 import { ConfigModal } from "@/components/ConfigModal";
+import { AlertsPanel } from "@/components/AlertsPanel";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -21,6 +22,7 @@ export default function Home() {
   const [selectedNode, setSelectedNode] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showConfig, setShowConfig] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
   const [refreshInterval, setRefreshInterval] = useState(3000);
@@ -131,6 +133,7 @@ export default function Home() {
           searchQuery={searchQuery}
           onSearchChange={setSearchQuery}
           onShowConfig={() => setShowConfig(true)}
+          onShowAlerts={() => setShowAlerts(true)}
           clusterName={clusterName}
         />
 
@@ -218,6 +221,17 @@ export default function Home() {
           <PodDetailPanel
             pod={selectedPod}
             onClose={() => setSelectedPod(null)}
+          />
+
+          {/* Painel de alertas */}
+          <AlertsPanel
+            open={showAlerts}
+            onClose={() => setShowAlerts(false)}
+            pods={pods}
+            onSelectPod={(pod) => {
+              setSelectedPod(pod);
+              setShowAlerts(false);
+            }}
           />
         </main>
       </div>

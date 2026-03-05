@@ -4,7 +4,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -15,10 +15,11 @@ interface ClusterHeaderProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onShowConfig: () => void;
+  onShowAlerts?: () => void;
   clusterName?: string;
 }
 
-export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchChange, onShowConfig, clusterName }: ClusterHeaderProps) {
+export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchChange, onShowConfig, onShowAlerts, clusterName }: ClusterHeaderProps) {
   const [showInfo, setShowInfo] = useState(false);
 
   return (
@@ -133,6 +134,35 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
         >
           <RefreshCw size={14} />
         </button>
+        {/* Botão de alertas com badge */}
+        {onShowAlerts && (
+          <button
+            onClick={onShowAlerts}
+            className="relative p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Alertas de recursos"
+            style={{
+              color: stats && stats.criticalAlerts > 0
+                ? "oklch(0.72 0.18 25)"
+                : stats && stats.totalAlerts > 0
+                ? "oklch(0.72 0.18 50)"
+                : "oklch(0.55 0.015 250)",
+            }}
+          >
+            <Bell size={14} />
+            {stats && stats.totalAlerts > 0 && (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-mono font-bold flex items-center justify-center"
+                style={{
+                  background: stats.criticalAlerts > 0 ? "oklch(0.62 0.22 25)" : "oklch(0.72 0.18 50)",
+                  color: "oklch(0.98 0 0)",
+                  boxShadow: stats.criticalAlerts > 0 ? "0 0 6px oklch(0.62 0.22 25)" : "0 0 4px oklch(0.72 0.18 50)",
+                }}
+              >
+                {stats.totalAlerts > 99 ? "99+" : stats.totalAlerts}
+              </span>
+            )}
+          </button>
+        )}
         <button
           onClick={() => setShowInfo((v) => !v)}
           className="p-2 rounded-lg transition-all hover:bg-white/5"

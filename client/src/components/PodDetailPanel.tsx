@@ -4,7 +4,7 @@
  */
 
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock } from "lucide-react";
+import { X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock, AlertCircle, AlertTriangle, Info } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 
 interface PodDetailPanelProps {
@@ -134,6 +134,108 @@ export function PodDetailPanel({ pod, onClose }: PodDetailPanelProps) {
               </div>
               <MetricBar value={pod.memoryUsage} max={pod.memoryLimit} color="oklch(0.72 0.18 50)" />
             </div>
+
+            {/* Resources: Requests e Limits */}
+            <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+            <div className="space-y-3">
+              <div className="text-[10px] text-slate-500 uppercase tracking-widest">Resources do Deployment</div>
+              <div className="grid grid-cols-2 gap-2">
+                {/* CPU Requests */}
+                <div className="rounded-lg p-2.5 space-y-1" style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                  <div className="flex items-center gap-1.5 text-[9px] text-slate-500 uppercase tracking-wider">
+                    <Cpu size={9} />
+                    <span>CPU Request</span>
+                  </div>
+                  {pod.resources.requests.cpu !== null ? (
+                    <div className="font-mono text-sm font-bold" style={{ color: "oklch(0.72 0.18 200)" }}>
+                      {pod.resources.requests.cpu}m
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <AlertTriangle size={10} style={{ color: "oklch(0.72 0.18 50)" }} />
+                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.72 0.18 50)" }}>Não definido</span>
+                    </div>
+                  )}
+                </div>
+                {/* CPU Limit */}
+                <div className="rounded-lg p-2.5 space-y-1" style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                  <div className="flex items-center gap-1.5 text-[9px] text-slate-500 uppercase tracking-wider">
+                    <Cpu size={9} />
+                    <span>CPU Limit</span>
+                  </div>
+                  {pod.resources.limits.cpu !== null ? (
+                    <div className="font-mono text-sm font-bold" style={{ color: "oklch(0.72 0.18 142)" }}>
+                      {pod.resources.limits.cpu}m
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <AlertCircle size={10} style={{ color: "oklch(0.62 0.22 25)" }} />
+                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.62 0.22 25)" }}>Não definido</span>
+                    </div>
+                  )}
+                </div>
+                {/* MEM Request */}
+                <div className="rounded-lg p-2.5 space-y-1" style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                  <div className="flex items-center gap-1.5 text-[9px] text-slate-500 uppercase tracking-wider">
+                    <MemoryStick size={9} />
+                    <span>MEM Request</span>
+                  </div>
+                  {pod.resources.requests.memory !== null ? (
+                    <div className="font-mono text-sm font-bold" style={{ color: "oklch(0.72 0.18 200)" }}>
+                      {pod.resources.requests.memory >= 1024 ? `${(pod.resources.requests.memory / 1024).toFixed(1)}Gi` : `${pod.resources.requests.memory}Mi`}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <AlertTriangle size={10} style={{ color: "oklch(0.72 0.18 50)" }} />
+                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.72 0.18 50)" }}>Não definido</span>
+                    </div>
+                  )}
+                </div>
+                {/* MEM Limit */}
+                <div className="rounded-lg p-2.5 space-y-1" style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                  <div className="flex items-center gap-1.5 text-[9px] text-slate-500 uppercase tracking-wider">
+                    <MemoryStick size={9} />
+                    <span>MEM Limit</span>
+                  </div>
+                  {pod.resources.limits.memory !== null ? (
+                    <div className="font-mono text-sm font-bold" style={{ color: "oklch(0.72 0.18 50)" }}>
+                      {pod.resources.limits.memory >= 1024 ? `${(pod.resources.limits.memory / 1024).toFixed(1)}Gi` : `${pod.resources.limits.memory}Mi`}
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <AlertCircle size={10} style={{ color: "oklch(0.62 0.22 25)" }} />
+                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.62 0.22 25)" }}>Não definido</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Alertas ativos do pod */}
+            {pod.alerts.length > 0 && (
+              <>
+                <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+                <div className="space-y-2">
+                  <div className="text-[10px] text-slate-500 uppercase tracking-widest">Alertas Ativos ({pod.alerts.length})</div>
+                  <div className="space-y-1.5">
+                    {pod.alerts.map((alert) => {
+                      const color = alert.severity === "critical" ? "oklch(0.62 0.22 25)" : alert.severity === "warning" ? "oklch(0.72 0.18 50)" : "oklch(0.72 0.18 200)";
+                      const bg = alert.severity === "critical" ? "oklch(0.62 0.22 25 / 0.1)" : alert.severity === "warning" ? "oklch(0.72 0.18 50 / 0.1)" : "oklch(0.72 0.18 200 / 0.08)";
+                      const border = alert.severity === "critical" ? "oklch(0.62 0.22 25 / 0.3)" : alert.severity === "warning" ? "oklch(0.72 0.18 50 / 0.3)" : "oklch(0.72 0.18 200 / 0.2)";
+                      const icon = alert.severity === "critical" ? <AlertCircle size={10} /> : alert.severity === "warning" ? <AlertTriangle size={10} /> : <Info size={10} />;
+                      return (
+                        <div key={alert.type} className="flex items-start gap-2 p-2 rounded-lg" style={{ background: bg, border: `1px solid ${border}` }}>
+                          <span style={{ color, marginTop: "1px" }}>{icon}</span>
+                          <span className="text-[10px] font-mono leading-relaxed" style={{ color: "oklch(0.65 0.012 250)" }}>
+                            {alert.message}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
 
             {/* Divisor */}
             <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />

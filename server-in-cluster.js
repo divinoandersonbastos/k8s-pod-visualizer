@@ -119,25 +119,37 @@ async function getPodsWithMetrics() {
     .map((p) => {
       const key     = `${p.metadata.namespace}/${p.metadata.name}`;
       const usage   = metricsMap[key] || { cpu: 0, mem: 0 };
-      const container = p.spec?.containers?.[0] || {};
-      const req     = container.resources?.requests || {};
-      const lim     = container.resources?.limits   || {};
+      // Agrega resources de todos os containers
+      const allContainers = p.spec?.containers || [];
+      const containerNames = allContainers.map((c) => c.name);
+
+      // Soma requests/limits de todos os containers
+      let totalCpuReq = null, totalCpuLim = null, totalMemReq = null, totalMemLim = null;
+      for (const c of allContainers) {
+        const r = c.resources?.requests || {};
+        const l = c.resources?.limits   || {};
+        if (r.cpu)    totalCpuReq = (totalCpuReq || 0) + parseCPU(r.cpu);
+        if (l.cpu)    totalCpuLim = (totalCpuLim || 0) + parseCPU(l.cpu);
+        if (r.memory) totalMemReq = (totalMemReq || 0) + parseMem(r.memory);
+        if (l.memory) totalMemLim = (totalMemLim || 0) + parseMem(l.memory);
+      }
 
       return {
-        name:        p.metadata.name,
-        namespace:   p.metadata.namespace,
-        node:        p.spec?.nodeName || "unknown",
-        phase:       p.status?.phase  || "Unknown",
-        cpuUsage:    usage.cpu,
-        memoryUsage: usage.mem,
+        name:           p.metadata.name,
+        namespace:      p.metadata.namespace,
+        node:           p.spec?.nodeName || "unknown",
+        phase:          p.status?.phase  || "Unknown",
+        cpuUsage:       usage.cpu,
+        memoryUsage:    usage.mem,
+        containerNames,
         resources: {
           requests: {
-            cpu:    req.cpu    ? parseCPU(req.cpu)    : null,
-            memory: req.memory ? parseMem(req.memory) : null,
+            cpu:    totalCpuReq,
+            memory: totalMemReq,
           },
           limits: {
-            cpu:    lim.cpu    ? parseCPU(lim.cpu)    : null,
-            memory: lim.memory ? parseMem(lim.memory) : null,
+            cpu:    totalCpuLim,
+            memory: totalMemLim,
           },
         },
       };
@@ -316,6 +328,30 @@ const server = http.createServer(async (req, res) => {
       k8sReq.end();
     } catch (err) {
       console.error("[error] /api/logs:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/containers/:namespace/:pod ──────────────────────────────────────────
+  const containersMatch = url.pathname.match(/^\/api\/containers\/([^/]+)\/([^/]+)$/);
+  if (containersMatch) {
+    const [, namespace, podName] = containersMatch;
+    try {
+      const result = await k8sRequest(`/api/v1/namespaces/${namespace}/pods/${podName}`);
+      const pod = result.body;
+      if (result.status !== 200 || !pod?.spec?.containers) {
+        res.writeHead(result.status || 404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: pod?.message || "Pod não encontrado" }));
+        return;
+      }
+      const containers = pod.spec.containers.map((c) => c.name);
+      const initContainers = (pod.spec.initContainers || []).map((c) => c.name);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ containers, initContainers }));
+    } catch (err) {
+      console.error("[error] /api/containers:", err.message);
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
     }

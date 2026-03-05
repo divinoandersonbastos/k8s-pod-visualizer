@@ -416,6 +416,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                 <PodLogsTab
                   podName={pod.name}
                   namespace={pod.namespace}
+                  containerNames={pod.containerNames}
                   apiUrl={apiUrl}
                   inCluster={inCluster}
                 />

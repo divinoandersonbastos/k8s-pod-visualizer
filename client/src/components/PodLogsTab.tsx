@@ -4,6 +4,7 @@
  *
  * Funcionalidades:
  * - Busca logs via /api/logs/:namespace/:pod (in-cluster) ou kubectl proxy
+ * - Seletor de container para pods multi-container
  * - Auto-scroll para o final com toggle manual
  * - Colorização por nível (ERROR, WARN, INFO, DEBUG)
  * - Filtro de texto em tempo real
@@ -16,13 +17,14 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import {
   RefreshCw, Download, Search, X, ChevronDown,
-  AlertTriangle, Info, Bug, Terminal, Loader2, WifiOff,
+  AlertTriangle, Info, Bug, Terminal, Loader2, WifiOff, Layers,
 } from "lucide-react";
 
 interface PodLogsTabProps {
   podName: string;
   namespace: string;
-  apiUrl?: string;   // URL base da API (ex: http://localhost:8001). Vazio = in-cluster
+  containerNames?: string[];  // Lista de containers do pod
+  apiUrl?: string;            // URL base da API (ex: http://localhost:8001). Vazio = in-cluster
   inCluster?: boolean;
 }
 
@@ -77,7 +79,13 @@ const LEVEL_STYLES: Record<LogLevel, { color: string; bg: string; label: string 
 const TAIL_OPTIONS = [50, 100, 200, 500, 1000];
 
 // ── Componente principal ──────────────────────────────────────────────────────
-export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false }: PodLogsTabProps) {
+export function PodLogsTab({
+  podName,
+  namespace,
+  containerNames = [],
+  apiUrl = "",
+  inCluster = false,
+}: PodLogsTabProps) {
   const [lines, setLines]           = useState<LogLine[]>([]);
   const [loading, setLoading]       = useState(false);
   const [error, setError]           = useState<string | null>(null);
@@ -87,9 +95,25 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
   const [autoScroll, setAutoScroll] = useState(true);
   const [levelFilter, setLevelFilter] = useState<LogLevel | "all">("all");
 
-  const bottomRef   = useRef<HTMLDivElement>(null);
+  // Seletor de container — inicializa com o primeiro container disponível
+  const [selectedContainer, setSelectedContainer] = useState<string>(() =>
+    containerNames.length > 0 ? containerNames[0] : ""
+  );
+
+  // Quando o pod muda, resetar o container selecionado
+  const prevPodRef = useRef<string>("");
+  useEffect(() => {
+    if (prevPodRef.current !== podName) {
+      prevPodRef.current = podName;
+      setSelectedContainer(containerNames.length > 0 ? containerNames[0] : "");
+      setLines([]);
+      setError(null);
+    }
+  }, [podName, containerNames]);
+
+  const bottomRef    = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // ── Fetch de logs ───────────────────────────────────────────────────────────
   const fetchLogs = useCallback(async () => {
@@ -101,15 +125,17 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
       if (inCluster || !apiUrl) {
         // In-cluster: usa o endpoint do server-in-cluster.js
         url = `/api/logs/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}?tail=${tail}&timestamps=true`;
+        if (selectedContainer) url += `&container=${encodeURIComponent(selectedContainer)}`;
       } else {
         // Via kubectl proxy
         url = `${apiUrl}/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}/log?tailLines=${tail}&timestamps=true`;
+        if (selectedContainer) url += `&container=${encodeURIComponent(selectedContainer)}`;
       }
 
       const res = await fetch(url);
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(`HTTP ${res.status}: ${text.slice(0, 200)}`);
+        throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
       }
 
       const text = await res.text();
@@ -124,9 +150,9 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
     } finally {
       setLoading(false);
     }
-  }, [podName, namespace, apiUrl, inCluster, tail]);
+  }, [podName, namespace, apiUrl, inCluster, tail, selectedContainer]);
 
-  // Fetch inicial e ao mudar pod/tail
+  // Fetch inicial e ao mudar pod/tail/container
   useEffect(() => {
     fetchLogs();
   }, [fetchLogs]);
@@ -168,7 +194,7 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
     const blob = new Blob([content], { type: "text/plain" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `${podName}-${namespace}.log`;
+    a.download = `${podName}-${selectedContainer || namespace}.log`;
     a.click();
     URL.revokeObjectURL(a.href);
   };
@@ -179,8 +205,48 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
     return acc;
   }, {});
 
+  const isMultiContainer = containerNames.length > 1;
+
   return (
     <div className="flex flex-col h-full" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
+
+      {/* ── Seletor de container (apenas para multi-container) ─────────────── */}
+      {isMultiContainer && (
+        <div
+          className="flex items-center gap-2 px-3 py-1.5"
+          style={{
+            borderBottom: "1px solid oklch(0.22 0.03 250)",
+            background: "oklch(0.10 0.015 250)",
+          }}
+        >
+          <Layers size={11} style={{ color: "oklch(0.55 0.18 260)" }} />
+          <span className="text-[10px]" style={{ color: "oklch(0.50 0.01 250)" }}>
+            Container:
+          </span>
+          <div className="flex items-center gap-1 flex-wrap">
+            {containerNames.map((name) => (
+              <button
+                key={name}
+                onClick={() => setSelectedContainer(name)}
+                className="px-2 py-0.5 rounded text-[10px] font-mono transition-all"
+                style={{
+                  background: selectedContainer === name
+                    ? "oklch(0.55 0.18 260 / 0.25)"
+                    : "oklch(0.16 0.02 250)",
+                  border: `1px solid ${selectedContainer === name
+                    ? "oklch(0.55 0.18 260 / 0.6)"
+                    : "oklch(0.26 0.04 250)"}`,
+                  color: selectedContainer === name
+                    ? "oklch(0.75 0.18 260)"
+                    : "oklch(0.55 0.01 250)",
+                }}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* ── Toolbar ─────────────────────────────────────────────────────────── */}
       <div
@@ -310,6 +376,11 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
             <Terminal size={9} />
             {podName}
           </span>
+          {selectedContainer && isMultiContainer && (
+            <span style={{ color: "oklch(0.65 0.15 260)" }}>
+              [{selectedContainer}]
+            </span>
+          )}
           <span>{namespace}</span>
           <span style={{ color: "oklch(0.55 0.01 250)" }}>
             {filtered.length} / {lines.length} linhas
@@ -368,6 +439,11 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
             <div>
               <div className="font-semibold mb-1">Erro ao buscar logs</div>
               <div className="font-mono text-[10px] opacity-80">{error}</div>
+              {isMultiContainer && (
+                <div className="mt-2 opacity-70 text-[10px]">
+                  Este pod tem múltiplos containers. Selecione o container desejado acima.
+                </div>
+              )}
               {!inCluster && !apiUrl && (
                 <div className="mt-2 opacity-60 text-[10px]">
                   Dica: configure a URL da API nas configurações ou rode dentro do cluster para acesso automático.
@@ -381,7 +457,7 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
         {loading && lines.length === 0 && !error && (
           <div className="flex items-center justify-center h-32 gap-2" style={{ color: "oklch(0.45 0.01 250)" }}>
             <Loader2 size={16} className="animate-spin" />
-            <span className="text-xs">Buscando logs...</span>
+            <span className="text-xs">Buscando logs{selectedContainer ? ` de ${selectedContainer}` : ""}...</span>
           </div>
         )}
 
@@ -422,45 +498,35 @@ export function PodLogsTab({ podName, namespace, apiUrl = "", inCluster = false 
                   </span>
                   {/* Mensagem */}
                   <span
-                    className="text-[11px] leading-5 break-all whitespace-pre-wrap"
-                    style={{ color: style.color }}
+                    className="text-[11px] leading-relaxed break-all"
+                    style={{ color: style.color === "oklch(0.70 0.008 250)" ? "oklch(0.70 0.008 250)" : style.color }}
                   >
-                    {/* Highlight do filtro */}
-                    {filter
-                      ? line.message.split(new RegExp(`(${filter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi")).map((part, i) =>
-                          part.toLowerCase() === filter.toLowerCase()
-                            ? <mark key={i} style={{ background: "oklch(0.80 0.18 70 / 0.3)", color: "inherit", borderRadius: "2px" }}>{part}</mark>
-                            : part
-                        )
-                      : line.message
-                    }
+                    {line.message}
                   </span>
                 </div>
               );
             })}
+            <div ref={bottomRef} />
           </div>
         )}
-
-        {/* Anchor para auto-scroll */}
-        <div ref={bottomRef} />
       </div>
 
-      {/* ── Botão de scroll para o final ────────────────────────────────────── */}
-      {!autoScroll && (
+      {/* ── Auto-scroll indicator ────────────────────────────────────────────── */}
+      {!autoScroll && lines.length > 0 && (
         <button
           onClick={() => {
             setAutoScroll(true);
             bottomRef.current?.scrollIntoView({ behavior: "smooth" });
           }}
-          className="absolute bottom-4 right-4 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11px] shadow-lg transition-all"
+          className="flex items-center justify-center gap-1 py-1 text-[10px] transition-all"
           style={{
-            background: "oklch(0.55 0.22 260 / 0.9)",
-            color: "oklch(0.95 0.005 250)",
-            border: "1px solid oklch(0.65 0.22 260)",
+            background: "oklch(0.55 0.22 260 / 0.15)",
+            borderTop: "1px solid oklch(0.55 0.22 260 / 0.3)",
+            color: "oklch(0.72 0.18 260)",
           }}
         >
-          <ChevronDown size={12} />
-          Ir ao final
+          <ChevronDown size={10} />
+          Ir para o final
         </button>
       )}
     </div>

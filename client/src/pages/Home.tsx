@@ -227,6 +227,8 @@ export default function Home() {
           <PodDetailPanel
             pod={selectedPod}
             onClose={() => setSelectedPod(null)}
+            apiUrl={apiUrl}
+            inCluster={inCluster}
           />
 
           {/* Painel de alertas */}

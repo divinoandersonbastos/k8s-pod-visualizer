@@ -264,6 +264,64 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
+  const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
+  if (logsMatch) {
+    const [, namespace, podName] = logsMatch;
+    const container   = url.searchParams.get("container") || "";
+    const tailLines   = parseInt(url.searchParams.get("tail")   || "200");
+    const sinceSeconds = url.searchParams.get("since") ? parseInt(url.searchParams.get("since")) : null;
+    const previous    = url.searchParams.get("previous") === "true";
+
+    let logPath = `/api/v1/namespaces/${namespace}/pods/${podName}/log?tailLines=${tailLines}&timestamps=true`;
+    if (container)    logPath += `&container=${encodeURIComponent(container)}`;
+    if (sinceSeconds) logPath += `&sinceSeconds=${sinceSeconds}`;
+    if (previous)     logPath += `&previous=true`;
+
+    try {
+      const token = getToken();
+      const ca    = getCA();
+      const apiHost = K8S_API.replace(/^https?:\/\//, "");
+      const isHttps = K8S_API.startsWith("https");
+
+      const options = {
+        hostname: apiHost,
+        port: isHttps ? 443 : 80,
+        path: logPath,
+        method: "GET",
+        headers: {
+          Accept: "text/plain",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        ...(ca ? { ca } : { rejectUnauthorized: false }),
+      };
+
+      const proto = isHttps ? https : http;
+      const k8sReq = proto.request(options, (k8sRes) => {
+        res.writeHead(k8sRes.statusCode, {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "no-cache",
+        });
+        k8sRes.pipe(res);
+      });
+      k8sReq.on("error", (err) => {
+        console.error("[error] /api/logs:", err.message);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      k8sReq.setTimeout(15000, () => { k8sReq.destroy(new Error("timeout")); });
+      k8sReq.end();
+    } catch (err) {
+      console.error("[error] /api/logs:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   // ── /api/cluster-info ──────────────────────────────────────────────────────
   if (url.pathname === "/api/cluster-info") {
     try {

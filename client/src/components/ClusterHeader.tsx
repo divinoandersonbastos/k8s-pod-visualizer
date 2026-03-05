@@ -15,9 +15,10 @@ interface ClusterHeaderProps {
   searchQuery: string;
   onSearchChange: (q: string) => void;
   onShowConfig: () => void;
+  clusterName?: string;
 }
 
-export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchChange, onShowConfig }: ClusterHeaderProps) {
+export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchChange, onShowConfig, clusterName }: ClusterHeaderProps) {
   const [showInfo, setShowInfo] = useState(false);
 
   return (
@@ -75,6 +76,25 @@ export function ClusterHeader({ stats, isLive, onRefresh, searchQuery, onSearchC
             <span className="text-[10px] text-slate-500">alertas</span>
           </div>
         </div>
+      )}
+
+      {/* Nome do cluster */}
+      {clusterName && (
+        <>
+          <div className="hidden md:block w-px h-5 shrink-0" style={{ background: "oklch(0.28 0.04 250)" }} />
+          <div className="hidden md:flex items-center gap-2 shrink-0">
+            <div
+              className="w-2 h-2 rounded-full shrink-0"
+              style={{ background: "oklch(0.72 0.18 200)", boxShadow: "0 0 5px oklch(0.72 0.18 200)" }}
+            />
+            <span
+              className="text-xs font-mono font-semibold"
+              style={{ color: "oklch(0.72 0.18 200)" }}
+            >
+              {clusterName}
+            </span>
+          </div>
+        </>
       )}
 
       {/* Separador */}

@@ -12,15 +12,17 @@ interface ConfigModalProps {
   onClose: () => void;
   apiUrl: string;
   refreshInterval: number;
-  onSave: (apiUrl: string, refreshInterval: number) => void;
+  clusterName?: string;
+  onSave: (apiUrl: string, refreshInterval: number, clusterName: string) => void;
 }
 
-export function ConfigModal({ open, onClose, apiUrl, refreshInterval, onSave }: ConfigModalProps) {
+export function ConfigModal({ open, onClose, apiUrl, refreshInterval, clusterName = "", onSave }: ConfigModalProps) {
   const [localUrl, setLocalUrl] = useState(apiUrl);
   const [localInterval, setLocalInterval] = useState(refreshInterval);
+  const [localClusterName, setLocalClusterName] = useState(clusterName);
 
   const handleSave = () => {
-    onSave(localUrl, localInterval);
+    onSave(localUrl, localInterval, localClusterName);
     onClose();
   };
 
@@ -93,6 +95,30 @@ export function ConfigModal({ open, onClose, apiUrl, refreshInterval, onSave }: 
                   <div className="text-slate-400">
                     Para conectar ao cluster real, inicie o <span className="font-mono text-slate-200">kubectl proxy</span> e
                     configure a URL abaixo. Sem URL configurada, dados simulados são usados.
+                  </div>
+                </div>
+
+                {/* Nome do cluster */}
+                <div className="space-y-2">
+                  <label className="text-[11px] text-slate-400 uppercase tracking-wider">
+                    Nome do Cluster
+                  </label>
+                  <input
+                    type="text"
+                    value={localClusterName}
+                    onChange={(e) => setLocalClusterName(e.target.value)}
+                    placeholder="ex: prod-cluster, minikube, kind-local"
+                    className="w-full px-3 py-2.5 rounded-lg text-xs font-mono outline-none transition-all"
+                    style={{
+                      background: "oklch(0.16 0.02 250)",
+                      border: "1px solid oklch(0.28 0.04 250)",
+                      color: "oklch(0.85 0.008 250)",
+                    }}
+                    onFocus={(e) => { e.currentTarget.style.borderColor = "oklch(0.55 0.22 260 / 0.6)"; }}
+                    onBlur={(e) => { e.currentTarget.style.borderColor = "oklch(0.28 0.04 250)"; }}
+                  />
+                  <div className="text-[10px] text-slate-600 font-mono">
+                    Exibido no header para identificar o cluster ativo
                   </div>
                 </div>
 

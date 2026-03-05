@@ -17,9 +17,12 @@ interface ClusterSidebarProps {
   onLayoutModeChange: (mode: LayoutMode) => void;
   selectedNamespace: string;
   onNamespaceChange: (ns: string) => void;
+  selectedNode: string;
+  onNodeChange: (node: string) => void;
   isLive: boolean;
   onToggleLive: () => void;
   nsCounts?: Record<string, number>;
+  nodeCounts?: Record<string, number>;
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -69,11 +72,15 @@ export function ClusterSidebar({
   onLayoutModeChange,
   selectedNamespace,
   onNamespaceChange,
+  selectedNode,
+  onNodeChange,
   isLive,
   onToggleLive,
   nsCounts = {},
+  nodeCounts = {},
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded] = useState(true);
+  const [nodeExpanded, setNodeExpanded] = useState(true);
 
   return (
     <aside
@@ -290,6 +297,83 @@ export function ClusterSidebar({
                       )}
                       <span className="truncate flex-1" style={{ maxWidth: 'calc(100% - 40px)' }}>{ns}</span>
                       <span className="text-[10px] text-slate-600 shrink-0">{nsCounts[ns] ?? ''}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Filtro por node */}
+        {stats && stats.nodes.length > 0 && (
+          <div className="space-y-2">
+            <button
+              onClick={() => setNodeExpanded((v) => !v)}
+              className="flex items-center justify-between w-full text-[10px] text-slate-500 uppercase tracking-widest"
+            >
+              <span>Node</span>
+              {nodeExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+            {nodeExpanded && (
+              <div className="space-y-1">
+                {/* Botão "Todos os nodes" */}
+                <button
+                  onClick={() => onNodeChange("")}
+                  className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2"
+                  style={{
+                    background: selectedNode === "" ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
+                    color: selectedNode === "" ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+                    border: `1px solid ${selectedNode === "" ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
+                  }}
+                >
+                  <Server size={10} className="shrink-0 opacity-50" />
+                  <span className="flex-1">Todos</span>
+                  <span className="text-[10px] text-slate-600 shrink-0">{stats.totalPods}</span>
+                </button>
+
+                {/* Lista de nodes */}
+                {stats.nodes.map((node) => {
+                  const isSelected = selectedNode === node;
+                  const count = nodeCounts[node] ?? 0;
+                  // Calcular uso médio de CPU dos pods neste node para colorir o indicador
+                  const nodeColor = isSelected
+                    ? "oklch(0.72 0.18 200)"
+                    : "oklch(0.55 0.015 250)";
+                  return (
+                    <button
+                      key={node}
+                      onClick={() => onNodeChange(isSelected ? "" : node)}
+                      className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2 group"
+                      style={{
+                        background: isSelected ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
+                        color: nodeColor,
+                        border: `1px solid ${isSelected ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
+                      }}
+                      onMouseEnter={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = "oklch(0.16 0.02 250)";
+                      }}
+                      onMouseLeave={(e) => {
+                        if (!isSelected) e.currentTarget.style.background = "transparent";
+                      }}
+                    >
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{
+                          background: isSelected ? "oklch(0.72 0.18 200)" : "oklch(0.45 0.015 250)",
+                          boxShadow: isSelected ? "0 0 5px oklch(0.72 0.18 200)" : "none",
+                        }}
+                      />
+                      <span className="truncate flex-1">{node}</span>
+                      <span
+                        className="text-[10px] shrink-0 px-1.5 py-0.5 rounded"
+                        style={{
+                          background: isSelected ? "oklch(0.55 0.22 260 / 0.3)" : "oklch(0.16 0.02 250)",
+                          color: isSelected ? "oklch(0.72 0.18 200)" : "oklch(0.45 0.015 250)",
+                        }}
+                      >
+                        {count}
+                      </span>
                     </button>
                   );
                 })}

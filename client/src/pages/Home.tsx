@@ -18,9 +18,11 @@ export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>("cpu");
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("free");
   const [selectedNamespace, setSelectedNamespace] = useState("");
+  const [selectedNode, setSelectedNode] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showConfig, setShowConfig] = useState(false);
   const [apiUrl, setApiUrl] = useState("");
+  const [clusterName, setClusterName] = useState("");
   const [refreshInterval, setRefreshInterval] = useState(3000);
 
   const { pods, stats, loading, isLive, toggleLive, selectedPod, setSelectedPod, refresh } = usePodData({
@@ -35,10 +37,20 @@ export default function Home() {
     return counts;
   }, [pods]);
 
+  // Contagem de pods por node (sobre todos os pods, sem filtros)
+  const nodeCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    pods.forEach((p) => { counts[p.node] = (counts[p.node] || 0) + 1; });
+    return counts;
+  }, [pods]);
+
   const filteredPods = useMemo(() => {
     let result = pods;
     if (selectedNamespace) {
       result = result.filter((p) => p.namespace === selectedNamespace);
+    }
+    if (selectedNode) {
+      result = result.filter((p) => p.node === selectedNode);
     }
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
@@ -50,11 +62,12 @@ export default function Home() {
       );
     }
     return result;
-  }, [pods, selectedNamespace, searchQuery]);
+  }, [pods, selectedNamespace, selectedNode, searchQuery]);
 
-  const handleSaveConfig = (url: string, interval: number) => {
+  const handleSaveConfig = (url: string, interval: number, name: string) => {
     setApiUrl(url);
     setRefreshInterval(interval);
+    setClusterName(name);
   };
 
   if (loading) {
@@ -92,14 +105,15 @@ export default function Home() {
       style={{ background: "oklch(0.10 0.015 250)", height: "100vh" }}
     >
       {/* Header */}
-      <ClusterHeader
-        stats={stats}
-        isLive={isLive}
-        onRefresh={refresh}
-        searchQuery={searchQuery}
-        onSearchChange={setSearchQuery}
-        onShowConfig={() => setShowConfig(true)}
-      />
+        <ClusterHeader
+          stats={stats}
+          isLive={isLive}
+          onRefresh={refresh}
+          searchQuery={searchQuery}
+          onSearchChange={setSearchQuery}
+          onShowConfig={() => setShowConfig(true)}
+          clusterName={clusterName}
+        />
 
       {/* Body */}
       <div className="flex flex-1 overflow-hidden relative">
@@ -112,9 +126,12 @@ export default function Home() {
           onLayoutModeChange={setLayoutMode}
           selectedNamespace={selectedNamespace}
           onNamespaceChange={setSelectedNamespace}
+          selectedNode={selectedNode}
+          onNodeChange={setSelectedNode}
           isLive={isLive}
           onToggleLive={toggleLive}
           nsCounts={nsCounts}
+          nodeCounts={nodeCounts}
         />
 
         {/* Canvas principal */}
@@ -256,6 +273,7 @@ export default function Home() {
         onClose={() => setShowConfig(false)}
         apiUrl={apiUrl}
         refreshInterval={refreshInterval}
+        clusterName={clusterName}
         onSave={handleSaveConfig}
       />
     </div>

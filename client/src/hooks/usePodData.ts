@@ -104,19 +104,30 @@ export interface ClusterStats {
   criticalAlerts: number;
 }
 
-// ── Detecção de ambiente ───────────────────────────────────────────────────────
-// Quando servido pelo server-in-cluster.js, o endpoint /api/pods existe no mesmo origin
+// ── Detecção de ambiente (v2 — valida Content-Type para evitar falso positivo no Vite) ───────
+// Quando servido pelo server-in-cluster.js, o endpoint /api/cluster-info retorna JSON.
+// No Vite/SPA, qualquer rota desconhecida retorna index.html com Content-Type text/html.
+// Por isso validamos o Content-Type E tentamos parsear o JSON antes de confirmar.
 let _inClusterDetected: boolean | null = null;
 
 async function detectInCluster(): Promise<boolean> {
   if (_inClusterDetected !== null) return _inClusterDetected;
   try {
-    const res = await fetch("/api/cluster-info", { signal: AbortSignal.timeout(2000) });
-    _inClusterDetected = res.ok;
+    const res = await fetch("/api/cluster-info", {
+      signal: AbortSignal.timeout(2000),
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) { _inClusterDetected = false; return false; }
+    // Rejeita se a resposta for HTML (SPA fallback do Vite)
+    const ct = res.headers.get("content-type") ?? "";
+    if (!ct.includes("application/json")) { _inClusterDetected = false; return false; }
+    // Tenta parsear para garantir que é JSON válido
+    const data = await res.json();
+    _inClusterDetected = typeof data === "object" && data !== null && "inCluster" in data;
   } catch {
     _inClusterDetected = false;
   }
-  return _inClusterDetected;
+  return _inClusterDetected ?? false;
 }
 
 // ── Parsers de unidades Kubernetes ────────────────────────────────────────────
@@ -400,8 +411,13 @@ export function usePodData(options: UsePodDataOptions = {}) {
     const url = inCluster ? "/api/pods" : (apiUrl ? `${apiUrl}/api/pods` : null);
     if (!url) return null;
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(5000),
+        headers: { Accept: "application/json" },
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const ct = res.headers.get("content-type") ?? "";
+      if (!ct.includes("application/json")) throw new Error(`Content-Type inesperado: ${ct}`);
       const data = await res.json();
       const items: Record<string, unknown>[] = data.items ?? data ?? [];
       return items.map((raw, i) => apiPodToMetrics(raw, i));
@@ -440,7 +456,12 @@ export function usePodData(options: UsePodDataOptions = {}) {
       if (ic) {
         // Dentro do cluster: busca dados reais imediatamente
         try {
-          const res  = await fetch("/api/pods", { signal: AbortSignal.timeout(5000) });
+          const res  = await fetch("/api/pods", {
+            signal: AbortSignal.timeout(5000),
+            headers: { Accept: "application/json" },
+          });
+          const ct = res.headers.get("content-type") ?? "";
+          if (!res.ok || !ct.includes("application/json")) throw new Error(`Resposta inválida: ${ct}`);
           const data = await res.json();
           const items: Record<string, unknown>[] = data.items ?? data ?? [];
           const realPods = items.map((raw, i) => apiPodToMetrics(raw, i));

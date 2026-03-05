@@ -1,0 +1,221 @@
+/**
+ * PodDetailPanel — Painel lateral com detalhes do pod selecionado
+ * Design: Terminal Dark / Ops Dashboard
+ */
+
+import { motion, AnimatePresence } from "framer-motion";
+import { X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock } from "lucide-react";
+import type { PodMetrics } from "@/hooks/usePodData";
+
+interface PodDetailPanelProps {
+  pod: PodMetrics | null;
+  onClose: () => void;
+}
+
+const STATUS_CONFIG = {
+  healthy: { label: "Saudável", color: "oklch(0.72 0.18 142)", bg: "oklch(0.72 0.18 142 / 0.12)", border: "oklch(0.72 0.18 142 / 0.3)" },
+  warning: { label: "Atenção", color: "oklch(0.72 0.18 50)", bg: "oklch(0.72 0.18 50 / 0.12)", border: "oklch(0.72 0.18 50 / 0.3)" },
+  critical: { label: "Crítico", color: "oklch(0.62 0.22 25)", bg: "oklch(0.62 0.22 25 / 0.12)", border: "oklch(0.62 0.22 25 / 0.3)" },
+};
+
+function MetricBar({ value, max, color }: { value: number; max: number; color: string }) {
+  const pct = Math.min(100, (value / max) * 100);
+  return (
+    <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "oklch(0.22 0.03 250)" }}>
+      <motion.div
+        className="h-full rounded-full"
+        initial={{ width: 0 }}
+        animate={{ width: `${pct}%` }}
+        transition={{ duration: 0.6, ease: "easeOut" }}
+        style={{ background: color, boxShadow: `0 0 8px ${color}` }}
+      />
+    </div>
+  );
+}
+
+function formatMem(mib: number): string {
+  if (mib >= 1024) return `${(mib / 1024).toFixed(2)} GiB`;
+  return `${mib} MiB`;
+}
+
+export function PodDetailPanel({ pod, onClose }: PodDetailPanelProps) {
+  return (
+    <AnimatePresence>
+      {pod && (
+        <motion.aside
+          key={pod.id}
+          initial={{ x: "100%", opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: "100%", opacity: 0 }}
+          transition={{ type: "spring", stiffness: 300, damping: 30 }}
+          className="absolute right-0 top-0 bottom-0 w-80 z-40 overflow-y-auto"
+          style={{
+            background: "oklch(0.13 0.018 250 / 0.97)",
+            borderLeft: "1px solid oklch(0.28 0.04 250)",
+            backdropFilter: "blur(12px)",
+          }}
+        >
+          {/* Header */}
+          <div
+            className="sticky top-0 z-10 p-4 flex items-start justify-between gap-2"
+            style={{
+              background: "oklch(0.13 0.018 250 / 0.95)",
+              borderBottom: "1px solid oklch(0.28 0.04 250)",
+            }}
+          >
+            <div className="flex-1 min-w-0">
+              <div className="text-[10px] text-slate-500 font-mono uppercase tracking-widest mb-1">Pod Selecionado</div>
+              <div
+                className="font-mono text-sm font-semibold break-all leading-tight"
+                style={{ color: STATUS_CONFIG[pod.status].color }}
+              >
+                {pod.name}
+              </div>
+            </div>
+            <button
+              onClick={onClose}
+              className="shrink-0 p-1.5 rounded-md transition-colors hover:bg-white/10"
+              style={{ color: "oklch(0.55 0.015 250)" }}
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <div className="p-4 space-y-5">
+            {/* Status badge */}
+            <div
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold"
+              style={{
+                background: STATUS_CONFIG[pod.status].bg,
+                border: `1px solid ${STATUS_CONFIG[pod.status].border}`,
+                color: STATUS_CONFIG[pod.status].color,
+              }}
+            >
+              <span
+                className="w-2 h-2 rounded-full"
+                style={{
+                  background: STATUS_CONFIG[pod.status].color,
+                  boxShadow: `0 0 6px ${STATUS_CONFIG[pod.status].color}`,
+                }}
+              />
+              {STATUS_CONFIG[pod.status].label}
+            </div>
+
+            {/* CPU */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <Cpu size={13} />
+                <span className="uppercase tracking-wider">CPU</span>
+              </div>
+              <div className="flex justify-between items-baseline mb-1">
+                <span className="font-mono text-2xl font-bold" style={{ color: "oklch(0.72 0.18 142)" }}>
+                  {pod.cpuUsage}m
+                </span>
+                <span className="font-mono text-xs text-slate-500">
+                  / {pod.cpuLimit}m ({Math.round(pod.cpuPercent)}%)
+                </span>
+              </div>
+              <MetricBar value={pod.cpuUsage} max={pod.cpuLimit} color="oklch(0.72 0.18 142)" />
+            </div>
+
+            {/* Memória */}
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <MemoryStick size={13} />
+                <span className="uppercase tracking-wider">Memória</span>
+              </div>
+              <div className="flex justify-between items-baseline mb-1">
+                <span className="font-mono text-2xl font-bold" style={{ color: "oklch(0.72 0.18 50)" }}>
+                  {formatMem(pod.memoryUsage)}
+                </span>
+                <span className="font-mono text-xs text-slate-500">
+                  / {formatMem(pod.memoryLimit)} ({Math.round(pod.memoryPercent)}%)
+                </span>
+              </div>
+              <MetricBar value={pod.memoryUsage} max={pod.memoryLimit} color="oklch(0.72 0.18 50)" />
+            </div>
+
+            {/* Divisor */}
+            <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+
+            {/* Informações gerais */}
+            <div className="space-y-3">
+              <div className="text-[10px] text-slate-500 uppercase tracking-widest">Informações</div>
+              {[
+                { icon: <Box size={13} />, label: "Namespace", value: pod.namespace },
+                { icon: <Server size={13} />, label: "Node", value: pod.node },
+                { icon: <RefreshCw size={13} />, label: "Restarts", value: String(pod.restarts) },
+                { icon: <Clock size={13} />, label: "Idade", value: pod.age },
+                {
+                  icon: <Box size={13} />,
+                  label: "Containers",
+                  value: `${pod.ready}/${pod.containers} prontos`,
+                },
+              ].map(({ icon, label, value }) => (
+                <div key={label} className="flex items-center gap-3">
+                  <span className="text-slate-600 shrink-0">{icon}</span>
+                  <span className="text-slate-500 text-xs w-24 shrink-0">{label}</span>
+                  <span className="font-mono text-xs text-slate-200 truncate">{value}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Labels */}
+            {Object.keys(pod.labels).length > 0 && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-[10px] text-slate-500 uppercase tracking-widest">
+                  <Tag size={11} />
+                  Labels
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {Object.entries(pod.labels).map(([k, v]) => (
+                    <span
+                      key={k}
+                      className="px-2 py-0.5 rounded text-[10px] font-mono"
+                      style={{
+                        background: "oklch(0.20 0.025 250)",
+                        border: "1px solid oklch(0.28 0.04 250)",
+                        color: "oklch(0.65 0.15 200)",
+                      }}
+                    >
+                      {k}={v}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Gauge visual CPU + Mem */}
+            <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+            <div className="grid grid-cols-2 gap-3">
+              {[
+                { label: "CPU", pct: pod.cpuPercent, color: "oklch(0.72 0.18 142)" },
+                { label: "MEM", pct: pod.memoryPercent, color: "oklch(0.72 0.18 50)" },
+              ].map(({ label, pct, color }) => (
+                <div key={label} className="flex flex-col items-center gap-2">
+                  <svg width="80" height="80" viewBox="0 0 80 80">
+                    <circle cx="40" cy="40" r="32" fill="none" stroke="oklch(0.22 0.03 250)" strokeWidth="8" />
+                    <circle
+                      cx="40" cy="40" r="32"
+                      fill="none"
+                      stroke={color}
+                      strokeWidth="8"
+                      strokeLinecap="round"
+                      strokeDasharray={`${(pct / 100) * 201} 201`}
+                      strokeDashoffset="50"
+                      style={{ filter: `drop-shadow(0 0 4px ${color})` }}
+                    />
+                    <text x="40" y="44" textAnchor="middle" fontSize="14" fontWeight="700" fill={color} fontFamily="'JetBrains Mono', monospace">
+                      {Math.round(pct)}%
+                    </text>
+                  </svg>
+                  <span className="text-[10px] text-slate-500 uppercase tracking-widest">{label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </motion.aside>
+      )}
+    </AnimatePresence>
+  );
+}

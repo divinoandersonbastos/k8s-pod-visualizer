@@ -1,25 +1,255 @@
-import { Button } from "@/components/ui/button";
-import { Loader2 } from "lucide-react";
-import { Streamdown } from 'streamdown';
-
 /**
- * All content in this page are only for example, replace with your own feature implementation
- * When building pages, remember your instructions in Frontend Best Practices, Design Guide and Common Pitfalls
+ * Home — Página principal do K8s Pod Visualizer
+ * Design: Terminal Dark / Ops Dashboard
+ *
+ * Layout: Sidebar esquerda | Canvas central | Painel direito (condicional)
  */
+
+import { useState, useMemo } from "react";
+import { usePodData } from "@/hooks/usePodData";
+import { BubbleCanvas } from "@/components/BubbleCanvas";
+import { ClusterSidebar } from "@/components/ClusterSidebar";
+import { ClusterHeader } from "@/components/ClusterHeader";
+import { PodDetailPanel } from "@/components/PodDetailPanel";
+import { ConfigModal } from "@/components/ConfigModal";
+import type { ViewMode } from "@/components/BubbleCanvas";
+
 export default function Home() {
-  // If theme is switchable in App.tsx, we can implement theme toggling like this:
-  // const { theme, toggleTheme } = useTheme();
+  const [viewMode, setViewMode] = useState<ViewMode>("cpu");
+  const [selectedNamespace, setSelectedNamespace] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showConfig, setShowConfig] = useState(false);
+  const [apiUrl, setApiUrl] = useState("");
+  const [refreshInterval, setRefreshInterval] = useState(3000);
+
+  const { pods, stats, loading, isLive, toggleLive, selectedPod, setSelectedPod, refresh } = usePodData({
+    refreshInterval,
+    apiUrl: apiUrl || undefined,
+  });
+
+  // Filtrar pods por namespace e busca
+  const nsCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    pods.forEach((p) => { counts[p.namespace] = (counts[p.namespace] || 0) + 1; });
+    return counts;
+  }, [pods]);
+
+  const filteredPods = useMemo(() => {
+    let result = pods;
+    if (selectedNamespace) {
+      result = result.filter((p) => p.namespace === selectedNamespace);
+    }
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      result = result.filter(
+        (p) =>
+          p.name.toLowerCase().includes(q) ||
+          p.namespace.toLowerCase().includes(q) ||
+          p.node.toLowerCase().includes(q)
+      );
+    }
+    return result;
+  }, [pods, selectedNamespace, searchQuery]);
+
+  const handleSaveConfig = (url: string, interval: number) => {
+    setApiUrl(url);
+    setRefreshInterval(interval);
+  };
+
+  if (loading) {
+    return (
+      <div
+        className="min-h-screen flex items-center justify-center grid-bg"
+        style={{ background: "oklch(0.10 0.015 250)" }}
+      >
+        <div className="text-center space-y-4">
+          <div className="relative w-16 h-16 mx-auto">
+            <div
+              className="absolute inset-0 rounded-full border-2 animate-spin"
+              style={{ borderColor: "oklch(0.72 0.18 142) transparent transparent transparent" }}
+            />
+            <div
+              className="absolute inset-2 rounded-full border-2 animate-spin"
+              style={{
+                borderColor: "oklch(0.55 0.22 260) transparent transparent transparent",
+                animationDirection: "reverse",
+                animationDuration: "0.8s",
+              }}
+            />
+          </div>
+          <div className="font-mono text-sm" style={{ color: "oklch(0.72 0.18 142)" }}>
+            Carregando pods...
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <main>
-        {/* Example: lucide-react for icons */}
-        <Loader2 className="animate-spin" />
-        Example Page
-        {/* Example: Streamdown for markdown rendering */}
-        <Streamdown>Any **markdown** content</Streamdown>
-        <Button variant="default">Example Button</Button>
-      </main>
+    <div
+      className="min-h-screen flex flex-col overflow-hidden"
+      style={{ background: "oklch(0.10 0.015 250)", height: "100vh" }}
+    >
+      {/* Header */}
+      <ClusterHeader
+        stats={stats}
+        isLive={isLive}
+        onRefresh={refresh}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        onShowConfig={() => setShowConfig(true)}
+      />
+
+      {/* Body */}
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Sidebar */}
+        <ClusterSidebar
+          stats={stats}
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          selectedNamespace={selectedNamespace}
+          onNamespaceChange={setSelectedNamespace}
+          isLive={isLive}
+          onToggleLive={toggleLive}
+          nsCounts={nsCounts}
+        />
+
+        {/* Canvas principal */}
+        <main className="flex-1 relative overflow-hidden grid-bg scanlines">
+          {/* Indicador de modo */}
+          <div
+            className="absolute top-3 left-1/2 -translate-x-1/2 z-10 flex items-center gap-3 px-4 py-2 rounded-full text-[10px] font-mono"
+            style={{
+              background: "oklch(0.14 0.02 250 / 0.90)",
+              border: "1px solid oklch(0.28 0.04 250)",
+              color: "oklch(0.55 0.015 250)",
+              backdropFilter: "blur(12px)",
+            }}
+          >
+            <span
+              className="w-2 h-2 rounded-full"
+              style={{
+                background: viewMode === "cpu" ? "oklch(0.72 0.18 142)" : "oklch(0.72 0.18 50)",
+                boxShadow: `0 0 6px ${viewMode === "cpu" ? "oklch(0.72 0.18 142)" : "oklch(0.72 0.18 50)"}`,
+              }}
+            />
+            <span className="uppercase tracking-widest">{viewMode === "cpu" ? "CPU" : "Memória"}</span>
+            <span style={{ color: "oklch(0.28 0.04 250)" }}>|</span>
+            <span className="text-slate-300">{filteredPods.length} pods</span>
+            {filteredPods.filter(p => p.status === 'critical').length > 0 && (
+              <>
+                <span style={{ color: "oklch(0.28 0.04 250)" }}>|</span>
+                <span style={{ color: "oklch(0.72 0.18 25)" }}>
+                  {filteredPods.filter(p => p.status === 'critical').length} críticos
+                </span>
+              </>
+            )}
+          </div>
+
+          {/* Bolhas */}
+          {filteredPods.length > 0 ? (
+            <BubbleCanvas
+              pods={filteredPods}
+              viewMode={viewMode}
+              onSelectPod={setSelectedPod}
+              selectedPodId={selectedPod?.id}
+            />
+          ) : (
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="text-center space-y-2">
+                <div className="text-4xl font-mono text-slate-700">∅</div>
+                <div className="text-sm text-slate-600">Nenhum pod encontrado</div>
+                {searchQuery && (
+                  <div className="text-xs text-slate-700 font-mono">
+                    Busca: "{searchQuery}"
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Painel de detalhes */}
+          <PodDetailPanel
+            pod={selectedPod}
+            onClose={() => setSelectedPod(null)}
+          />
+        </main>
+      </div>
+
+      {/* Tabela de pods (bottom bar) */}
+      <div
+        className="shrink-0 overflow-x-auto"
+        style={{
+          background: "oklch(0.12 0.018 250 / 0.95)",
+          borderTop: "1px solid oklch(0.22 0.03 250)",
+          maxHeight: "160px",
+        }}
+      >
+        <table className="w-full text-[11px] font-mono">
+          <thead>
+            <tr style={{ borderBottom: "1px solid oklch(0.20 0.025 250)" }}>
+              {["Pod", "Namespace", "Node", "CPU", "Mem", "Status"].map((h) => (
+                <th key={h} className="text-left px-3 py-2 text-slate-500 uppercase tracking-wider font-normal whitespace-nowrap">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {filteredPods
+              .sort((a, b) => {
+                const aVal = viewMode === 'cpu' ? a.cpuPercent : a.memoryPercent;
+                const bVal = viewMode === 'cpu' ? b.cpuPercent : b.memoryPercent;
+                return bVal - aVal;
+              })
+              .slice(0, 8)
+              .map((pod) => {
+                const statusColor = pod.status === 'healthy' ? 'oklch(0.72 0.18 142)' : pod.status === 'warning' ? 'oklch(0.72 0.18 50)' : 'oklch(0.62 0.22 25)';
+                const statusLabel = pod.status === 'healthy' ? 'OK' : pod.status === 'warning' ? 'ALERTA' : 'CRÍTICO';
+                return (
+                  <tr
+                    key={pod.id}
+                    onClick={() => setSelectedPod(pod)}
+                    className="transition-colors cursor-pointer"
+                    style={{
+                      background: selectedPod?.id === pod.id ? 'oklch(0.55 0.22 260 / 0.1)' : 'transparent',
+                    }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'oklch(0.16 0.02 250)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = selectedPod?.id === pod.id ? 'oklch(0.55 0.22 260 / 0.1)' : 'transparent'; }}
+                  >
+                    <td className="px-3 py-1.5 text-slate-200 max-w-[180px]">
+                      <span className="truncate block" title={pod.name}>{pod.name}</span>
+                    </td>
+                    <td className="px-3 py-1.5 text-slate-400 whitespace-nowrap">{pod.namespace}</td>
+                    <td className="px-3 py-1.5 text-slate-500 whitespace-nowrap">{pod.node}</td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={{ color: 'oklch(0.72 0.18 142)' }}>
+                      {pod.cpuUsage}m <span className="text-slate-600">({Math.round(pod.cpuPercent)}%)</span>
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap" style={{ color: 'oklch(0.72 0.18 50)' }}>
+                      {pod.memoryUsage >= 1024 ? `${(pod.memoryUsage/1024).toFixed(1)}Gi` : `${pod.memoryUsage}Mi`}{' '}
+                      <span className="text-slate-600">({Math.round(pod.memoryPercent)}%)</span>
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap">
+                      <span
+                        className="px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                        style={{ background: `${statusColor.replace(')', ' / 0.15)')}`, color: statusColor }}
+                      >
+                        {statusLabel}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Modal de configuração */}
+      <ConfigModal
+        open={showConfig}
+        onClose={() => setShowConfig(false)}
+        apiUrl={apiUrl}
+        refreshInterval={refreshInterval}
+        onSave={handleSaveConfig}
+      />
     </div>
   );
 }

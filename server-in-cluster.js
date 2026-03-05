@@ -290,7 +290,7 @@ const server = http.createServer(async (req, res) => {
         path: logPath,
         method: "GET",
         headers: {
-          Accept: "text/plain",
+          Accept: "*/*",
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         ...(ca ? { ca } : { rejectUnauthorized: false }),

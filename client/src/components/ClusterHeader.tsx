@@ -69,7 +69,7 @@ export function ClusterHeader({
       {/* Logo CentralDevOps */}
       <div className="flex items-center gap-2 shrink-0 mr-1">
         <img
-          src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-NWrtdt35inVaDysnVTZQ5u.png"
+          src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-icon_33d8da50.png"
           alt="CentralDevOps"
           className="object-contain"
           style={{ width: 28, height: 28 }}
@@ -371,7 +371,7 @@ export function ClusterHeader({
           >
             <div className="flex items-center gap-2 mb-3">
               <img
-                src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-NWrtdt35inVaDysnVTZQ5u.png"
+                src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-icon_33d8da50.png"
                 alt="CentralDevOps"
                 style={{ width: 20, height: 20 }}
                 className="object-contain"

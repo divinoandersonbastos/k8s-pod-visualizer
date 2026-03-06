@@ -15,8 +15,8 @@ import {
 } from "lucide-react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo_7ff92f32.png";
-const LOGO_H_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-horizontal_c3a0984c.png";
+const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-icon_33d8da50.png";
+const LOGO_H_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-v2_11825c4c.png";
 const HERO_BG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/hero-bg-abstract-YWohQrzhyjwW8aYfMMbFFe.png";
 const WA_LINK = "https://wa.me/5561999529713?text=Olá!%20Gostaria%20de%20saber%20mais%20sobre%20o%20K8s%20Pod%20Visualizer.";
 const TG_LINK = "https://t.me/+5561999529713";

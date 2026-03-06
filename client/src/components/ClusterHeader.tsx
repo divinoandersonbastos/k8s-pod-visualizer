@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -66,6 +66,24 @@ export function ClusterHeader({
         backdropFilter: "blur(8px)",
       }}
     >
+      {/* Logo CentralDevOps */}
+      <div className="flex items-center gap-2 shrink-0 mr-1">
+        <img
+          src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-NWrtdt35inVaDysnVTZQ5u.png"
+          alt="CentralDevOps"
+          className="object-contain"
+          style={{ width: 28, height: 28 }}
+        />
+        <span
+          className="hidden lg:block text-xs font-mono font-bold tracking-wide"
+          style={{ color: "oklch(0.72 0.18 200)" }}
+        >
+          CentralDevOps
+        </span>
+      </div>
+
+      <div className="w-px h-5 shrink-0" style={{ background: "oklch(0.28 0.04 250)" }} />
+
       {/* Status indicator */}
       <div className="flex items-center gap-2 shrink-0">
         {isLive ? (
@@ -307,6 +325,32 @@ export function ClusterHeader({
         >
           <Settings size={14} />
         </button>
+
+        <div className="w-px h-5" style={{ background: "oklch(0.28 0.04 250)" }} />
+
+        {/* Suporte WhatsApp */}
+        <a
+          href="https://wa.me/5561999529713?text=Olá!%20Preciso%20de%20suporte%20com%20o%20K8s%20Pod%20Visualizer."
+          target="_blank"
+          rel="noopener noreferrer"
+          className="p-2 rounded-lg transition-all hover:bg-white/5 flex items-center"
+          title="Suporte via WhatsApp — CentralDevOps"
+          style={{ color: "oklch(0.72 0.22 142)" }}
+        >
+          <MessageCircle size={14} />
+        </a>
+
+        {/* Suporte Telegram */}
+        <a
+          href="https://t.me/+5561999529713"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="p-2 rounded-lg transition-all hover:bg-white/5 flex items-center"
+          title="Suporte via Telegram — CentralDevOps"
+          style={{ color: "oklch(0.65 0.20 220)" }}
+        >
+          <Send size={14} />
+        </a>
       </div>
 
       {/* Painel de info */}
@@ -325,8 +369,16 @@ export function ClusterHeader({
               minWidth: "280px",
             }}
           >
-            <div className="font-semibold text-slate-200 mb-3" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
-              Como conectar ao cluster real
+            <div className="flex items-center gap-2 mb-3">
+              <img
+                src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-NWrtdt35inVaDysnVTZQ5u.png"
+                alt="CentralDevOps"
+                style={{ width: 20, height: 20 }}
+                className="object-contain"
+              />
+              <div className="font-semibold text-slate-200" style={{ fontFamily: "'Space Grotesk', sans-serif" }}>
+                CentralDevOps — Como conectar ao cluster real
+              </div>
             </div>
             <div className="space-y-2 text-slate-400 font-mono text-[11px]">
               <div className="p-2 rounded" style={{ background: "oklch(0.16 0.02 250)" }}>

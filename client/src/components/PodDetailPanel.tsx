@@ -7,7 +7,7 @@
  *  - Logs: terminal com busca, filtro por nível, auto-scroll, download
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
@@ -58,8 +58,15 @@ function formatMem(mib: number): string {
 
 type Tab = "details" | "logs" | "events";
 
+// Conta eventos de um pod lendo diretamente do localStorage (sem re-render excessivo)
+function countEventsForPod(podId: string, getEventsForPod?: (id: string) => unknown[]): number {
+  if (!getEventsForPod) return 0;
+  return getEventsForPod(podId).length;
+}
+
 export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
+  const [eventCount, setEventCount] = useState(0);
 
   // Reset tab ao trocar de pod
   const [lastPodId, setLastPodId] = useState<string | null>(null);
@@ -67,6 +74,15 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
     setLastPodId(pod.id);
     setActiveTab("details");
   }
+
+  // Atualizar contagem de eventos a cada 3s (alinhado com o refresh de pods)
+  useEffect(() => {
+    if (!pod) return;
+    const update = () => setEventCount(countEventsForPod(pod.id, getEventsForPod));
+    update();
+    const interval = setInterval(update, 3000);
+    return () => clearInterval(interval);
+  }, [pod, getEventsForPod]);
 
   return (
     <AnimatePresence>
@@ -117,14 +133,14 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
             style={{ borderBottom: "1px solid oklch(0.22 0.03 250)" }}
           >
             {([
-              { id: "details", label: "Detalhes", icon: <BarChart2 size={12} /> },
-              { id: "events",  label: "Eventos",  icon: <Activity   size={12} /> },
-              { id: "logs",    label: "Logs",     icon: <ScrollText size={12} /> },
-            ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((tab) => (
+              { id: "details", label: "Detalhes", icon: <BarChart2 size={12} />, badge: null },
+              { id: "events",  label: "Eventos",  icon: <Activity   size={12} />, badge: eventCount > 0 ? eventCount : null },
+              { id: "logs",    label: "Logs",     icon: <ScrollText size={12} />, badge: null },
+            ] as { id: Tab; label: string; icon: React.ReactNode; badge: number | null }[]).map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className="flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all"
+                className="relative flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all"
                 style={{
                   color: activeTab === tab.id ? "oklch(0.72 0.18 200)" : "oklch(0.50 0.01 250)",
                   borderBottom: activeTab === tab.id
@@ -135,6 +151,30 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               >
                 {tab.icon}
                 {tab.label}
+                {tab.badge !== null && (
+                  <motion.span
+                    key={tab.badge}
+                    initial={{ scale: 0.6, opacity: 0 }}
+                    animate={{ scale: 1, opacity: 1 }}
+                    transition={{ type: "spring", stiffness: 400, damping: 20 }}
+                    className="min-w-[16px] h-4 px-1 rounded-full text-[9px] font-mono font-bold flex items-center justify-center"
+                    style={{
+                      background: activeTab === "events"
+                        ? "oklch(0.72 0.18 200 / 0.25)"
+                        : "oklch(0.55 0.22 260 / 0.30)",
+                      color: activeTab === "events"
+                        ? "oklch(0.82 0.15 200)"
+                        : "oklch(0.72 0.18 200)",
+                      border: `1px solid ${
+                        activeTab === "events"
+                          ? "oklch(0.72 0.18 200 / 0.50)"
+                          : "oklch(0.55 0.22 260 / 0.40)"
+                      }`,
+                    }}
+                  >
+                    {tab.badge > 99 ? "99+" : tab.badge}
+                  </motion.span>
+                )}
               </button>
             ))}
           </div>

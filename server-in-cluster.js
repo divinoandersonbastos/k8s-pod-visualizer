@@ -18,6 +18,14 @@ import https from "https";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import {
+  savePodStatusEventsBatch, getPodStatusEvents, getAllPodStatusEvents,
+  countPodEvents, clearPodEvents,
+  savePodMetricsSnapshotsBatch, getPodMetricsHistory,
+  saveNodeEventsBatch, getNodeEvents, getAllNodeEvents,
+  saveNodeTransition, getNodeTransitions,
+  getDbStats, clearAllData,
+} from "./db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -562,6 +570,216 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: err.message }));
     }
     return;
+  }
+
+  // ── /api/db/stats ────────────────────────────────────────────────────────────
+  if (url.pathname === "/api/db/stats" && req.method === "GET") {
+    try {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(getDbStats()));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/db/clear ────────────────────────────────────────────────────────
+  if (url.pathname === "/api/db/clear" && req.method === "DELETE") {
+    try {
+      clearAllData();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/events/pods ─────────────────────────────────────────────────────
+  if (url.pathname === "/api/events/pods") {
+    if (req.method === "GET") {
+      try {
+        const limit     = parseInt(url.searchParams.get("limit")     || "500");
+        const status    = url.searchParams.get("status")    || null;
+        const namespace = url.searchParams.get("namespace") || null;
+        const events    = getAllPodStatusEvents(limit, status, namespace);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(events));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(body);
+          const events  = Array.isArray(payload) ? payload : [payload];
+          const results = savePodStatusEventsBatch(events);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ saved: results.length }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  // ── /api/events/pods/:namespace/:pod ────────────────────────────────
+  const podEventsMatch = url.pathname.match(/^\/api\/events\/pods\/([^/]+)\/([^/]+)$/);
+  if (podEventsMatch) {
+    const [, namespace, podName] = podEventsMatch;
+    if (req.method === "GET") {
+      try {
+        const limit  = parseInt(url.searchParams.get("limit") || "50");
+        const events = getPodStatusEvents(podName, namespace, limit);
+        const count  = countPodEvents(podName, namespace);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ events, count }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+    if (req.method === "DELETE") {
+      try {
+        const result = clearPodEvents(podName, namespace);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ deleted: result.changes }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+  }
+
+  // ── /api/metrics/pods/:namespace/:pod ──────────────────────────────
+  const podMetricsMatch = url.pathname.match(/^\/api\/metrics\/pods\/([^/]+)\/([^/]+)$/);
+  if (podMetricsMatch) {
+    const [, namespace, podName] = podMetricsMatch;
+    if (req.method === "GET") {
+      try {
+        const limit   = parseInt(url.searchParams.get("limit") || "100");
+        const history = getPodMetricsHistory(podName, namespace, limit);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(history));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const payload   = JSON.parse(body);
+          const snapshots = Array.isArray(payload) ? payload : [payload];
+          const results   = savePodMetricsSnapshotsBatch(snapshots);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ saved: results.length }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  // ── /api/events/nodes/transitions ────────────────────────────────────
+  // IMPORTANTE: esta rota deve vir ANTES de /api/events/nodes/:node
+  if (url.pathname === "/api/events/nodes/transitions") {
+    if (req.method === "GET") {
+      try {
+        const limit       = parseInt(url.searchParams.get("limit") || "200");
+        const transitions = getNodeTransitions(limit);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(transitions));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const t = JSON.parse(body);
+          saveNodeTransition(t);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  // ── /api/events/nodes ──────────────────────────────────────────────────────
+  if (url.pathname === "/api/events/nodes") {
+    if (req.method === "GET") {
+      try {
+        const limit    = parseInt(url.searchParams.get("limit")    || "500");
+        const category = url.searchParams.get("category") || null;
+        const events   = getAllNodeEvents(limit, category);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(events));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(body);
+          const events  = Array.isArray(payload) ? payload : [payload];
+          const results = saveNodeEventsBatch(events);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ saved: results.length }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  // ── /api/events/nodes/:node ──────────────────────────────────────────────
+  const nodeEventsMatch = url.pathname.match(/^\/api\/events\/nodes\/([^/]+)$/);
+  if (nodeEventsMatch) {
+    const [, nodeName] = nodeEventsMatch;
+    if (req.method === "GET") {
+      try {
+        const limit  = parseInt(url.searchParams.get("limit") || "100");
+        const events = getNodeEvents(nodeName, limit);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(events));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
   }
 
   // ── /api/cluster-info ──────────────────────────────────────────────────────

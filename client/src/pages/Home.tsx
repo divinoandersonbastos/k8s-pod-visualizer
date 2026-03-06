@@ -85,7 +85,7 @@ export default function Home() {
   }, [pods]);
 
   const { getHistory, recordSnapshot } = usePodHistory();
-  const { recordStatusSnapshot, getEventsForPod, getAllEvents, clearEvents } = usePodStatusEvents();
+  const { recordStatusSnapshot, getEventsForPod, getEventsForPodSync, getAllEvents, clearEvents } = usePodStatusEvents();
   const nodeMonitor = useNodeMonitor(inCluster);
   const oomRisk = usePodOomRisk(pods);
 
@@ -373,7 +373,7 @@ export default function Home() {
             apiUrl={apiUrl}
             inCluster={inCluster}
             getHistory={getHistory}
-            getEventsForPod={getEventsForPod}
+            getEventsForPod={getEventsForPodSync}
             clearEvents={clearEvents}
             oomRisk={selectedPod ? oomRisk.getRiskForPod(selectedPod.id) : null}
           />

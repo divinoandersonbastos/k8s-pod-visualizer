@@ -1,0 +1,65 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Base: Namespace + RBAC
+#
+# Aplique PRIMEIRO em qualquer ambiente:
+#   kubectl apply -f deploy/base/00-namespace-rbac.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# 1. Namespace dedicado
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    app.kubernetes.io/managed-by: kubectl
+
+---
+# 2. ServiceAccount — identidade do pod dentro do cluster
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+
+---
+# 3. ClusterRole — permissões de leitura necessárias
+#    - pods/nodes/namespaces/events: monitoramento e histórico
+#    - pods/log: aba de Logs no painel de detalhes
+#    - metrics.k8s.io: CPU e memória em tempo real (requer metrics-server)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces", "events"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+
+---
+# 4. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+subjects:
+  - kind: ServiceAccount
+    name: k8s-pod-visualizer
+    namespace: k8s-pod-visualizer
+roleRef:
+  kind: ClusterRole
+  name: k8s-pod-visualizer
+  apiGroup: rbac.authorization.k8s.io

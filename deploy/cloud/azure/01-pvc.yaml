@@ -1,0 +1,30 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Cloud / Azure: PersistentVolumeClaim
+#
+# Solicita um Azure Managed Disk de 2 GiB para o banco SQLite.
+# O disco é provisionado automaticamente pelo CSI driver ao primeiro bind.
+#
+# Verificar status após aplicar:
+#   kubectl get pvc -n k8s-pod-visualizer
+#   # STATUS deve ser "Bound" após o pod ser agendado (WaitForFirstConsumer)
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-visualizer-data
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  accessModes:
+    - ReadWriteOnce
+    # Azure Disk suporta apenas ReadWriteOnce (1 pod por vez).
+    # Se precisar de múltiplas réplicas, use Azure Files com ReadWriteMany.
+  storageClassName: k8s-visualizer-disk
+  resources:
+    requests:
+      storage: 2Gi
+      # 2 GiB é suficiente para anos de histórico de eventos SQLite.
+      # Para expandir: kubectl patch pvc k8s-visualizer-data -n k8s-pod-visualizer \
+      #   -p '{"spec":{"resources":{"requests":{"storage":"5Gi"}}}}'

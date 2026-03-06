@@ -1,0 +1,36 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Cloud / Azure: StorageClass
+#
+# Cria um Azure Managed Disk (StandardSSD_LRS) para persistência do SQLite.
+#
+# Requisitos:
+#   - AKS com CSI driver habilitado (padrão em AKS >= 1.21)
+#   - Permissão para criar discos no Resource Group do cluster
+#
+# Verificar se o CSI driver está disponível:
+#   kubectl get storageclasses | grep disk.csi.azure.com
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: k8s-visualizer-disk
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+provisioner: disk.csi.azure.com
+parameters:
+  # StandardSSD_LRS — melhor custo-benefício para workloads de monitoramento
+  # Alternativas: Premium_LRS (SSD NVMe, menor latência), Standard_LRS (HDD, mais barato)
+  skuName: StandardSSD_LRS
+  kind: Managed
+  # Opcional: especificar Resource Group e zona de disponibilidade
+  # resourceGroup: "meu-resource-group"
+  # zoned: "true"
+reclaimPolicy: Retain
+# IMPORTANTE: Retain garante que o disco NÃO seja apagado ao deletar o PVC.
+# Para apagar o disco junto com o PVC, use: reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer
+# WaitForFirstConsumer: o disco é criado na mesma zona do node que montar o PVC.
+# Evita o erro "disk and node are in different availability zones".
+allowVolumeExpansion: true
+# Permite expandir o disco sem recriar o PVC (kubectl edit pvc).

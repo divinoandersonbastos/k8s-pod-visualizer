@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — On-Premises: NFS — PersistentVolume + PVC
+#
+# Usa um servidor NFS como storage compartilhado. Ideal para:
+#   - Clusters com múltiplos nodes (sem nodeSelector obrigatório)
+#   - Ambientes com NAS (Synology, QNAP, TrueNAS) ou servidor NFS dedicado
+#   - Produção on-premises com alta disponibilidade
+#
+# PRÉ-REQUISITO no servidor NFS:
+#   apt install nfs-kernel-server -y
+#   mkdir -p /exports/k8s-visualizer
+#   chmod 777 /exports/k8s-visualizer
+#   echo "/exports/k8s-visualizer 192.168.1.0/24(rw,sync,no_subtree_check,no_root_squash)" >> /etc/exports
+#   exportfs -ra
+#
+# PRÉ-REQUISITO nos nodes do cluster:
+#   apt install nfs-common -y   # (ou nfs-utils no RHEL/CentOS)
+#
+# Ajuste NFS_SERVER_IP e NFS_PATH antes de aplicar.
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# PersistentVolume — representa o export NFS no Kubernetes
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: k8s-visualizer-pv-nfs
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    storage.type: nfs
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+    # NFS suporta ReadWriteMany: múltiplos pods podem montar simultaneamente.
+    # Útil se quiser rodar 2+ réplicas do visualizador.
+  persistentVolumeReclaimPolicy: Retain
+  # Retain: o diretório NFS NÃO é apagado ao deletar o PVC.
+  nfs:
+    server: 192.168.1.50        # ← SUBSTITUA pelo IP do servidor NFS
+    path: /exports/k8s-visualizer  # ← SUBSTITUA pelo caminho exportado
+  mountOptions:
+    - hard
+    - nfsvers=4.1
+    # hard: o pod aguarda indefinidamente se o NFS ficar indisponível (mais seguro)
+    # nfsvers=4.1: versão recomendada para melhor performance e segurança
+
+---
+# PersistentVolumeClaim — solicita o PV NFS criado acima
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-visualizer-data
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 5Gi
+  volumeName: k8s-visualizer-pv-nfs
+  # volumeName: vincula diretamente ao PV criado acima (sem StorageClass)
+  storageClassName: ""
+  # storageClassName vazio: usa o PV estático criado manualmente

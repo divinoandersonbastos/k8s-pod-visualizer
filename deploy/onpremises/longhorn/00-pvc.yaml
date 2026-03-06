@@ -1,0 +1,46 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — On-Premises: Longhorn — PVC
+#
+# Longhorn é um storage distribuído para Kubernetes que replica volumes
+# automaticamente entre os nodes. Ideal para:
+#   - Clusters k3s, RKE2, kubeadm com 3+ nodes
+#   - Produção on-premises com tolerância a falha de node
+#   - Ambientes onde o pod pode ser reagendado em qualquer node
+#
+# PRÉ-REQUISITO: Longhorn instalado no cluster
+#   helm repo add longhorn https://charts.longhorn.io
+#   helm repo update
+#   helm install longhorn longhorn/longhorn \
+#     --namespace longhorn-system \
+#     --create-namespace \
+#     --set defaultSettings.defaultReplicaCount=2
+#
+# Verificar se o Longhorn está disponível:
+#   kubectl get storageclass | grep longhorn
+#   kubectl get pods -n longhorn-system
+#
+# Ordem de aplicação:
+#   kubectl apply -f deploy/base/00-namespace-rbac.yaml
+#   kubectl apply -f deploy/onpremises/longhorn/00-pvc.yaml
+#   kubectl apply -f deploy/onpremises/longhorn/01-deployment.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-visualizer-data
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+  annotations:
+    # Longhorn: número de réplicas do volume (padrão: 3, ajuste conforme nodes disponíveis)
+    longhorn.io/replica-count: "2"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: longhorn
+  # Se o cluster usa uma StorageClass Longhorn customizada, substitua "longhorn" pelo nome correto.
+  # Para verificar: kubectl get storageclass
+  resources:
+    requests:
+      storage: 2Gi

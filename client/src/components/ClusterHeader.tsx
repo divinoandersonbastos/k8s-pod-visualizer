@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -21,6 +21,8 @@ interface ClusterHeaderProps {
   onSearchChange: (q: string) => void;
   onShowConfig: () => void;
   onShowAlerts?: () => void;
+  onShowEvents?: () => void;
+  totalEvents?: number;
   clusterName?: string;
   statusFilter: StatusFilter;
   onStatusFilterChange: (f: StatusFilter) => void;
@@ -34,6 +36,8 @@ export function ClusterHeader({
   onSearchChange,
   onShowConfig,
   onShowAlerts,
+  onShowEvents,
+  totalEvents = 0,
   clusterName,
   statusFilter,
   onStatusFilterChange,
@@ -227,6 +231,29 @@ export function ClusterHeader({
                 }}
               >
                 {stats.totalAlerts > 99 ? "99+" : stats.totalAlerts}
+              </span>
+            )}
+          </button>
+        )}
+
+        {onShowEvents && (
+          <button
+            onClick={onShowEvents}
+            className="relative p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Painel global de eventos"
+            style={{ color: totalEvents > 0 ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)" }}
+          >
+            <Activity size={14} />
+            {totalEvents > 0 && (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-mono font-bold flex items-center justify-center"
+                style={{
+                  background: "oklch(0.55 0.22 260)",
+                  color: "oklch(0.98 0 0)",
+                  boxShadow: "0 0 5px oklch(0.55 0.22 260 / 0.60)",
+                }}
+              >
+                {totalEvents > 99 ? "99+" : totalEvents}
               </span>
             )}
           </button>

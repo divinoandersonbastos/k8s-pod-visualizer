@@ -21,6 +21,7 @@ import type { StatusFilter } from "@/components/ClusterHeader";
 import { PodDetailPanel } from "@/components/PodDetailPanel";
 import { ConfigModal } from "@/components/ConfigModal";
 import { AlertsPanel } from "@/components/AlertsPanel";
+import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -31,6 +32,8 @@ export default function Home() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showConfig, setShowConfig] = useState(false);
   const [showAlerts, setShowAlerts] = useState(false);
+  const [showEvents, setShowEvents] = useState(false);
+  const [totalEvents, setTotalEvents] = useState(0);
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("");
@@ -76,7 +79,7 @@ export default function Home() {
   }, [pods]);
 
   const { getHistory, recordSnapshot } = usePodHistory();
-  const { recordStatusSnapshot, getEventsForPod, clearEvents } = usePodStatusEvents();
+  const { recordStatusSnapshot, getEventsForPod, getAllEvents, clearEvents } = usePodStatusEvents();
 
   useEffect(() => {
     if (pods.length > 0) {
@@ -84,6 +87,14 @@ export default function Home() {
       recordStatusSnapshot(pods);
     }
   }, [pods, recordSnapshot, recordStatusSnapshot]);
+
+  // Atualizar contador global de eventos a cada 5s
+  useEffect(() => {
+    const update = () => setTotalEvents(getAllEvents().length);
+    update();
+    const interval = setInterval(update, 5000);
+    return () => clearInterval(interval);
+  }, [getAllEvents]);
 
   // ── Filtragem de pods ──────────────────────────────────────────────────────
   const filteredPods = useMemo(() => {
@@ -198,6 +209,8 @@ export default function Home() {
         onSearchChange={setSearchQuery}
         onShowConfig={() => setShowConfig(true)}
         onShowAlerts={() => setShowAlerts(true)}
+        onShowEvents={() => setShowEvents(true)}
+        totalEvents={totalEvents}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
@@ -354,6 +367,18 @@ export default function Home() {
             onSelectPod={(pod) => {
               setSelectedPod(pod);
               setShowAlerts(false);
+            }}
+          />
+
+          {/* Drawer global de eventos */}
+          <GlobalEventsDrawer
+            open={showEvents}
+            onClose={() => setShowEvents(false)}
+            getAllEvents={getAllEvents}
+            clearEvents={() => { clearEvents(); setTotalEvents(0); }}
+            onSelectPod={(podName, namespace) => {
+              const pod = pods.find((p) => p.name === podName && p.namespace === namespace);
+              if (pod) { setSelectedPod(pod); setShowEvents(false); }
             }}
           />
         </main>

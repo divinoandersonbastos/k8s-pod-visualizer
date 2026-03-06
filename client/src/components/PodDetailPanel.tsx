@@ -11,12 +11,14 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
-  AlertCircle, AlertTriangle, Info, ScrollText, BarChart2,
+  AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
+import type { StatusEvent } from "@/hooks/usePodStatusEvents";
 import { PodLogsTab } from "./PodLogsTab";
 import { PodHistoryChart } from "./PodHistoryChart";
+import { PodStatusTimeline } from "./PodStatusTimeline";
 
 interface PodDetailPanelProps {
   pod: PodMetrics | null;
@@ -24,6 +26,8 @@ interface PodDetailPanelProps {
   apiUrl?: string;
   inCluster?: boolean;
   getHistory?: (podId: string) => HistoryPoint[];
+  getEventsForPod?: (podId: string) => StatusEvent[];
+  clearEvents?: () => void;
 }
 
 const STATUS_CONFIG = {
@@ -52,9 +56,9 @@ function formatMem(mib: number): string {
   return `${mib} MiB`;
 }
 
-type Tab = "details" | "logs";
+type Tab = "details" | "logs" | "events";
 
-export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory }: PodDetailPanelProps) {
+export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
 
   // Reset tab ao trocar de pod
@@ -114,6 +118,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
           >
             {([
               { id: "details", label: "Detalhes", icon: <BarChart2 size={12} /> },
+              { id: "events",  label: "Eventos",  icon: <Activity   size={12} /> },
               { id: "logs",    label: "Logs",     icon: <ScrollText size={12} /> },
             ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((tab) => (
               <button
@@ -406,6 +411,25 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                     Ver logs do pod
                   </button>
 
+                </div>
+              </div>
+            )}
+
+            {/* Tab: Eventos */}
+            {activeTab === "events" && (
+              <div className="absolute inset-0 overflow-y-auto">
+                <div className="p-4">
+                  {getEventsForPod && clearEvents ? (
+                    <PodStatusTimeline
+                      podId={pod.id}
+                      getEventsForPod={getEventsForPod}
+                      clearEvents={clearEvents}
+                    />
+                  ) : (
+                    <div className="text-[11px] font-mono text-center py-8" style={{ color: "oklch(0.40 0.015 250)" }}>
+                      Histórico não disponível
+                    </div>
+                  )}
                 </div>
               </div>
             )}

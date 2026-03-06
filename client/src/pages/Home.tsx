@@ -13,6 +13,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { AlertCircle, AlertTriangle, X } from "lucide-react";
 import { usePodData, useClusterMeta } from "@/hooks/usePodData";
 import { usePodHistory } from "@/hooks/usePodHistory";
+import { usePodStatusEvents } from "@/hooks/usePodStatusEvents";
 import { BubbleCanvas } from "@/components/BubbleCanvas";
 import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
@@ -75,10 +76,14 @@ export default function Home() {
   }, [pods]);
 
   const { getHistory, recordSnapshot } = usePodHistory();
+  const { recordStatusSnapshot, getEventsForPod, clearEvents } = usePodStatusEvents();
 
   useEffect(() => {
-    if (pods.length > 0) recordSnapshot(pods);
-  }, [pods, recordSnapshot]);
+    if (pods.length > 0) {
+      recordSnapshot(pods);
+      recordStatusSnapshot(pods);
+    }
+  }, [pods, recordSnapshot, recordStatusSnapshot]);
 
   // ── Filtragem de pods ──────────────────────────────────────────────────────
   const filteredPods = useMemo(() => {
@@ -337,6 +342,8 @@ export default function Home() {
             apiUrl={apiUrl}
             inCluster={inCluster}
             getHistory={getHistory}
+            getEventsForPod={getEventsForPod}
+            clearEvents={clearEvents}
           />
 
           {/* Painel de alertas */}

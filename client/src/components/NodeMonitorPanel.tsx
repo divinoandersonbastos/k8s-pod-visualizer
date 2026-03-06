@@ -213,13 +213,23 @@ function NodeCard({ node }: { node: NodeHealthInfo }) {
   );
 }
 
-function EventCard({ event }: { event: NodeEvent }) {
+function EventCard({ event, onSelectPod }: { event: NodeEvent; onSelectPod?: (podName: string, namespace: string) => void }) {
   const cfg = CATEGORY_CONFIG[event.category] ?? CATEGORY_CONFIG.other;
   const isOOM  = event.category === "oom_kill";
   const isSpot = event.category === "spot_eviction";
 
+  const canNavigate = isOOM && !!event.podName && !!onSelectPod;
+
   return (
-    <div className={`rounded-lg border p-3 ${cfg.bg} ${cfg.border} transition-all duration-200`}>
+    <div
+      className={`rounded-lg border p-3 ${cfg.bg} ${cfg.border} transition-all duration-200 ${
+        canNavigate ? "cursor-pointer hover:ring-1 hover:ring-red-400/40" : ""
+      }`}
+      onClick={() => {
+        if (canNavigate) onSelectPod!(event.podName, event.namespace ?? "");
+      }}
+      title={canNavigate ? `Selecionar pod ${event.podName} no canvas` : undefined}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <span className={`w-2 h-2 rounded-full flex-shrink-0 ${cfg.dot} ${
@@ -308,12 +318,13 @@ interface NodeMonitorPanelProps {
   open: boolean;
   onClose: () => void;
   monitor: NodeMonitorState & { clearEvents: () => void; refresh: () => void };
+  onSelectPod?: (podName: string, namespace: string) => void;
 }
 
 type TabId = "nodes" | "events" | "transitions";
 type FilterCategory = "all" | NodeEventCategory;
 
-export function NodeMonitorPanel({ open, onClose, monitor }: NodeMonitorPanelProps) {
+export function NodeMonitorPanel({ open, onClose, monitor, onSelectPod }: NodeMonitorPanelProps) {
   const [tab, setTab] = useState<TabId>("nodes");
   const [filterCategory, setFilterCategory] = useState<FilterCategory>("all");
   const [search, setSearch] = useState("");
@@ -531,7 +542,7 @@ export function NodeMonitorPanel({ open, onClose, monitor }: NodeMonitorPanelPro
                     : "Nenhum evento corresponde ao filtro."}
                 </div>
               ) : (
-                filteredEvents.map((e) => <EventCard key={e.uid} event={e} />)
+                filteredEvents.map((e) => <EventCard key={e.uid} event={e} onSelectPod={onSelectPod} />)
               )}
             </div>
           )}

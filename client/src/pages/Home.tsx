@@ -393,6 +393,17 @@ export default function Home() {
             open={showNodeMonitor}
             onClose={() => setShowNodeMonitor(false)}
             monitor={nodeMonitor}
+            onSelectPod={(podName, namespace) => {
+              // Tenta encontrar o pod pelo nome exato ou por prefixo (nome do pod pode ser truncado no evento)
+              const found =
+                pods.find((p) => p.name === podName && (!namespace || p.namespace === namespace)) ??
+                pods.find((p) => p.name === podName) ??
+                pods.find((p) => p.name.startsWith(podName) || podName.startsWith(p.name));
+              if (found) {
+                setSelectedPod(found);
+                setShowNodeMonitor(false);
+              }
+            }}
           />
         </main>
       </div>

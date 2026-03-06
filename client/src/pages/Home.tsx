@@ -24,6 +24,7 @@ import { ConfigModal } from "@/components/ConfigModal";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
 import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
+import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -245,6 +246,14 @@ export default function Home() {
 
         {/* Canvas principal */}
         <main className="flex-1 relative overflow-hidden grid-bg scanlines">
+
+          {/* ── Alerta de Spot Eviction iminente ──────────────────────────── */}
+          <SpotEvictionAlert
+            nodes={nodeMonitor.nodes}
+            pods={pods}
+            onSelectPod={(pod) => setSelectedPod(pod)}
+            onOpenNodeMonitor={() => setShowNodeMonitor(true)}
+          />
 
           {/* ── Banner de modo destaque ─────────────────────────────────────── */}
           <AnimatePresence>

@@ -176,8 +176,8 @@ async function getNodes() {
                 .map((k) => k.replace("node-role.kubernetes.io/", ""))
                 .join(",") || "worker",
       capacity: {
-        cpu:    parseCPU(cpuCap) * 1000,   // milicores totais
-        memory: parseMem(memCap),           // MiB totais
+        cpu:    parseCPU(cpuCap) * 1000,
+        memory: parseMem(memCap),
       },
       allocatable: {
         cpu:    parseCPU(cpuAlloc) * 1000,
@@ -187,6 +187,184 @@ async function getNodes() {
       createdAt: n.metadata.creationTimestamp,
     };
   });
+}
+
+// ── /api/nodes/health — condições detalhadas + taints Spot ────────────────────
+async function getNodesHealth() {
+  const result = await k8sRequest("/api/v1/nodes");
+  const items  = result.body?.items || [];
+
+  // Taints que indicam Spot/preemptível sendo removido pelo provedor
+  const SPOT_TAINTS = [
+    "kubernetes.azure.com/scalesetpriority=spot",
+    "cloud.google.com/gke-spot=true",
+    "eks.amazonaws.com/capacityType=SPOT",
+    "node.kubernetes.io/not-ready",
+    "node.cloudprovider.kubernetes.io/uninitialized",
+    "ToBeDeletedByClusterAutoscaler",
+  ];
+
+  return items.map((n) => {
+    const conditions = (n.status?.conditions || []).map((c) => ({
+      type:               c.type,
+      status:             c.status,
+      reason:             c.reason || "",
+      message:            c.message || "",
+      lastTransitionTime: c.lastTransitionTime,
+    }));
+
+    const ready         = conditions.find((c) => c.type === "Ready");
+    const memPressure   = conditions.find((c) => c.type === "MemoryPressure");
+    const diskPressure  = conditions.find((c) => c.type === "DiskPressure");
+    const pidPressure   = conditions.find((c) => c.type === "PIDPressure");
+    const networkUnavail = conditions.find((c) => c.type === "NetworkUnavailable");
+
+    const taints = (n.spec?.taints || []).map((t) => ({
+      key:    t.key,
+      value:  t.value || "",
+      effect: t.effect,
+    }));
+
+    // Detecta se é Spot/preemptível
+    const labels = n.metadata.labels || {};
+    const isSpot = (
+      labels["kubernetes.azure.com/scalesetpriority"] === "spot" ||
+      labels["cloud.google.com/gke-spot"] === "true" ||
+      labels["eks.amazonaws.com/capacityType"] === "SPOT" ||
+      labels["node.kubernetes.io/instance-type"]?.includes("spot") ||
+      taints.some((t) => SPOT_TAINTS.some((s) => `${t.key}=${t.value}`.includes(s) || t.key.includes("spot") || t.key.includes("preempt")))
+    );
+
+    // Detecta eviction iminente (taint ToBeDeletedByClusterAutoscaler ou node.kubernetes.io/not-ready)
+    const isBeingEvicted = taints.some((t) =>
+      t.key === "ToBeDeletedByClusterAutoscaler" ||
+      t.key === "DeletionCandidateOfClusterAutoscaler" ||
+      t.key === "node.kubernetes.io/not-ready" ||
+      t.key === "node.kubernetes.io/unreachable"
+    );
+
+    // Detecta scheduling desabilitado (cordon)
+    const unschedulable = n.spec?.unschedulable === true;
+
+    const cpuCap  = n.status?.capacity?.cpu    || "0";
+    const memCap  = n.status?.capacity?.memory || "0";
+    const cpuAlloc = n.status?.allocatable?.cpu    || cpuCap;
+    const memAlloc = n.status?.allocatable?.memory || memCap;
+
+    // Calcula saúde geral do node
+    let health = "healthy";
+    if (ready?.status !== "True") health = "critical";
+    else if (isBeingEvicted || unschedulable) health = "warning";
+    else if (
+      memPressure?.status  === "True" ||
+      diskPressure?.status === "True" ||
+      pidPressure?.status  === "True" ||
+      networkUnavail?.status === "True"
+    ) health = "warning";
+
+    return {
+      name:          n.metadata.name,
+      status:        ready?.status === "True" ? "Ready" : "NotReady",
+      health,
+      roles: Object.keys(labels)
+               .filter((k) => k.startsWith("node-role.kubernetes.io/"))
+               .map((k) => k.replace("node-role.kubernetes.io/", ""))
+               .join(",") || "worker",
+      isSpot,
+      isBeingEvicted,
+      unschedulable,
+      conditions,
+      taints,
+      labels,
+      capacity:    { cpu: parseCPU(cpuCap) * 1000, memory: parseMem(memCap) },
+      allocatable: { cpu: parseCPU(cpuAlloc) * 1000, memory: parseMem(memAlloc) },
+      createdAt:   n.metadata.creationTimestamp,
+      // Pressões resumidas
+      pressure: {
+        memory:  memPressure?.status  === "True",
+        disk:    diskPressure?.status === "True",
+        pid:     pidPressure?.status  === "True",
+        network: networkUnavail?.status === "True",
+      },
+    };
+  });
+}
+
+// ── /api/nodes/events — eventos de Warning relevantes para nodes ──────────────
+async function getNodeEvents() {
+  // Busca eventos de Warning de todos os namespaces relacionados a nodes
+  const [allEventsRes, ksEventsRes] = await Promise.allSettled([
+    k8sRequest("/api/v1/events?fieldSelector=type%3DWarning"),
+    k8sRequest("/api/v1/namespaces/kube-system/events?fieldSelector=type%3DWarning"),
+  ]);
+
+  const allEvents = allEventsRes.status === "fulfilled"
+    ? (allEventsRes.value.body?.items || [])
+    : [];
+  const ksEvents = ksEventsRes.status === "fulfilled"
+    ? (ksEventsRes.value.body?.items || [])
+    : [];
+
+  // Combina e deduplica por uid
+  const seen = new Set();
+  const combined = [...allEvents, ...ksEvents].filter((e) => {
+    if (seen.has(e.metadata.uid)) return false;
+    seen.add(e.metadata.uid);
+    return true;
+  });
+
+  // Razões que indicam problemas críticos de node
+  const NODE_CRITICAL_REASONS = new Set([
+    "OOMKilling", "OOMKilled", "SystemOOM",
+    "NodeNotReady", "NodeNotSchedulable", "NodeUnreachable",
+    "Evicted", "Evicting", "EvictionThresholdMet",
+    "SpotInterruption", "PreemptingNode", "NodePreempting",
+    "KubeletNotReady", "KubeletDown",
+    "NodeHasDiskPressure", "NodeHasMemoryPressure", "NodeHasPIDPressure",
+    "NodeNetworkUnavailable",
+    "FreeDiskSpaceFailed", "ImageGCFailed",
+    "ContainerGCFailed",
+  ]);
+
+  const NODE_WARNING_REASONS = new Set([
+    "Rebooted", "Starting", "NodeReady",
+    "NodeSchedulable",
+    "BackOffStartingContainer",
+    "FailedCreatePodContainer",
+    "FailedMount", "FailedAttachVolume",
+    "VolumeResizeFailed",
+  ]);
+
+  return combined
+    .filter((e) => {
+      const reason = e.reason || "";
+      const involvedKind = e.involvedObject?.kind || "";
+      // Inclui eventos de Node ou eventos de Pod relacionados a OOM/Eviction
+      return (
+        involvedKind === "Node" ||
+        NODE_CRITICAL_REASONS.has(reason) ||
+        NODE_WARNING_REASONS.has(reason)
+      );
+    })
+    .map((e) => ({
+      uid:          e.metadata.uid,
+      name:         e.metadata.name,
+      namespace:    e.metadata.namespace || "cluster",
+      reason:       e.reason || "Unknown",
+      message:      e.message || "",
+      type:         e.type || "Warning",
+      count:        e.count || 1,
+      nodeName:     e.involvedObject?.kind === "Node"
+                      ? e.involvedObject.name
+                      : (e.source?.host || ""),
+      podName:      e.involvedObject?.kind === "Pod" ? e.involvedObject.name : "",
+      involvedKind: e.involvedObject?.kind || "Unknown",
+      severity:     NODE_CRITICAL_REASONS.has(e.reason) ? "critical" : "warning",
+      firstTime:    e.firstTimestamp || e.eventTime || "",
+      lastTime:     e.lastTimestamp  || e.eventTime || "",
+    }))
+    .sort((a, b) => new Date(b.lastTime).getTime() - new Date(a.lastTime).getTime())
+    .slice(0, 200); // limita a 200 eventos mais recentes
 }
 
 // ── /api/cluster-info ─────────────────────────────────────────────────────────
@@ -270,6 +448,34 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ items: nodes, timestamp: Date.now() }));
     } catch (err) {
       console.error("[error] /api/nodes:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/nodes/health ────────────────────────────────────────────────────────
+  if (url.pathname === "/api/nodes/health") {
+    try {
+      const nodes = await getNodesHealth();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ items: nodes, timestamp: Date.now() }));
+    } catch (err) {
+      console.error("[error] /api/nodes/health:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/nodes/events ─────────────────────────────────────────────────────────
+  if (url.pathname === "/api/nodes/events") {
+    try {
+      const events = await getNodeEvents();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ items: events, timestamp: Date.now() }));
+    } catch (err) {
+      console.error("[error] /api/nodes/events:", err.message);
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
     }

@@ -14,6 +14,7 @@ import { AlertCircle, AlertTriangle, X } from "lucide-react";
 import { usePodData, useClusterMeta } from "@/hooks/usePodData";
 import { usePodHistory } from "@/hooks/usePodHistory";
 import { usePodStatusEvents } from "@/hooks/usePodStatusEvents";
+import { useNodeMonitor } from "@/hooks/useNodeMonitor";
 import { BubbleCanvas } from "@/components/BubbleCanvas";
 import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
@@ -22,6 +23,7 @@ import { PodDetailPanel } from "@/components/PodDetailPanel";
 import { ConfigModal } from "@/components/ConfigModal";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
+import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -33,6 +35,7 @@ export default function Home() {
   const [showConfig, setShowConfig] = useState(false);
   const [showAlerts, setShowAlerts] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
+  const [showNodeMonitor, setShowNodeMonitor] = useState(false);
   const [totalEvents, setTotalEvents] = useState(0);
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
@@ -80,6 +83,7 @@ export default function Home() {
 
   const { getHistory, recordSnapshot } = usePodHistory();
   const { recordStatusSnapshot, getEventsForPod, getAllEvents, clearEvents } = usePodStatusEvents();
+  const nodeMonitor = useNodeMonitor(inCluster);
 
   useEffect(() => {
     if (pods.length > 0) {
@@ -211,6 +215,8 @@ export default function Home() {
         onShowAlerts={() => setShowAlerts(true)}
         onShowEvents={() => setShowEvents(true)}
         totalEvents={totalEvents}
+        onShowNodeMonitor={() => setShowNodeMonitor(true)}
+        nodeAlertCount={nodeMonitor.criticalCount + nodeMonitor.warningCount}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
@@ -380,6 +386,13 @@ export default function Home() {
               const pod = pods.find((p) => p.name === podName && p.namespace === namespace);
               if (pod) { setSelectedPod(pod); setShowEvents(false); }
             }}
+          />
+
+          {/* Painel de monitoramento de nodes */}
+          <NodeMonitorPanel
+            open={showNodeMonitor}
+            onClose={() => setShowNodeMonitor(false)}
+            monitor={nodeMonitor}
           />
         </main>
       </div>

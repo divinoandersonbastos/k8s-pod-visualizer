@@ -19,6 +19,8 @@ import type { StatusEvent } from "@/hooks/usePodStatusEvents";
 import { PodLogsTab } from "./PodLogsTab";
 import { PodHistoryChart } from "./PodHistoryChart";
 import { PodStatusTimeline } from "./PodStatusTimeline";
+import { OomRiskBadge, OomRiskSummary } from "./OomRiskPanel";
+import type { OomRiskInfo } from "@/hooks/usePodOomRisk";
 
 interface PodDetailPanelProps {
   pod: PodMetrics | null;
@@ -28,6 +30,7 @@ interface PodDetailPanelProps {
   getHistory?: (podId: string) => HistoryPoint[];
   getEventsForPod?: (podId: string) => StatusEvent[];
   clearEvents?: () => void;
+  oomRisk?: OomRiskInfo | null;
 }
 
 const STATUS_CONFIG = {
@@ -64,7 +67,7 @@ function countEventsForPod(podId: string, getEventsForPod?: (id: string) => unkn
   return getEventsForPod(podId).length;
 }
 
-export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents }: PodDetailPanelProps) {
+export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [eventCount, setEventCount] = useState(0);
 
@@ -117,6 +120,12 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                 {pod.name}
               </div>
               <div className="text-[10px] text-slate-500 font-mono mt-0.5">{pod.namespace}</div>
+              {/* Badge de risco OOM */}
+              {oomRisk && oomRisk.riskLevel !== "none" && (
+                <div className="mt-1.5">
+                  <OomRiskBadge risk={oomRisk} />
+                </div>
+              )}
             </div>
             <button
               onClick={onClose}
@@ -186,6 +195,11 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
             {activeTab === "details" && (
               <div className="absolute inset-0 overflow-y-auto">
                 <div className="p-4 space-y-5">
+
+                  {/* Risco de OOMKill preditivo */}
+                  {oomRisk && oomRisk.riskLevel !== "none" && (
+                    <OomRiskSummary risk={oomRisk} pod={pod} />
+                  )}
 
                   {/* Status badge */}
                   <div

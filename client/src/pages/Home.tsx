@@ -15,6 +15,7 @@ import { usePodData, useClusterMeta } from "@/hooks/usePodData";
 import { usePodHistory } from "@/hooks/usePodHistory";
 import { usePodStatusEvents } from "@/hooks/usePodStatusEvents";
 import { useNodeMonitor } from "@/hooks/useNodeMonitor";
+import { usePodOomRisk } from "@/hooks/usePodOomRisk";
 import { BubbleCanvas } from "@/components/BubbleCanvas";
 import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
@@ -25,6 +26,7 @@ import { AlertsPanel } from "@/components/AlertsPanel";
 import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
 import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
+import { OomRiskBanner } from "@/components/OomRiskPanel";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -85,6 +87,7 @@ export default function Home() {
   const { getHistory, recordSnapshot } = usePodHistory();
   const { recordStatusSnapshot, getEventsForPod, getAllEvents, clearEvents } = usePodStatusEvents();
   const nodeMonitor = useNodeMonitor(inCluster);
+  const oomRisk = usePodOomRisk(pods);
 
   useEffect(() => {
     if (pods.length > 0) {
@@ -372,6 +375,17 @@ export default function Home() {
             getHistory={getHistory}
             getEventsForPod={getEventsForPod}
             clearEvents={clearEvents}
+            oomRisk={selectedPod ? oomRisk.getRiskForPod(selectedPod.id) : null}
+          />
+
+          {/* Banner de risco de OOMKill */}
+          <OomRiskBanner
+            highRiskPods={oomRisk.highRiskPods}
+            mediumRiskPods={oomRisk.mediumRiskPods}
+            onSelectPod={(podId) => {
+              const pod = pods.find((p) => p.id === podId);
+              if (pod) setSelectedPod(pod);
+            }}
           />
 
           {/* Painel de alertas */}

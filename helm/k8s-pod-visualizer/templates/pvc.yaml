@@ -1,0 +1,52 @@
+{{- if and .Values.storage.enabled (not (eq .Values.storage.type "hostpath")) (not (eq .Values.storage.type "nfs")) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "k8s-pod-visualizer.fullname" . }}-data
+  namespace: {{ include "k8s-pod-visualizer.namespace" . }}
+  labels:
+    {{- include "k8s-pod-visualizer.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.storage.accessMode | default "ReadWriteOnce" }}
+  storageClassName: {{ include "k8s-pod-visualizer.storageClassName" . }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.size | default "2Gi" }}
+{{- end }}
+
+{{- if and .Values.storage.enabled (eq .Values.storage.type "nfs") }}
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: {{ include "k8s-pod-visualizer.fullname" . }}-nfs
+  labels:
+    {{- include "k8s-pod-visualizer.labels" . | nindent 4 }}
+spec:
+  capacity:
+    storage: {{ .Values.storage.size | default "2Gi" }}
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  nfs:
+    server: {{ .Values.storage.nfs.server | required "storage.nfs.server is required when storage.type=nfs" }}
+    path: {{ .Values.storage.nfs.path | required "storage.nfs.path is required when storage.type=nfs" }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "k8s-pod-visualizer.fullname" . }}-data
+  namespace: {{ include "k8s-pod-visualizer.namespace" . }}
+  labels:
+    {{- include "k8s-pod-visualizer.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: {{ include "k8s-pod-visualizer.fullname" . }}-nfs
+  resources:
+    requests:
+      storage: {{ .Values.storage.size | default "2Gi" }}
+{{- end }}

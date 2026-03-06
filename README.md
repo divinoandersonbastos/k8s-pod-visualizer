@@ -1,509 +1,265 @@
+<div align="center">
+
+<img src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-v2_11825c4c.png" alt="CentralDevOps" width="380" />
+
+<br/>
+
 # K8s Pod Visualizer
 
-> Visualização em tempo real do consumo de CPU e memória dos pods de um cluster Kubernetes, com física de bolhas interativas e modo de constelações por namespace.
+**Dashboard interativo de bolhas para monitoramento de Kubernetes em tempo real**
 
-![K8s Pod Visualizer — modo constelação](https://raw.githubusercontent.com/placeholder/k8s-pod-visualizer/main/docs/preview.png)
+[![Version](https://img.shields.io/badge/version-1.3.5-00b5d8?style=flat-square&logo=kubernetes&logoColor=white)](https://github.com/divinoandersonbastos/k8s-pod-visualizer/releases)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-48bb78?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
+[![React](https://img.shields.io/badge/react-19-61dafb?style=flat-square&logo=react&logoColor=white)](https://react.dev)
+[![Kubernetes](https://img.shields.io/badge/kubernetes-%3E%3D1.20-326ce5?style=flat-square&logo=kubernetes&logoColor=white)](https://kubernetes.io)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ed?style=flat-square&logo=docker&logoColor=white)](https://hub.docker.com/r/divand/k8s-pod-visualizer)
+[![WhatsApp](https://img.shields.io/badge/suporte-WhatsApp-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://wa.me/5561999529713)
 
----
+<br/>
 
-## Sumário
+<img src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/landing-hero-grafana-QbsvRRvnvcoEHkf3kdXCrN.png" alt="K8s Pod Visualizer Dashboard" width="900" />
 
-- [Visão Geral](#visão-geral)
-- [Funcionalidades](#funcionalidades)
-- [Tecnologias](#tecnologias)
-- [Instalação Local](#instalação-local)
-- [Integração com Cluster Kubernetes](#integração-com-cluster-kubernetes)
-  - [Pré-requisitos](#pré-requisitos)
-  - [Opção 1 — kubectl proxy (recomendado para desenvolvimento)](#opção-1--kubectl-proxy-recomendado-para-desenvolvimento)
-  - [Opção 2 — API proxy customizado (produção)](#opção-2--api-proxy-customizado-produção)
-  - [Formato esperado da API](#formato-esperado-da-api)
-- [Configuração](#configuração)
-- [Estrutura do Projeto](#estrutura-do-projeto)
-- [Modos de Visualização](#modos-de-visualização)
-- [Publicação](#publicação)
+</div>
 
 ---
 
-## Visão Geral
+## O que é?
 
-O **K8s Pod Visualizer** é uma aplicação web estática (React + TypeScript) que exibe os pods de um cluster Kubernetes como bolhas coloridas em um canvas SVG com física de simulação. O tamanho de cada bolha é proporcional ao consumo de recursos, e a cor indica o nível de criticidade:
+O **K8s Pod Visualizer** é um dashboard de observabilidade Kubernetes que transforma dados de pods em uma **visualização interativa de bolhas** com física de partículas. Cada bolha representa um pod — o tamanho é proporcional ao consumo de recursos e a cor indica o status de saúde.
 
-| Cor | Significado | Limiar |
-|---|---|---|
-| 🟢 Verde | Saudável | CPU e Memória < 60% |
-| 🟠 Laranja | Atenção | CPU ou Memória entre 60% e 85% |
-| 🔴 Vermelho | Crítico | CPU ou Memória > 85% |
-
-A aplicação funciona em **modo simulado** por padrão (sem necessidade de cluster) e pode ser conectada a um cluster real via `kubectl proxy` ou uma API intermediária.
+Desenvolvido pela [CentralDevOps](https://centraldevops.com) e testado em clusters AKS com **498+ pods** em produção real.
 
 ---
 
-## Funcionalidades
+## ✨ Features
 
-- **Visualização de bolhas** com física de simulação (repulsão, atração, bouncing nas bordas)
-- **Modo Livre** — todas as bolhas flutuam juntas no canvas
-- **Modo Constelação** — bolhas se agrupam por namespace com halos coloridos, rótulos e linhas de conexão
-- **Alternância CPU / Memória** — o tamanho e a cor das bolhas refletem o recurso selecionado
-- **Painel de detalhes** ao clicar em uma bolha (gauges circulares, barras de progresso, labels)
-- **Tabela inferior** com ranking dos pods de maior consumo
-- **Filtro por namespace** com contagem de pods
-- **Busca** por nome de pod, namespace ou node
-- **Pause / Retomar** atualização em tempo real
-- **Configuração de API** via modal (URL + intervalo de atualização)
-- **Pods críticos pulsam** com animação de glow
-
----
-
-## Tecnologias
-
-| Camada | Tecnologia |
+| Feature | Descrição |
 |---|---|
-| Framework | React 19 + TypeScript |
-| Estilização | Tailwind CSS 4 |
-| Componentes | shadcn/ui + Radix UI |
-| Animações | Framer Motion |
-| Visualização | SVG nativo com física customizada |
-| Build | Vite 7 |
-| Fontes | Space Grotesk + JetBrains Mono |
+| 🫧 **Bubble Canvas** | Física de partículas, zoom/pan, modo Constelação por namespace |
+| 🔴 **OOMKill Prediction** | Regressão linear detecta tendência de memória antes do kernel matar o processo |
+| ⚡ **Spot Eviction Alert** | Banner de emergência com contagem regressiva para VMs Spot (AKS/GKE/EKS) |
+| 🖥️ **Node Monitor** | Saúde dos nodes, taints, pressão de memória/disco/PID e timeline de eventos |
+| 📋 **Status History** | Histórico de transições (Healthy→Warning→Critical) com CPU%, MEM% e timestamp |
+| 🗄️ **SQLite Persistence** | Eventos persistidos em SQLite via PVC — sobrevive a reinicializações do pod |
+| 🔍 **Global Events Drawer** | Timeline global com filtros por namespace/status e exportação CSV |
+| 📦 **Multi-container** | Seletor de container na aba Logs para pods com múltiplos containers |
+| 🎯 **Critical Filter** | Modo destaque para exibir apenas pods críticos ou em alerta |
+| 🔒 **RBAC Native** | ServiceAccount com permissões mínimas, sem credenciais externas |
 
 ---
 
-## Instalação Local
+## 📸 Screenshots
+
+<div align="center">
+<table>
+<tr>
+<td align="center">
+<img src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/landing-feature-nodes-f6VBM7WJjmPEoEFDDC2WBH.png" width="420" alt="Node Monitor" />
+<br/><sub><b>Node Monitor — Spot Eviction & OOMKill</b></sub>
+</td>
+<td align="center">
+<img src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/landing-feature-oom-iHxuW2G7f9gcNhJKcKrFNZ.png" width="420" alt="OOM Prediction" />
+<br/><sub><b>OOMKill Prediction — Memory Trend Analysis</b></sub>
+</td>
+</tr>
+</table>
+</div>
+
+---
+
+## 🚀 Instalação rápida
 
 ### Pré-requisitos
 
-- **Node.js** ≥ 18 ([download](https://nodejs.org))
-- **pnpm** ≥ 9 (ou npm/yarn)
+- Kubernetes ≥ 1.20 com **Metrics Server** instalado
+- `kubectl` configurado com acesso ao cluster
+- Permissões para criar `ClusterRole`, `ServiceAccount` e `Deployment`
 
 ```bash
-# Instalar pnpm globalmente (se necessário)
-npm install -g pnpm
+# Verificar Metrics Server
+kubectl get deployment metrics-server -n kube-system
+
+# Instalar se necessário
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
 
-### Clonar e instalar dependências
+### kubectl apply (recomendado)
 
 ```bash
-git clone https://github.com/seu-usuario/k8s-pod-visualizer.git
+# 1. RBAC e namespace
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/base/00-namespace-rbac.yaml
+
+# 2. Storage — escolha seu ambiente:
+
+## Azure AKS
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/cloud/azure/
+
+## On-premises com Longhorn
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/onpremises/longhorn/
+
+## On-premises com NFS
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/onpremises/nfs/
+
+## On-premises com hostPath (teste/dev)
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/onpremises/hostpath/
+
+# 3. Verificar
+kubectl get pods -n k8s-pod-visualizer
+kubectl get pvc  -n k8s-pod-visualizer
+
+# 4. Acessar
+kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n k8s-pod-visualizer
+# Abrir: http://localhost:8080
+```
+
+### Helm Chart
+
+```bash
+helm repo add centraldevops https://centraldevops.github.io/helm-charts
+helm repo update
+
+# Instalar (Azure AKS)
+helm install k8s-pod-visualizer centraldevops/k8s-pod-visualizer \
+  --namespace k8s-pod-visualizer \
+  --create-namespace \
+  --set storage.type=azure \
+  --set storage.size=2Gi \
+  --set image.tag=1.3.5
+```
+
+### Docker (desenvolvimento local)
+
+```bash
+docker run -p 8080:8080 \
+  -e DATA_DIR=/data \
+  -v $(pwd)/data:/data \
+  divand/k8s-pod-visualizer:1.3.5
+# Abrir: http://localhost:8080
+```
+
+---
+
+## 🔄 Atualizar no cluster
+
+```bash
+kubectl set image deployment/k8s-pod-visualizer \
+  k8s-pod-visualizer=divand/k8s-pod-visualizer:1.3.5 \
+  -n k8s-pod-visualizer
+
+kubectl rollout status deployment/k8s-pod-visualizer -n k8s-pod-visualizer
+```
+
+---
+
+## ⚙️ Configuração
+
+### Variáveis de ambiente
+
+| Variável | Padrão | Descrição |
+|---|---|---|
+| `DATA_DIR` | `/app/data` | Diretório do banco SQLite |
+| `PORT` | `8080` | Porta do servidor HTTP |
+| `REFRESH_INTERVAL` | `3000` | Intervalo de polling em ms |
+| `MAX_EVENTS` | `500` | Máximo de eventos no banco |
+
+### Thresholds de status (padrão)
+
+| Status | Critério |
+|---|---|
+| 🟢 **Saudável** | CPU < 60% **e** MEM < 60% |
+| 🟠 **Alerta** | CPU ≥ 60% **ou** MEM ≥ 60% |
+| 🔴 **Crítico** | CPU ≥ 85% **ou** MEM ≥ 85% |
+
+---
+
+## 🏗️ Desenvolvimento local
+
+```bash
+git clone https://github.com/divinoandersonbastos/k8s-pod-visualizer.git
 cd k8s-pod-visualizer
 
 pnpm install
-```
+pnpm dev          # http://localhost:3000 (modo simulado)
 
-### Iniciar em modo desenvolvimento
-
-```bash
-pnpm dev
-```
-
-A aplicação estará disponível em `http://localhost:3000`.
-
-Por padrão, os dados são **simulados** — nenhum cluster é necessário para visualizar a interface.
-
-### Build de produção
-
-```bash
-pnpm build
-pnpm preview   # para testar o build localmente
-```
-
-Os arquivos estáticos são gerados em `dist/public/`.
-
----
-
-## Integração com Cluster Kubernetes
-
-Para conectar a aplicação a um cluster real, é necessário expor as métricas dos pods via HTTP e configurar a URL no modal de configurações (ícone ⚙️ no header).
-
-### Pré-requisitos
-
-O cluster precisa ter o **Metrics Server** instalado:
-
-```bash
-# Verificar se o metrics-server está rodando
-kubectl get deployment metrics-server -n kube-system
-
-# Instalar se necessário (Kubernetes vanilla)
-kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
-
-# Para clusters locais (kind, minikube) — adicionar flag de TLS inseguro
-kubectl patch deployment metrics-server -n kube-system \
-  --type='json' \
-  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
-```
-
-Verifique se as métricas estão funcionando:
-
-```bash
-kubectl top pods --all-namespaces
+pnpm build        # build de produção
+pnpm tsc --noEmit # verificar TypeScript
 ```
 
 ---
 
-### Opção 1 — kubectl proxy (recomendado para desenvolvimento)
-
-O `kubectl proxy` cria um proxy HTTP local que autentica automaticamente as chamadas à API do Kubernetes usando suas credenciais do `kubeconfig`.
-
-**Passo 1 — Criar o script de proxy com agregação de métricas**
-
-Salve o arquivo `k8s-metrics-proxy.js` na raiz do projeto:
-
-```javascript
-// k8s-metrics-proxy.js
-// Proxy Node.js que agrega pods + métricas do Kubernetes e serve no formato esperado pelo visualizador
-const http = require("http");
-
-const K8S_API = "http://localhost:8001"; // kubectl proxy padrão
-const PORT = 3001;
-
-async function fetchJson(url) {
-  return new Promise((resolve, reject) => {
-    http.get(url, (res) => {
-      let data = "";
-      res.on("data", (chunk) => (data += chunk));
-      res.on("end", () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
-      });
-    }).on("error", reject);
-  });
-}
-
-function parseQuantity(q) {
-  if (!q) return 0;
-  if (q.endsWith("m")) return parseInt(q);           // millicores
-  if (q.endsWith("n")) return parseInt(q) / 1e6;     // nanocores → millicores
-  return parseInt(q) * 1000;                          // cores → millicores
-}
-
-function parseMemory(q) {
-  if (!q) return 0;
-  if (q.endsWith("Ki")) return Math.round(parseInt(q) / 1024);   // KiB → MiB
-  if (q.endsWith("Mi")) return parseInt(q);
-  if (q.endsWith("Gi")) return parseInt(q) * 1024;
-  if (q.endsWith("k"))  return Math.round(parseInt(q) / 1000);
-  if (q.endsWith("M"))  return parseInt(q);
-  if (q.endsWith("G"))  return parseInt(q) * 1024;
-  return Math.round(parseInt(q) / (1024 * 1024));
-}
-
-function getStatus(cpuPct, memPct) {
-  if (cpuPct >= 85 || memPct >= 85) return "critical";
-  if (cpuPct >= 60 || memPct >= 60) return "warning";
-  return "healthy";
-}
-
-function formatAge(creationTimestamp) {
-  const ms = Date.now() - new Date(creationTimestamp).getTime();
-  const h = Math.floor(ms / 3600000);
-  if (h < 24) return `${h}h`;
-  return `${Math.floor(h / 24)}d`;
-}
-
-async function buildPodList() {
-  const [podsResp, metricsResp] = await Promise.all([
-    fetchJson(`${K8S_API}/api/v1/pods`),
-    fetchJson(`${K8S_API}/apis/metrics.k8s.io/v1beta1/pods`),
-  ]);
-
-  // Índice de métricas por namespace/name
-  const metricsMap = {};
-  for (const item of metricsResp.items || []) {
-    const key = `${item.metadata.namespace}/${item.metadata.name}`;
-    const containers = item.containers || [];
-    metricsMap[key] = {
-      cpu: containers.reduce((s, c) => s + parseQuantity(c.usage?.cpu), 0),
-      memory: containers.reduce((s, c) => s + parseMemory(c.usage?.memory), 0),
-    };
-  }
-
-  const result = [];
-  for (const pod of podsResp.items || []) {
-    if (pod.status?.phase !== "Running") continue;
-
-    const ns = pod.metadata.namespace;
-    const name = pod.metadata.name;
-    const key = `${ns}/${name}`;
-    const metrics = metricsMap[key] || { cpu: 0, memory: 0 };
-
-    // Calcular limites somando todos os containers
-    const containers = pod.spec?.containers || [];
-    const cpuLimit = containers.reduce((s, c) => {
-      return s + parseQuantity(c.resources?.limits?.cpu || "500m");
-    }, 0);
-    const memLimit = containers.reduce((s, c) => {
-      return s + parseMemory(c.resources?.limits?.memory || "512Mi");
-    }, 0);
-
-    const cpuPercent = cpuLimit > 0 ? (metrics.cpu / cpuLimit) * 100 : 0;
-    const memPercent = memLimit > 0 ? (metrics.memory / memLimit) * 100 : 0;
-
-    const restarts = (pod.status?.containerStatuses || [])
-      .reduce((s, c) => s + (c.restartCount || 0), 0);
-
-    result.push({
-      id: pod.metadata.uid,
-      name,
-      namespace: ns,
-      node: pod.spec?.nodeName || "unknown",
-      status: getStatus(cpuPercent, memPercent),
-      cpuUsage: Math.round(metrics.cpu),
-      cpuLimit,
-      cpuPercent: Math.min(100, cpuPercent),
-      memoryUsage: Math.round(metrics.memory),
-      memoryLimit: memLimit,
-      memoryPercent: Math.min(100, memPercent),
-      restarts,
-      age: formatAge(pod.metadata.creationTimestamp),
-      containers: containers.length,
-      ready: (pod.status?.containerStatuses || []).filter((c) => c.ready).length,
-      labels: pod.metadata.labels || {},
-    });
-  }
-
-  return result;
-}
-
-const server = http.createServer(async (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Content-Type", "application/json");
-
-  if (req.url === "/pods" || req.url === "/pods?metrics=true") {
-    try {
-      const pods = await buildPodList();
-      res.writeHead(200);
-      res.end(JSON.stringify(pods));
-    } catch (e) {
-      res.writeHead(500);
-      res.end(JSON.stringify({ error: e.message }));
-    }
-  } else {
-    res.writeHead(404);
-    res.end(JSON.stringify({ error: "Not found" }));
-  }
-});
-
-server.listen(PORT, () => {
-  console.log(`K8s Metrics Proxy rodando em http://localhost:${PORT}`);
-  console.log(`Endpoint: http://localhost:${PORT}/pods`);
-});
-```
-
-**Passo 2 — Iniciar o kubectl proxy e o script de agregação**
-
-Em dois terminais separados:
-
-```bash
-# Terminal 1 — kubectl proxy
-kubectl proxy --port=8001
-
-# Terminal 2 — proxy de métricas
-node k8s-metrics-proxy.js
-```
-
-**Passo 3 — Configurar a URL no visualizador**
-
-1. Abra o visualizador em `http://localhost:3000`
-2. Clique no ícone ⚙️ no header
-3. No campo **URL da API**, insira: `http://localhost:3001/pods`
-4. Ajuste o **intervalo de atualização** (padrão: 3 segundos)
-5. Clique em **Salvar**
-
-As bolhas passarão a refletir os pods reais do cluster.
-
----
-
-### Opção 2 — API proxy customizado (produção)
-
-Para ambientes de produção ou CI, recomenda-se criar um backend dedicado com autenticação via ServiceAccount:
-
-```bash
-# Criar ServiceAccount com permissões de leitura
-kubectl apply -f - <<EOF
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: pod-visualizer
-  namespace: kube-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: pod-visualizer-reader
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["metrics.k8s.io"]
-    resources: ["pods"]
-    verbs: ["get", "list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: pod-visualizer-binding
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: pod-visualizer-reader
-subjects:
-  - kind: ServiceAccount
-    name: pod-visualizer
-    namespace: kube-system
-EOF
-
-# Obter o token do ServiceAccount (Kubernetes ≥ 1.24)
-kubectl create token pod-visualizer -n kube-system --duration=8760h
-```
-
-Use o token no header `Authorization: Bearer <token>` nas chamadas à API do Kubernetes.
-
----
-
-### Formato esperado da API
-
-O endpoint configurado deve retornar um array JSON no seguinte formato:
-
-```json
-[
-  {
-    "id": "uid-único-do-pod",
-    "name": "api-gateway-abc12",
-    "namespace": "production",
-    "node": "worker-node-01",
-    "status": "healthy",
-    "cpuUsage": 220,
-    "cpuLimit": 800,
-    "cpuPercent": 27.5,
-    "memoryUsage": 384,
-    "memoryLimit": 1024,
-    "memoryPercent": 37.5,
-    "restarts": 0,
-    "age": "2d",
-    "containers": 2,
-    "ready": 2,
-    "labels": { "app": "api-gateway", "env": "production" }
-  }
-]
-```
-
-| Campo | Tipo | Unidade | Descrição |
-|---|---|---|---|
-| `id` | string | — | Identificador único (UID do pod) |
-| `cpuUsage` | number | millicores (m) | CPU consumida |
-| `cpuLimit` | number | millicores (m) | Limite de CPU configurado |
-| `cpuPercent` | number | 0–100 | Percentual de uso de CPU |
-| `memoryUsage` | number | MiB | Memória consumida |
-| `memoryLimit` | number | MiB | Limite de memória configurado |
-| `memoryPercent` | number | 0–100 | Percentual de uso de memória |
-| `status` | string | — | `"healthy"`, `"warning"` ou `"critical"` |
-
----
-
-## Configuração
-
-As configurações são persistidas na sessão via estado React. Para alterar os padrões, edite `client/src/pages/Home.tsx`:
-
-```typescript
-const [refreshInterval, setRefreshInterval] = useState(3000); // ms
-const [apiUrl, setApiUrl] = useState("");                      // vazio = modo simulado
-```
-
-### Thresholds de status
-
-Para alterar os limites de alerta, edite `client/src/hooks/usePodData.ts`:
-
-```typescript
-function getStatus(cpuPercent: number, memPercent: number): PodStatus {
-  if (cpuPercent >= 85 || memPercent >= 85) return "critical"; // ← altere aqui
-  if (cpuPercent >= 60 || memPercent >= 60) return "warning";  // ← altere aqui
-  return "healthy";
-}
-```
-
----
-
-## Estrutura do Projeto
+## 🗂️ Estrutura do projeto
 
 ```
 k8s-pod-visualizer/
-├── client/
-│   ├── index.html                    # Entry point HTML
+├── client/                     # Frontend React 19 + Tailwind 4
 │   └── src/
-│       ├── components/
-│       │   ├── BubbleCanvas.tsx      # Visualização SVG com física de bolhas
-│       │   ├── ClusterHeader.tsx     # Header com status e busca
-│       │   ├── ClusterSidebar.tsx    # Sidebar com filtros e estatísticas
-│       │   ├── ConfigModal.tsx       # Modal de configuração da API
-│       │   └── PodDetailPanel.tsx    # Painel lateral de detalhes do pod
-│       ├── hooks/
-│       │   └── usePodData.ts         # Hook de dados (simulado ou API real)
-│       ├── pages/
-│       │   └── Home.tsx              # Página principal
-│       ├── App.tsx
-│       ├── index.css                 # Tema dark + variáveis CSS
-│       └── main.tsx
-├── k8s-metrics-proxy.js              # Proxy de métricas (Node.js, sem dependências)
-├── package.json
-├── vite.config.ts
-└── README.md
+│       ├── components/         # BubbleCanvas, NodeMonitorPanel, GlobalEventsDrawer...
+│       ├── hooks/              # usePodData, useNodeMonitor, usePodOomRisk...
+│       └── pages/              # Home.tsx, Landing.tsx
+├── deploy/                     # Manifests Kubernetes
+│   ├── base/                   # RBAC + namespace (compartilhado)
+│   ├── cloud/azure/            # Azure Disk (StandardSSD_LRS)
+│   └── onpremises/             # hostPath | NFS | Longhorn
+├── helm/                       # Helm Chart
+│   └── k8s-pod-visualizer/
+│       ├── Chart.yaml
+│       ├── values.yaml
+│       └── templates/
+├── server-in-cluster.js        # Backend Node.js (roda dentro do cluster)
+├── db.js                       # Módulo SQLite (better-sqlite3)
+└── Dockerfile                  # Multi-stage build
 ```
 
 ---
 
-## Modos de Visualização
+## 📊 Compatibilidade
 
-### Modo Livre
-
-As bolhas flutuam livremente no canvas com física de repulsão mútua e atração ao centro. Ideal para uma visão geral do cluster.
-
-### Modo Constelação
-
-Cada namespace forma um grupo separado ("constelação") com:
-
-- **Halo radial** colorido ao redor do grupo
-- **Borda pontilhada** delimitando a constelação
-- **Rótulo flutuante** com o nome do namespace e contagem de pods
-- **Anéis coloridos** nas bolhas identificando o namespace
-- **Linhas de conexão** ao centro do grupo
-- **Indicadores de cor** na sidebar para correlação visual
-
-A física usa força de atração ao centro do namespace e repulsão entre grupos distintos.
+| Plataforma | Status | Storage recomendado |
+|---|---|---|
+| Azure AKS | ✅ Testado | Azure Disk StandardSSD_LRS |
+| Google GKE | ✅ Compatível | pd-ssd StorageClass |
+| Amazon EKS | ✅ Compatível | gp3 StorageClass |
+| k3s | ✅ Testado | local-path ou Longhorn |
+| RKE2 | ✅ Compatível | Longhorn |
+| Bare metal | ✅ Compatível | NFS ou hostPath |
+| OpenShift | ⚠️ Parcial | SCC ajuste necessário |
 
 ---
 
-## Publicação
+## 🗺️ Roadmap
 
-### Manus (recomendado)
+Veja o [ROADMAP.md](ROADMAP.md) para o planejamento completo.
 
-Clique no botão **Publish** no painel de gerenciamento para publicar em `*.manus.space` com domínio customizável.
-
-### GitHub Pages / Netlify / Vercel
-
-```bash
-pnpm build
-# Faça upload do conteúdo de dist/public/ para o seu host estático preferido
-```
-
-### Docker
-
-```dockerfile
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY . .
-RUN npm install -g pnpm && pnpm install && pnpm build
-
-FROM nginx:alpine
-COPY --from=builder /app/dist/public /usr/share/nginx/html
-EXPOSE 80
-```
-
-```bash
-docker build -t k8s-pod-visualizer .
-docker run -p 8080:80 k8s-pod-visualizer
-```
+**Próximas versões:**
+- `v1.4.0` — Dashboard de banco de dados + thresholds por namespace
+- `v1.5.0` — Notificações push + integração Slack/Teams
+- `v2.0.0` — Multi-cluster + SSO/LDAP
 
 ---
 
-## Licença
+## 🤝 Suporte
 
-MIT — sinta-se livre para usar, modificar e distribuir.
+| Canal | Contato |
+|---|---|
+| 💬 WhatsApp | [+55 61 99952-9713](https://wa.me/5561999529713) |
+| ✈️ Telegram | [+55 61 99952-9713](https://t.me/+5561999529713) |
+| 🐛 Issues | [GitHub Issues](https://github.com/divinoandersonbastos/k8s-pod-visualizer/issues) |
+| 🌐 Site | [centraldevops.com](https://centraldevops.com) |
+
+---
+
+## 📄 Licença
+
+Copyright © 2026 [CentralDevOps](https://centraldevops.com). Todos os direitos reservados.
+
+Este software é proprietário. Para uso comercial, entre em contato via [WhatsApp](https://wa.me/5561999529713).
+
+---
+
+<div align="center">
+
+Feito com ❤️ pela equipe **CentralDevOps**
+
+[centraldevops.com](https://centraldevops.com) · [WhatsApp](https://wa.me/5561999529713) · [Telegram](https://t.me/+5561999529713)
+
+</div>

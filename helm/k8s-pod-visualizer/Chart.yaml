@@ -1,0 +1,48 @@
+apiVersion: v2
+name: k8s-pod-visualizer
+description: |
+  Dashboard interativo de bolhas para monitoramento de Kubernetes em tempo real.
+  Desenvolvido pela CentralDevOps — https://centraldevops.com
+type: application
+version: 1.3.5
+appVersion: "1.3.5"
+
+keywords:
+  - kubernetes
+  - monitoring
+  - observability
+  - pods
+  - dashboard
+  - devops
+  - sre
+
+home: https://centraldevops.com
+sources:
+  - https://github.com/divinoandersonbastos/k8s-pod-visualizer
+
+maintainers:
+  - name: CentralDevOps
+    email: contato@centraldevops.com
+    url: https://centraldevops.com
+
+icon: https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-icon-Mw3bVLFqQMhXN3LNHG2KNs.png
+
+annotations:
+  artifacthub.io/changes: |
+    - kind: added
+      description: "SQLite persistence via PVC"
+    - kind: added
+      description: "Node Monitor with Spot Eviction Alert"
+    - kind: added
+      description: "OOMKill predictive detection"
+    - kind: added
+      description: "Global Events Drawer with CSV export"
+  artifacthub.io/license: Proprietary
+  artifacthub.io/maintainers: |
+    - name: CentralDevOps
+      email: contato@centraldevops.com
+  artifacthub.io/links: |
+    - name: support
+      url: https://wa.me/5561999529713
+    - name: source
+      url: https://github.com/divinoandersonbastos/k8s-pod-visualizer

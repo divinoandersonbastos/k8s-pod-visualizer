@@ -1,0 +1,55 @@
+╔══════════════════════════════════════════════════════════════╗
+║         K8s Pod Visualizer — CentralDevOps                  ║
+║         https://centraldevops.com                           ║
+╚══════════════════════════════════════════════════════════════╝
+
+✅ K8s Pod Visualizer {{ .Chart.AppVersion }} instalado com sucesso!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 VERIFICAR STATUS
+
+  kubectl get pods -n {{ include "k8s-pod-visualizer.namespace" . }}
+  kubectl get pvc  -n {{ include "k8s-pod-visualizer.namespace" . }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🌐 ACESSAR O DASHBOARD
+
+{{- if .Values.ingress.enabled }}
+  URL: http{{ if .Values.ingress.tls }}s{{ end }}://{{ (first .Values.ingress.hosts).host }}
+{{- else if eq .Values.service.type "LoadBalancer" }}
+  Aguarde o IP externo:
+  kubectl get svc {{ include "k8s-pod-visualizer.fullname" . }} -n {{ include "k8s-pod-visualizer.namespace" . }} -w
+
+  export SERVICE_IP=$(kubectl get svc {{ include "k8s-pod-visualizer.fullname" . }} -n {{ include "k8s-pod-visualizer.namespace" . }} -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+  echo "http://$SERVICE_IP:{{ .Values.service.port }}"
+{{- else }}
+  Port-forward (acesso local):
+  kubectl port-forward svc/{{ include "k8s-pod-visualizer.fullname" . }} 8080:{{ .Values.service.port }} -n {{ include "k8s-pod-visualizer.namespace" . }}
+
+  Abrir: http://localhost:8080
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🗄️ PERSISTÊNCIA
+
+{{- if .Values.storage.enabled }}
+  Storage habilitado: {{ .Values.storage.type }} ({{ .Values.storage.size }})
+  Dados em: {{ .Values.storage.mountPath }}
+  Os eventos e histórico de métricas sobrevivem a reinicializações.
+{{- else }}
+  ⚠️  Storage desabilitado — dados em memória apenas.
+  Para habilitar: helm upgrade --set storage.enabled=true ...
+{{- end }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📞 SUPORTE
+
+  WhatsApp: https://wa.me/5561999529713
+  Telegram: https://t.me/+5561999529713
+  Site:     https://centraldevops.com
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

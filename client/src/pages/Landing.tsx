@@ -1,733 +1,909 @@
 /**
  * Landing Page — K8s Pod Visualizer by CentralDevOps
- * Design: Terminal Dark / SRE Observability
- * Palette: #0D1117 bg, #58A6FF blue, #3FB950 green, #FF7B72 red, #D29922 yellow
- * Font: Space Grotesk (headings) + Roboto Mono (code/labels)
+ * Design: Grafana Dark — deep navy, neon accents, monospace typography
+ * Palette: #0f1117 bg, #1a1f2e panels, #00b5d8 cyan, #48bb78 green, #ed8936 orange, #fc8181 red
  */
 
-import { useState } from "react";
-import { motion } from "framer-motion";
+import { useState, useEffect, useRef } from "react";
 import {
-  Activity, AlertCircle, AlertTriangle, BarChart2, Bell,
-  CheckCircle, ChevronDown, ChevronRight, Cloud, Code2,
-  Database, ExternalLink, Github, Globe, HardDrive, Layers,
-  MessageCircle, Monitor, Send, Server, Shield, Zap,
+  Activity, AlertCircle, AlertTriangle, ArrowRight, BarChart2, Bell,
+  Box, CheckCircle, ChevronDown, ChevronRight, Cloud, Code2, Cpu,
+  Database, ExternalLink, Eye, GitBranch, Globe, HardDrive, Heart,
+  Info, Layers, Lock, MessageCircle, Monitor, Package, Play, Send,
+  Server, Settings, Shield, Star, Terminal, Zap, Menu, X
 } from "lucide-react";
+import { motion, AnimatePresence } from "framer-motion";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const LOGO_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-icon_33d8da50.png";
-const LOGO_H_URL = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-v2_11825c4c.png";
-const HERO_BG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/hero-bg-abstract-YWohQrzhyjwW8aYfMMbFFe.png";
-const WA_LINK = "https://wa.me/5561999529713?text=Olá!%20Gostaria%20de%20saber%20mais%20sobre%20o%20K8s%20Pod%20Visualizer.";
-const TG_LINK = "https://t.me/+5561999529713";
+const LOGO_ICON = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-icon_33d8da50.png";
+const LOGO_H    = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-logo-v2_11825c4c.png";
+const HERO_IMG  = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/landing-hero-grafana-QbsvRRvnvcoEHkf3kdXCrN.png";
+const NODES_IMG = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/landing-feature-nodes-f6VBM7WJjmPEoEFDDC2WBH.png";
+const OOM_IMG   = "https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/landing-feature-oom-iHxuW2G7f9gcNhJKcKrFNZ.png";
+const WA_LINK   = "https://wa.me/5561999529713?text=Olá!%20Gostaria%20de%20saber%20mais%20sobre%20o%20K8s%20Pod%20Visualizer.";
+const TG_LINK   = "https://t.me/+5561999529713";
+const GH_LINK   = "https://github.com/divinoandersonbastos/k8s-pod-visualizer";
 
-// ─── Fade-in animation ─────────────────────────────────────────────────────────
-const fadeUp = { hidden: { opacity: 0, y: 28 }, show: { opacity: 1, y: 0 } };
+// ─── Color tokens ─────────────────────────────────────────────────────────────
+const C = {
+  bg:      "#0f1117",
+  panel:   "#161b27",
+  panel2:  "#1a2035",
+  border:  "#2a3350",
+  cyan:    "#00b5d8",
+  green:   "#48bb78",
+  orange:  "#ed8936",
+  red:     "#fc8181",
+  purple:  "#9f7aea",
+  text:    "#e2e8f0",
+  muted:   "#718096",
+  dimmed:  "#4a5568",
+};
 
-// ─── Section label ─────────────────────────────────────────────────────────────
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex items-center justify-center gap-3 mb-4">
-      <div className="h-px flex-1 max-w-16" style={{ background: "oklch(0.28 0.04 250)" }} />
-      <span className="text-[11px] font-mono tracking-[0.25em] uppercase" style={{ color: "oklch(0.55 0.22 260)" }}>
-        {children}
-      </span>
-      <div className="h-px flex-1 max-w-16" style={{ background: "oklch(0.28 0.04 250)" }} />
-    </div>
-  );
+// ─── Animated counter ─────────────────────────────────────────────────────────
+function AnimCounter({ to, suffix = "" }: { to: number; suffix?: string }) {
+  const [val, setVal] = useState(0);
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const obs = new IntersectionObserver(([e]) => {
+      if (!e.isIntersecting) return;
+      obs.disconnect();
+      let start = 0;
+      const step = Math.ceil(to / 60);
+      const t = setInterval(() => {
+        start = Math.min(start + step, to);
+        setVal(start);
+        if (start >= to) clearInterval(t);
+      }, 16);
+    }, { threshold: 0.5 });
+    if (ref.current) obs.observe(ref.current);
+    return () => obs.disconnect();
+  }, [to]);
+  return <span ref={ref}>{val.toLocaleString()}{suffix}</span>;
 }
 
-// ─── Feature card ──────────────────────────────────────────────────────────────
-interface FeatureCardProps {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  badge?: string;
-  badgeColor?: string;
-}
-function FeatureCard({ icon, title, description, badge, badgeColor = "#58A6FF" }: FeatureCardProps) {
+// ─── Navbar ───────────────────────────────────────────────────────────────────
+function Navbar() {
+  const [open, setOpen] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  useEffect(() => {
+    const h = () => setScrolled(window.scrollY > 20);
+    window.addEventListener("scroll", h);
+    return () => window.removeEventListener("scroll", h);
+  }, []);
+
+  const links = [
+    { label: "Features", href: "#features" },
+    { label: "Demo", href: "#demo" },
+    { label: "Instalação", href: "#install" },
+    { label: "Pricing", href: "#pricing" },
+    { label: "Sobre", href: "#about" },
+    { label: "Contato", href: "#contact" },
+  ];
+
   return (
-    <motion.div
-      variants={fadeUp}
-      className="relative p-5 rounded-xl"
+    <nav
+      className="fixed top-0 left-0 right-0 z-50 transition-all"
       style={{
-        background: "oklch(0.13 0.018 250)",
-        border: "1px solid oklch(0.22 0.03 250)",
-      }}
-      whileHover={{ borderColor: "oklch(0.35 0.12 250)", scale: 1.01 }}
-      transition={{ duration: 0.2 }}
-    >
-      {badge && (
-        <span
-          className="absolute top-3 right-3 text-[9px] font-mono font-bold px-2 py-0.5 rounded-full"
-          style={{ background: `${badgeColor}22`, color: badgeColor, border: `1px solid ${badgeColor}44` }}
-        >
-          {badge}
-        </span>
-      )}
-      <div className="mb-3" style={{ color: "#58A6FF" }}>{icon}</div>
-      <h3 className="font-semibold text-sm mb-1.5" style={{ color: "#C9D1D9", fontFamily: "'Space Grotesk', sans-serif" }}>
-        {title}
-      </h3>
-      <p className="text-xs leading-relaxed" style={{ color: "#6E7681" }}>{description}</p>
-    </motion.div>
-  );
-}
-
-// ─── Pricing card ──────────────────────────────────────────────────────────────
-interface PricingCardProps {
-  name: string;
-  price: string;
-  period?: string;
-  description: string;
-  features: string[];
-  cta: string;
-  highlight?: boolean;
-  badge?: string;
-}
-function PricingCard({ name, price, period, description, features, cta, highlight, badge }: PricingCardProps) {
-  return (
-    <motion.div
-      variants={fadeUp}
-      className="relative flex flex-col p-6 rounded-xl"
-      style={{
-        background: highlight ? "oklch(0.15 0.025 250)" : "oklch(0.12 0.015 250)",
-        border: highlight ? "1px solid oklch(0.45 0.18 260 / 0.6)" : "1px solid oklch(0.22 0.03 250)",
-        boxShadow: highlight ? "0 0 40px oklch(0.45 0.18 260 / 0.12)" : "none",
+        background: scrolled ? `${C.bg}f0` : "transparent",
+        backdropFilter: scrolled ? "blur(12px)" : "none",
+        borderBottom: scrolled ? `1px solid ${C.border}` : "none",
       }}
     >
-      {badge && (
-        <div
-          className="absolute -top-3 left-1/2 -translate-x-1/2 text-[10px] font-mono font-bold px-3 py-1 rounded-full"
-          style={{ background: "oklch(0.55 0.22 260)", color: "#fff" }}
-        >
-          {badge}
+      <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+        {/* Logo */}
+        <a href="#" className="flex items-center gap-3">
+          <img src={LOGO_ICON} alt="CentralDevOps" className="w-8 h-8 object-contain" />
+          <div>
+            <div className="text-sm font-bold font-mono" style={{ color: C.cyan }}>K8s Pod Visualizer</div>
+            <div className="text-[10px] font-mono" style={{ color: C.muted }}>by CentralDevOps</div>
+          </div>
+        </a>
+
+        {/* Desktop links */}
+        <div className="hidden md:flex items-center gap-6">
+          {links.map(l => (
+            <a key={l.href} href={l.href}
+              className="text-sm font-mono transition-colors hover:text-white"
+              style={{ color: C.muted }}
+            >{l.label}</a>
+          ))}
         </div>
-      )}
-      <div className="mb-4">
-        <div className="text-xs font-mono tracking-widest uppercase mb-2" style={{ color: "oklch(0.55 0.22 260)" }}>
-          {name}
+
+        {/* CTA */}
+        <div className="hidden md:flex items-center gap-3">
+          <a href={GH_LINK} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-mono font-semibold transition-all hover:opacity-80"
+            style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text }}
+          >
+            <GitBranch size={14} /> GitHub
+          </a>
+          <a href={WA_LINK} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-4 py-2 rounded text-sm font-mono font-semibold transition-all"
+            style={{ background: C.cyan, color: C.bg }}
+          >
+            Demo grátis <ArrowRight size={14} />
+          </a>
         </div>
-        <div className="flex items-end gap-1 mb-1">
-          <span className="text-3xl font-bold" style={{ color: "#C9D1D9", fontFamily: "'Space Grotesk', sans-serif" }}>
-            {price}
-          </span>
-          {period && <span className="text-xs mb-1" style={{ color: "#6E7681" }}>{period}</span>}
-        </div>
-        <p className="text-xs" style={{ color: "#6E7681" }}>{description}</p>
+
+        {/* Mobile menu */}
+        <button className="md:hidden p-2" onClick={() => setOpen(!open)} style={{ color: C.text }}>
+          {open ? <X size={20} /> : <Menu size={20} />}
+        </button>
       </div>
 
-      <ul className="space-y-2 mb-6 flex-1">
-        {features.map((f, i) => (
-          <li key={i} className="flex items-start gap-2 text-xs" style={{ color: "#8B949E" }}>
-            <CheckCircle size={13} className="shrink-0 mt-0.5" style={{ color: "#3FB950" }} />
-            {f}
-          </li>
-        ))}
-      </ul>
-
-      <a
-        href={WA_LINK}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all"
-        style={{
-          background: highlight ? "oklch(0.55 0.22 260)" : "oklch(0.18 0.025 250)",
-          color: highlight ? "#fff" : "#8B949E",
-          border: highlight ? "none" : "1px solid oklch(0.28 0.04 250)",
-        }}
-      >
-        {cta}
-        <ChevronRight size={14} />
-      </a>
-    </motion.div>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+            className="md:hidden px-6 pb-4 flex flex-col gap-3"
+            style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}
+          >
+            {links.map(l => (
+              <a key={l.href} href={l.href} onClick={() => setOpen(false)}
+                className="text-sm font-mono py-2" style={{ color: C.text }}
+              >{l.label}</a>
+            ))}
+            <a href={WA_LINK} target="_blank" rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 px-4 py-2 rounded text-sm font-mono font-semibold"
+              style={{ background: C.cyan, color: C.bg }}
+            >Demo grátis</a>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </nav>
   );
 }
 
-// ─── FAQ item ──────────────────────────────────────────────────────────────────
-function FaqItem({ question, answer }: { question: string; answer: string }) {
-  const [open, setOpen] = useState(false);
+// ─── Hero ─────────────────────────────────────────────────────────────────────
+function Hero() {
   return (
-    <div
-      className="rounded-lg overflow-hidden"
-      style={{ border: "1px solid oklch(0.22 0.03 250)", background: "oklch(0.12 0.015 250)" }}
-    >
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center justify-between px-5 py-4 text-left"
+    <section className="relative min-h-screen flex flex-col items-center justify-center pt-16 overflow-hidden"
+      style={{ background: C.bg }}>
+      {/* Grid background */}
+      <div className="absolute inset-0 pointer-events-none" style={{
+        backgroundImage: `linear-gradient(${C.border}22 1px, transparent 1px), linear-gradient(90deg, ${C.border}22 1px, transparent 1px)`,
+        backgroundSize: "40px 40px",
+      }} />
+      {/* Glow */}
+      <div className="absolute top-1/3 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full pointer-events-none"
+        style={{ background: `radial-gradient(circle, ${C.cyan}18 0%, transparent 70%)` }} />
+
+      <div className="relative z-10 max-w-6xl mx-auto px-6 text-center">
+        {/* Badge */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}
+          className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full text-xs font-mono mb-8"
+          style={{ background: `${C.cyan}18`, border: `1px solid ${C.cyan}40`, color: C.cyan }}
+        >
+          <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: C.cyan }} />
+          v1.3.5 · Open Source · Kubernetes Native
+        </motion.div>
+
+        {/* Title */}
+        <motion.h1 initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}
+          className="text-5xl md:text-7xl font-bold leading-tight mb-6"
+          style={{ fontFamily: "'Space Grotesk', sans-serif", color: C.text }}
+        >
+          Visualize seu cluster{" "}
+          <span style={{
+            background: `linear-gradient(135deg, ${C.cyan}, ${C.green})`,
+            WebkitBackgroundClip: "text",
+            WebkitTextFillColor: "transparent",
+          }}>Kubernetes</span>
+          <br />em tempo real
+        </motion.h1>
+
+        {/* Subtitle */}
+        <motion.p initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}
+          className="text-lg md:text-xl max-w-3xl mx-auto mb-10 leading-relaxed"
+          style={{ color: C.muted }}
+        >
+          Dashboard interativo de bolhas para monitoramento de pods, detecção preditiva de OOMKill,
+          alertas de Spot eviction e histórico persistente. Roda <strong style={{ color: C.text }}>dentro do cluster</strong>,
+          sem dependências externas.
+        </motion.p>
+
+        {/* CTAs */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
+          className="flex flex-wrap items-center justify-center gap-4 mb-16"
+        >
+          <a href="#install"
+            className="flex items-center gap-2 px-8 py-3.5 rounded text-base font-mono font-bold transition-all hover:opacity-90"
+            style={{ background: `linear-gradient(135deg, ${C.cyan}, #0080a0)`, color: "#fff" }}
+          >
+            <Terminal size={18} /> Instalar agora
+          </a>
+          <a href={GH_LINK} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-8 py-3.5 rounded text-base font-mono font-semibold transition-all hover:bg-white/5"
+            style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text }}
+          >
+            <Star size={18} /> Star no GitHub
+          </a>
+          <a href={WA_LINK} target="_blank" rel="noopener noreferrer"
+            className="flex items-center gap-2 px-8 py-3.5 rounded text-base font-mono font-semibold transition-all hover:opacity-90"
+            style={{ background: "#25D366", color: "#fff" }}
+          >
+            <MessageCircle size={18} /> Falar com suporte
+          </a>
+        </motion.div>
+
+        {/* Stats */}
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}
+          className="flex flex-wrap items-center justify-center gap-8 mb-16"
+        >
+          {[
+            { label: "Pods monitorados", value: 500, suffix: "+" },
+            { label: "Namespaces suportados", value: 100, suffix: "+" },
+            { label: "Eventos persistidos", value: 10000, suffix: "+" },
+            { label: "Clouds suportadas", value: 3, suffix: "" },
+          ].map(s => (
+            <div key={s.label} className="text-center">
+              <div className="text-3xl font-bold font-mono" style={{ color: C.cyan }}>
+                <AnimCounter to={s.value} suffix={s.suffix} />
+              </div>
+              <div className="text-xs font-mono mt-1" style={{ color: C.muted }}>{s.label}</div>
+            </div>
+          ))}
+        </motion.div>
+
+        {/* Hero screenshot */}
+        <motion.div initial={{ opacity: 0, y: 40 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}
+          className="relative mx-auto max-w-5xl rounded-xl overflow-hidden"
+          style={{ border: `1px solid ${C.border}`, boxShadow: `0 0 60px ${C.cyan}20` }}
+        >
+          <div className="flex items-center gap-1.5 px-4 py-2.5" style={{ background: C.panel }}>
+            <div className="w-3 h-3 rounded-full" style={{ background: C.red }} />
+            <div className="w-3 h-3 rounded-full" style={{ background: C.orange }} />
+            <div className="w-3 h-3 rounded-full" style={{ background: C.green }} />
+            <span className="ml-3 text-xs font-mono" style={{ color: C.muted }}>k8s-pod-visualizer · AKS Production</span>
+          </div>
+          <img src={HERO_IMG} alt="K8s Pod Visualizer Dashboard" className="w-full" />
+        </motion.div>
+      </div>
+
+      {/* Scroll indicator */}
+      <motion.div animate={{ y: [0, 8, 0] }} transition={{ repeat: Infinity, duration: 2 }}
+        className="absolute bottom-8 left-1/2 -translate-x-1/2"
+        style={{ color: C.muted }}
       >
-        <span className="text-sm font-medium" style={{ color: "#C9D1D9" }}>{question}</span>
-        <ChevronDown
-          size={16}
-          style={{ color: "#6E7681", transform: open ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
-        />
-      </button>
-      {open && (
-        <div className="px-5 pb-4 text-xs leading-relaxed" style={{ color: "#6E7681" }}>
-          {answer}
-        </div>
-      )}
-    </div>
+        <ChevronDown size={24} />
+      </motion.div>
+    </section>
   );
 }
 
-// ─── Main Landing Page ─────────────────────────────────────────────────────────
-export default function Landing() {
-  const [contactForm, setContactForm] = useState({ name: "", email: "", message: "" });
-  const [submitted, setSubmitted] = useState(false);
+// ─── Features ─────────────────────────────────────────────────────────────────
+const FEATURES = [
+  {
+    icon: <Eye size={22} />,
+    color: C.cyan,
+    title: "Visualização em Bolhas",
+    desc: "Canvas interativo com física de partículas. Cada bolha representa um pod — tamanho proporcional ao consumo, cor ao status. Zoom, pan e modo Constelação por namespace.",
+  },
+  {
+    icon: <AlertCircle size={22} />,
+    color: C.red,
+    title: "Detecção Preditiva de OOMKill",
+    desc: "Regressão linear sobre os últimos 10 snapshots detecta tendência de crescimento de memória. Estima o tempo até OOM antes que o kernel mate o processo.",
+  },
+  {
+    icon: <Server size={22} />,
+    color: C.orange,
+    title: "Monitoramento de Nodes Spot",
+    desc: "Detecta taints de eviction em VMs Spot (AKS/GKE/EKS). Banner de emergência com contagem regressiva de 2 minutos e lista de pods afetados clicáveis.",
+  },
+  {
+    icon: <Activity size={22} />,
+    color: C.green,
+    title: "Histórico de Eventos",
+    desc: "Registra cada transição de status (Saudável→Alerta→Crítico) com CPU%, MEM% e timestamp. Persiste em SQLite via PVC — sobrevive a reinicializações.",
+  },
+  {
+    icon: <Database size={22} />,
+    color: C.purple,
+    title: "Persistência SQLite + PVC",
+    desc: "Backend Node.js com better-sqlite3 em WAL mode. Manifests prontos para Azure Disk, NFS, Longhorn e hostPath. DATA_DIR configurável via variável de ambiente.",
+  },
+  {
+    icon: <Layers size={22} />,
+    color: C.cyan,
+    title: "Multi-container Support",
+    desc: "Pods com múltiplos containers exibem seletor de container na aba de Logs. Recursos (CPU/MEM) somam todos os containers automaticamente.",
+  },
+  {
+    icon: <Bell size={22} />,
+    color: C.orange,
+    title: "Painel Global de Eventos",
+    desc: "Drawer com timeline de todos os pods, filtros por namespace/status, busca por nome e exportação CSV. Badge animado no header com contagem total.",
+  },
+  {
+    icon: <Shield size={22} />,
+    color: C.green,
+    title: "RBAC Kubernetes Native",
+    desc: "ServiceAccount com permissões mínimas (ClusterRole read-only). Roda dentro do cluster sem expor credenciais externas. Compatível com PSP e OPA Gatekeeper.",
+  },
+  {
+    icon: <Zap size={22} />,
+    color: C.red,
+    title: "Performance para 500+ Pods",
+    desc: "Física adaptativa com early-exit O(n²), escala dinâmica de bolhas, zoom/pan nativo e polling otimizado. Testado com 498 pods em cluster AKS real.",
+  },
+];
+
+function Features() {
+  return (
+    <section id="features" className="py-24" style={{ background: C.bg }}>
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="text-center mb-16">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded text-xs font-mono mb-4"
+            style={{ background: `${C.green}18`, border: `1px solid ${C.green}40`, color: C.green }}>
+            <CheckCircle size={12} /> Funcionalidades
+          </div>
+          <h2 className="text-4xl font-bold mb-4" style={{ fontFamily: "'Space Grotesk', sans-serif", color: C.text }}>
+            Tudo que você precisa para observar seu cluster
+          </h2>
+          <p className="text-lg max-w-2xl mx-auto" style={{ color: C.muted }}>
+            Construído por SREs para SREs. Cada feature nasceu de um problema real em produção.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {FEATURES.map((f, i) => (
+            <motion.div key={i}
+              initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }} transition={{ delay: i * 0.05 }}
+              className="p-6 rounded-xl transition-all hover:translate-y-[-2px]"
+              style={{ background: C.panel, border: `1px solid ${C.border}` }}
+            >
+              <div className="w-10 h-10 rounded-lg flex items-center justify-center mb-4"
+                style={{ background: `${f.color}18`, color: f.color }}>
+                {f.icon}
+              </div>
+              <h3 className="text-base font-bold mb-2" style={{ color: C.text }}>{f.title}</h3>
+              <p className="text-sm leading-relaxed" style={{ color: C.muted }}>{f.desc}</p>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Demo / Screenshots ───────────────────────────────────────────────────────
+function Demo() {
+  const [active, setActive] = useState(0);
+  const demos = [
+    { label: "Node Monitor", img: NODES_IMG, desc: "Painel de saúde dos nodes com badges SPOT/EVICTING, barras de CPU/MEM e timeline de eventos OOMKill e SpotInterruption." },
+    { label: "OOM Prediction", img: OOM_IMG, desc: "Detecção preditiva com regressão linear. Estima tempo até OOMKill e exibe tendência de crescimento de memória em tempo real." },
+    { label: "Pod Dashboard", img: HERO_IMG, desc: "Canvas de bolhas com física interativa, modo Constelação por namespace, zoom/pan e painel de detalhes com 3 abas." },
+  ];
+
+  return (
+    <section id="demo" className="py-24" style={{ background: C.panel }}>
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded text-xs font-mono mb-4"
+            style={{ background: `${C.cyan}18`, border: `1px solid ${C.cyan}40`, color: C.cyan }}>
+            <Monitor size={12} /> Screenshots
+          </div>
+          <h2 className="text-4xl font-bold mb-4" style={{ fontFamily: "'Space Grotesk', sans-serif", color: C.text }}>
+            Veja em ação
+          </h2>
+        </div>
+
+        {/* Tab selector */}
+        <div className="flex flex-wrap justify-center gap-2 mb-8">
+          {demos.map((d, i) => (
+            <button key={i} onClick={() => setActive(i)}
+              className="px-5 py-2 rounded text-sm font-mono font-semibold transition-all"
+              style={{
+                background: active === i ? C.cyan : C.panel2,
+                color: active === i ? C.bg : C.muted,
+                border: `1px solid ${active === i ? C.cyan : C.border}`,
+              }}
+            >{d.label}</button>
+          ))}
+        </div>
+
+        <AnimatePresence mode="wait">
+          <motion.div key={active}
+            initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}
+            className="rounded-xl overflow-hidden"
+            style={{ border: `1px solid ${C.border}`, boxShadow: `0 0 40px ${C.cyan}15` }}
+          >
+            <div className="flex items-center gap-1.5 px-4 py-2.5" style={{ background: C.bg }}>
+              <div className="w-3 h-3 rounded-full" style={{ background: C.red }} />
+              <div className="w-3 h-3 rounded-full" style={{ background: C.orange }} />
+              <div className="w-3 h-3 rounded-full" style={{ background: C.green }} />
+              <span className="ml-3 text-xs font-mono" style={{ color: C.muted }}>{demos[active].label}</span>
+            </div>
+            <img src={demos[active].img} alt={demos[active].label} className="w-full" />
+            <div className="px-6 py-4" style={{ background: C.bg }}>
+              <p className="text-sm font-mono" style={{ color: C.muted }}>{demos[active].desc}</p>
+            </div>
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    </section>
+  );
+}
+
+// ─── Install ──────────────────────────────────────────────────────────────────
+function Install() {
+  const [tab, setTab] = useState<"kubectl" | "helm">("kubectl");
+
+  const kubectl = `# 1. Aplicar manifests
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/base/00-namespace-rbac.yaml
+
+# 2. Escolha seu ambiente de storage:
+# Azure AKS:
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/cloud/azure/
+
+# On-premises (Longhorn):
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/onpremises/longhorn/
+
+# 3. Acessar
+kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n k8s-pod-visualizer
+# Abrir: http://localhost:8080`;
+
+  const helm = `# Adicionar repositório
+helm repo add centraldevops https://centraldevops.github.io/helm-charts
+helm repo update
+
+# Instalar com valores padrão
+helm install k8s-pod-visualizer centraldevops/k8s-pod-visualizer \\
+  --namespace k8s-pod-visualizer \\
+  --create-namespace
+
+# Instalar com Azure Disk (AKS)
+helm install k8s-pod-visualizer centraldevops/k8s-pod-visualizer \\
+  --namespace k8s-pod-visualizer \\
+  --create-namespace \\
+  --set storage.type=azure \\
+  --set storage.size=2Gi \\
+  --set image.tag=1.3.5`;
+
+  return (
+    <section id="install" className="py-24" style={{ background: C.bg }}>
+      <div className="max-w-5xl mx-auto px-6">
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded text-xs font-mono mb-4"
+            style={{ background: `${C.purple}18`, border: `1px solid ${C.purple}40`, color: C.purple }}>
+            <Terminal size={12} /> Instalação
+          </div>
+          <h2 className="text-4xl font-bold mb-4" style={{ fontFamily: "'Space Grotesk', sans-serif", color: C.text }}>
+            Em produção em minutos
+          </h2>
+          <p className="text-lg" style={{ color: C.muted }}>
+            Suporte a AKS, GKE, EKS, k3s, RKE2 e bare metal.
+          </p>
+        </div>
+
+        {/* Tab selector */}
+        <div className="flex gap-2 mb-4">
+          {(["kubectl", "helm"] as const).map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className="px-5 py-2 rounded text-sm font-mono font-semibold transition-all"
+              style={{
+                background: tab === t ? C.panel2 : "transparent",
+                color: tab === t ? C.cyan : C.muted,
+                border: `1px solid ${tab === t ? C.cyan : C.border}`,
+              }}
+            >{t === "kubectl" ? "kubectl apply" : "Helm Chart"}</button>
+          ))}
+        </div>
+
+        <div className="rounded-xl overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+          <div className="flex items-center justify-between px-4 py-2.5" style={{ background: C.panel }}>
+            <div className="flex items-center gap-1.5">
+              <div className="w-3 h-3 rounded-full" style={{ background: C.red }} />
+              <div className="w-3 h-3 rounded-full" style={{ background: C.orange }} />
+              <div className="w-3 h-3 rounded-full" style={{ background: C.green }} />
+            </div>
+            <span className="text-xs font-mono" style={{ color: C.muted }}>bash</span>
+          </div>
+          <pre className="p-6 text-sm overflow-x-auto leading-relaxed"
+            style={{ background: C.bg, color: C.text, fontFamily: "'JetBrains Mono', monospace" }}>
+            <AnimatePresence mode="wait">
+              <motion.code key={tab}
+                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+                {tab === "kubectl" ? kubectl : helm}
+              </motion.code>
+            </AnimatePresence>
+          </pre>
+        </div>
+
+        {/* Requirements */}
+        <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-4">
+          {[
+            { icon: <Box size={16} />, label: "Kubernetes", value: "≥ 1.20" },
+            { icon: <Cpu size={16} />, label: "CPU Request", value: "100m" },
+            { icon: <HardDrive size={16} />, label: "MEM Request", value: "128Mi" },
+            { icon: <Database size={16} />, label: "Storage (opt.)", value: "2Gi PVC" },
+          ].map(r => (
+            <div key={r.label} className="p-4 rounded-lg text-center"
+              style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+              <div className="flex justify-center mb-2" style={{ color: C.cyan }}>{r.icon}</div>
+              <div className="text-xs font-mono" style={{ color: C.muted }}>{r.label}</div>
+              <div className="text-sm font-bold font-mono mt-1" style={{ color: C.text }}>{r.value}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Pricing ──────────────────────────────────────────────────────────────────
+function Pricing() {
+  const plans = [
+    {
+      name: "Community",
+      price: "Gratuito",
+      color: C.green,
+      badge: "Open Source",
+      features: [
+        "Visualização de pods ilimitada",
+        "Monitoramento de nodes",
+        "Histórico de eventos (localStorage)",
+        "Alertas de OOMKill e Spot eviction",
+        "Deploy com kubectl",
+        "Suporte via GitHub Issues",
+      ],
+      cta: "Instalar agora",
+      href: "#install",
+    },
+    {
+      name: "Professional",
+      price: "R$ 490",
+      period: "/mês",
+      color: C.cyan,
+      badge: "Mais popular",
+      highlight: true,
+      features: [
+        "Tudo do Community",
+        "Persistência SQLite + PVC inclusa",
+        "Helm Chart com suporte dedicado",
+        "Configuração de thresholds por namespace",
+        "Dashboard de banco de dados",
+        "Suporte via WhatsApp/Telegram",
+        "SLA de resposta em 4h",
+      ],
+      cta: "Falar com vendas",
+      href: WA_LINK,
+    },
+    {
+      name: "Enterprise",
+      price: "Sob consulta",
+      color: C.purple,
+      badge: "Multi-cluster",
+      features: [
+        "Tudo do Professional",
+        "Monitoramento multi-cluster",
+        "SSO / LDAP integration",
+        "Relatórios automatizados",
+        "Treinamento para equipe SRE",
+        "Implantação assistida",
+        "SLA 24/7 com contrato",
+      ],
+      cta: "Entrar em contato",
+      href: WA_LINK,
+    },
+  ];
+
+  return (
+    <section id="pricing" className="py-24" style={{ background: C.panel }}>
+      <div className="max-w-6xl mx-auto px-6">
+        <div className="text-center mb-16">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded text-xs font-mono mb-4"
+            style={{ background: `${C.orange}18`, border: `1px solid ${C.orange}40`, color: C.orange }}>
+            <Package size={12} /> Planos
+          </div>
+          <h2 className="text-4xl font-bold mb-4" style={{ fontFamily: "'Space Grotesk', sans-serif", color: C.text }}>
+            Escolha seu plano
+          </h2>
+          <p className="text-lg" style={{ color: C.muted }}>
+            Comece gratuitamente. Escale quando precisar.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+          {plans.map((p, i) => (
+            <motion.div key={i}
+              initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }} transition={{ delay: i * 0.1 }}
+              className="relative p-8 rounded-xl flex flex-col"
+              style={{
+                background: p.highlight ? `${C.cyan}0a` : C.bg,
+                border: `1px solid ${p.highlight ? C.cyan : C.border}`,
+                boxShadow: p.highlight ? `0 0 30px ${C.cyan}18` : "none",
+              }}
+            >
+              {p.badge && (
+                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full text-xs font-mono font-bold"
+                  style={{ background: p.color, color: C.bg }}>
+                  {p.badge}
+                </div>
+              )}
+              <div className="mb-6">
+                <h3 className="text-lg font-bold font-mono mb-2" style={{ color: p.color }}>{p.name}</h3>
+                <div className="flex items-end gap-1">
+                  <span className="text-4xl font-bold" style={{ color: C.text }}>{p.price}</span>
+                  {p.period && <span className="text-sm mb-1" style={{ color: C.muted }}>{p.period}</span>}
+                </div>
+              </div>
+              <ul className="space-y-3 flex-1 mb-8">
+                {p.features.map((f, j) => (
+                  <li key={j} className="flex items-start gap-2.5 text-sm" style={{ color: C.muted }}>
+                    <CheckCircle size={14} className="shrink-0 mt-0.5" style={{ color: p.color }} />
+                    {f}
+                  </li>
+                ))}
+              </ul>
+              <a href={p.href} target={p.href.startsWith("http") ? "_blank" : undefined}
+                rel="noopener noreferrer"
+                className="block text-center py-3 rounded font-mono font-bold text-sm transition-all hover:opacity-90"
+                style={{
+                  background: p.highlight ? p.color : "transparent",
+                  color: p.highlight ? C.bg : p.color,
+                  border: `1px solid ${p.color}`,
+                }}
+              >{p.cta}</a>
+            </motion.div>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── About ────────────────────────────────────────────────────────────────────
+function About() {
+  return (
+    <section id="about" className="py-24" style={{ background: C.bg }}>
+      <div className="max-w-6xl mx-auto px-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
+          <div>
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded text-xs font-mono mb-6"
+              style={{ background: `${C.cyan}18`, border: `1px solid ${C.cyan}40`, color: C.cyan }}>
+              <Heart size={12} /> Sobre nós
+            </div>
+            <h2 className="text-4xl font-bold mb-6" style={{ fontFamily: "'Space Grotesk', sans-serif", color: C.text }}>
+              Construído por quem<br />opera clusters em produção
+            </h2>
+            <p className="text-base leading-relaxed mb-6" style={{ color: C.muted }}>
+              A <strong style={{ color: C.text }}>CentralDevOps</strong> é uma empresa especializada em
+              Kubernetes, SRE e Observabilidade. Nascemos da frustração de não ter uma ferramenta de
+              visualização de pods que fosse ao mesmo tempo <em>bonita</em>, <em>funcional</em> e
+              <em> fácil de instalar</em>.
+            </p>
+            <p className="text-base leading-relaxed mb-8" style={{ color: C.muted }}>
+              O K8s Pod Visualizer foi testado em clusters AKS com 498+ pods, múltiplos namespaces e
+              VMs Spot. Cada feature foi construída para resolver um problema real que enfrentamos
+              no dia a dia de operações.
+            </p>
+            <div className="flex flex-wrap gap-4">
+              <a href={WA_LINK} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-5 py-2.5 rounded font-mono font-semibold text-sm transition-all hover:opacity-90"
+                style={{ background: "#25D366", color: "#fff" }}>
+                <MessageCircle size={16} /> WhatsApp
+              </a>
+              <a href={TG_LINK} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-5 py-2.5 rounded font-mono font-semibold text-sm transition-all hover:opacity-90"
+                style={{ background: "#2CA5E0", color: "#fff" }}>
+                <Send size={16} /> Telegram
+              </a>
+              <a href={GH_LINK} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-5 py-2.5 rounded font-mono font-semibold text-sm transition-all hover:bg-white/5"
+                style={{ background: C.panel2, border: `1px solid ${C.border}`, color: C.text }}>
+                <GitBranch size={16} /> GitHub
+              </a>
+            </div>
+          </div>
+
+          {/* Values */}
+          <div className="grid grid-cols-2 gap-4">
+            {[
+              { icon: <Shield size={20} />, color: C.green, title: "Segurança first", desc: "RBAC mínimo, sem credenciais externas, roda inside-cluster." },
+              { icon: <Zap size={20} />, color: C.cyan, title: "Performance real", desc: "Testado com 500+ pods. Física adaptativa para grandes clusters." },
+              { icon: <Code2 size={20} />, color: C.purple, title: "Open Source", desc: "Código aberto, auditável e extensível pela comunidade." },
+              { icon: <Globe size={20} />, color: C.orange, title: "Multi-cloud", desc: "AKS, GKE, EKS, k3s, RKE2, bare metal — funciona em qualquer cluster." },
+            ].map((v, i) => (
+              <motion.div key={i}
+                initial={{ opacity: 0, scale: 0.95 }} whileInView={{ opacity: 1, scale: 1 }}
+                viewport={{ once: true }} transition={{ delay: i * 0.1 }}
+                className="p-5 rounded-xl"
+                style={{ background: C.panel, border: `1px solid ${C.border}` }}>
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center mb-3"
+                  style={{ background: `${v.color}18`, color: v.color }}>
+                  {v.icon}
+                </div>
+                <h4 className="text-sm font-bold mb-1.5" style={{ color: C.text }}>{v.title}</h4>
+                <p className="text-xs leading-relaxed" style={{ color: C.muted }}>{v.desc}</p>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Contact ──────────────────────────────────────────────────────────────────
+function Contact() {
+  const [form, setForm] = useState({ name: "", email: "", company: "", msg: "" });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const text = encodeURIComponent(
-      `Olá CentralDevOps!\n\nNome: ${contactForm.name}\nE-mail: ${contactForm.email}\n\nMensagem:\n${contactForm.message}`
+      `Olá! Sou ${form.name} da empresa ${form.company}.\n\nEmail: ${form.email}\n\n${form.msg}`
     );
     window.open(`https://wa.me/5561999529713?text=${text}`, "_blank");
-    setSubmitted(true);
   };
 
   return (
-    <div className="min-h-screen" style={{ background: "#0D1117", color: "#C9D1D9", fontFamily: "'Space Grotesk', sans-serif" }}>
-
-      {/* ── NAV ─────────────────────────────────────────────────────────────── */}
-      <nav
-        className="sticky top-0 z-50 flex items-center justify-between px-6 md:px-12 h-16"
-        style={{ background: "oklch(0.10 0.015 250 / 0.95)", borderBottom: "1px solid oklch(0.20 0.03 250)", backdropFilter: "blur(12px)" }}
-      >
-        <img src={LOGO_H_URL} alt="CentralDevOps" className="object-contain" style={{ height: 36 }} />
-        <div className="hidden md:flex items-center gap-6 text-sm" style={{ color: "#8B949E" }}>
-          {["Features", "Pricing", "Sobre Nós", "Contato"].map((item) => (
-            <a
-              key={item}
-              href={`#${item.toLowerCase().replace(" ", "-")}`}
-              className="hover:text-white transition-colors"
-            >
-              {item}
-            </a>
-          ))}
-        </div>
-        <div className="flex items-center gap-3">
-          <a
-            href={WA_LINK}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="hidden md:flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all"
-            style={{ background: "oklch(0.55 0.22 260)", color: "#fff" }}
-          >
-            <MessageCircle size={13} />
-            Falar com Especialista
-          </a>
-        </div>
-      </nav>
-
-      {/* ── HERO ────────────────────────────────────────────────────────────── */}
-      <section
-        className="relative flex flex-col items-center justify-center text-center px-6 pt-24 pb-20 overflow-hidden"
-        style={{ minHeight: "90vh" }}
-      >
-        {/* Background image */}
-        <div
-          className="absolute inset-0 z-0"
-          style={{
-            backgroundImage: `url(${HERO_BG})`,
-            backgroundSize: "cover",
-            backgroundPosition: "center right",
-            opacity: 0.5,
-          }}
-        />
-        <div className="absolute inset-0 z-0" style={{ background: "linear-gradient(to bottom, #0D1117 0%, transparent 30%, transparent 70%, #0D1117 100%)" }} />
-
-        <div className="relative z-10 max-w-4xl mx-auto">
-          <motion.div
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-[11px] font-mono mb-8"
-            style={{ background: "oklch(0.55 0.22 260 / 0.12)", border: "1px solid oklch(0.55 0.22 260 / 0.30)", color: "oklch(0.72 0.18 200)" }}
-          >
-            <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "#3FB950" }} />
-            v1.3.3 — Persistência SQLite + Monitoramento de Nodes
-          </motion.div>
-
-          <motion.h1
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.1 }}
-            className="text-4xl md:text-6xl font-bold mb-6 leading-tight"
-            style={{ color: "#C9D1D9" }}
-          >
-            Visualize seu cluster{" "}
-            <span style={{ color: "#58A6FF" }}>Kubernetes</span>
-            <br />em tempo real
-          </motion.h1>
-
-          <motion.p
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.2 }}
-            className="text-base md:text-lg mb-10 max-w-2xl mx-auto leading-relaxed"
-            style={{ color: "#8B949E" }}
-          >
-            O <strong style={{ color: "#C9D1D9" }}>K8s Pod Visualizer</strong> da CentralDevOps transforma centenas de pods em um mapa visual interativo, com detecção preditiva de OOMKill, alertas de Spot eviction e histórico persistido em SQLite.
-          </motion.p>
-
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.3 }}
-            className="flex flex-col sm:flex-row items-center justify-center gap-4"
-          >
-            <a
-              href={WA_LINK}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all"
-              style={{ background: "oklch(0.55 0.22 260)", color: "#fff", boxShadow: "0 0 24px oklch(0.55 0.22 260 / 0.35)" }}
-            >
-              <MessageCircle size={16} />
-              Solicitar Demo via WhatsApp
-            </a>
-            <a
-              href={TG_LINK}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-semibold transition-all"
-              style={{ background: "oklch(0.14 0.02 250)", color: "#8B949E", border: "1px solid oklch(0.28 0.04 250)" }}
-            >
-              <Send size={16} />
-              Telegram
-            </a>
-          </motion.div>
-
-          {/* Stats bar */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ duration: 0.8, delay: 0.6 }}
-            className="flex flex-wrap items-center justify-center gap-8 mt-16"
-          >
-            {[
-              { value: "500+", label: "Pods monitorados" },
-              { value: "3s", label: "Intervalo de refresh" },
-              { value: "4", label: "Ambientes de deploy" },
-              { value: "v1.3.3", label: "Versão atual" },
-            ].map(({ value, label }) => (
-              <div key={label} className="text-center">
-                <div className="text-2xl font-bold font-mono" style={{ color: "#58A6FF" }}>{value}</div>
-                <div className="text-[11px] mt-0.5" style={{ color: "#484F58" }}>{label}</div>
-              </div>
-            ))}
-          </motion.div>
-        </div>
-      </section>
-
-      {/* ── FEATURES ────────────────────────────────────────────────────────── */}
-      <section id="features" className="px-6 md:px-12 py-24 max-w-6xl mx-auto">
-        <motion.div
-          initial="hidden"
-          whileInView="show"
-          viewport={{ once: true }}
-          variants={{ show: { transition: { staggerChildren: 0.08 } } }}
-        >
-          <SectionLabel>Features</SectionLabel>
-          <motion.h2 variants={fadeUp} className="text-3xl font-bold text-center mb-3" style={{ color: "#C9D1D9" }}>
-            Tudo que uma equipe SRE precisa
-          </motion.h2>
-          <motion.p variants={fadeUp} className="text-sm text-center mb-12 max-w-xl mx-auto" style={{ color: "#6E7681" }}>
-            Desenvolvido para clusters de produção com centenas de pods, VMs Spot e pressão de memória real.
-          </motion.p>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            <FeatureCard
-              icon={<Activity size={22} />}
-              title="Visualização em Bolhas"
-              description="Canvas interativo com zoom/pan, escala dinâmica para 500+ pods, agrupamento por namespace e física adaptativa."
-              badge="Core"
-            />
-            <FeatureCard
-              icon={<AlertCircle size={22} />}
-              title="Detecção Preditiva de OOMKill"
-              description="Regressão linear sobre os últimos 10 snapshots detecta tendência de crescimento de memória e estima o tempo até OOMKill."
-              badge="IA"
-              badgeColor="#3FB950"
-            />
-            <FeatureCard
-              icon={<Server size={22} />}
-              title="Monitoramento de Nodes"
-              description="Detecta VMs Spot prestes a serem removidas, pressão de memória/disco/PID e eventos de OOMKill no nível do node."
-              badge="Novo"
-              badgeColor="#FF7B72"
-            />
-            <FeatureCard
-              icon={<Bell size={22} />}
-              title="Alerta de Spot Eviction"
-              description="Banner de emergência com contagem regressiva de 2 minutos, lista de pods afetados e atalho para o monitor de nodes."
-            />
-            <FeatureCard
-              icon={<BarChart2 size={22} />}
-              title="Histórico de Eventos"
-              description="Timeline de transições de status por pod (Saudável → Alerta → Crítico), com CPU% e MEM% no momento do evento."
-            />
-            <FeatureCard
-              icon={<Database size={22} />}
-              title="Persistência SQLite"
-              description="Banco SQLite via DATA_DIR montado em PVC. Eventos e métricas sobrevivem a reinicializações do pod. Manutenção automática de 30 dias."
-              badge="v1.3.3"
-              badgeColor="#D29922"
-            />
-            <FeatureCard
-              icon={<Layers size={22} />}
-              title="Multi-container Support"
-              description="Seletor de container na aba Logs para pods com múltiplos containers. Passa ?container=nome no endpoint de logs."
-            />
-            <FeatureCard
-              icon={<Globe size={22} />}
-              title="Painel Global de Eventos"
-              description="Drawer com todos os eventos de todos os pods, filtros por namespace/status, busca e exportação CSV."
-            />
-            <FeatureCard
-              icon={<Cloud size={22} />}
-              title="Multi-cloud & On-premises"
-              description="Manifests prontos para Azure Disk, hostPath, NFS e Longhorn. Um único campo DATA_DIR adapta o banco a qualquer ambiente."
-            />
+    <section id="contact" className="py-24" style={{ background: C.panel }}>
+      <div className="max-w-5xl mx-auto px-6">
+        <div className="text-center mb-12">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded text-xs font-mono mb-4"
+            style={{ background: `${C.green}18`, border: `1px solid ${C.green}40`, color: C.green }}>
+            <MessageCircle size={12} /> Contato
           </div>
-        </motion.div>
-      </section>
-
-      {/* ── PRICING ─────────────────────────────────────────────────────────── */}
-      <section id="pricing" className="px-6 md:px-12 py-24" style={{ background: "oklch(0.10 0.015 250)" }}>
-        <div className="max-w-5xl mx-auto">
-          <motion.div
-            initial="hidden"
-            whileInView="show"
-            viewport={{ once: true }}
-            variants={{ show: { transition: { staggerChildren: 0.1 } } }}
-          >
-            <SectionLabel>Pricing</SectionLabel>
-            <motion.h2 variants={fadeUp} className="text-3xl font-bold text-center mb-3" style={{ color: "#C9D1D9" }}>
-              Planos para cada estágio
-            </motion.h2>
-            <motion.p variants={fadeUp} className="text-sm text-center mb-12" style={{ color: "#6E7681" }}>
-              Do ambiente de testes ao cluster enterprise. Suporte via WhatsApp e Telegram incluído.
-            </motion.p>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <PricingCard
-                name="Starter"
-                price="Gratuito"
-                description="Para times testando em homologação"
-                features={[
-                  "Até 100 pods monitorados",
-                  "Visualização em bolhas",
-                  "Histórico de eventos (localStorage)",
-                  "Deploy com hostPath",
-                  "Suporte via comunidade",
-                ]}
-                cta="Começar Grátis"
-              />
-              <PricingCard
-                name="Professional"
-                price="R$ 490"
-                period="/mês"
-                description="Para clusters de produção com SLA"
-                features={[
-                  "Pods ilimitados",
-                  "Persistência SQLite + PVC",
-                  "Detecção preditiva de OOMKill",
-                  "Alertas de Spot Eviction",
-                  "Suporte WhatsApp & Telegram",
-                  "Deploy Azure / NFS / Longhorn",
-                  "Atualizações de versão incluídas",
-                ]}
-                cta="Assinar Professional"
-                highlight
-                badge="Mais Popular"
-              />
-              <PricingCard
-                name="Enterprise"
-                price="Sob consulta"
-                description="Para múltiplos clusters e equipes"
-                features={[
-                  "Tudo do Professional",
-                  "Multi-cluster dashboard",
-                  "SSO / LDAP / Azure AD",
-                  "SLA 99.9% com suporte dedicado",
-                  "Treinamento para a equipe SRE",
-                  "Customizações sob demanda",
-                ]}
-                cta="Falar com Especialista"
-              />
-            </div>
-          </motion.div>
+          <h2 className="text-4xl font-bold mb-4" style={{ fontFamily: "'Space Grotesk', sans-serif", color: C.text }}>
+            Fale com nossa equipe
+          </h2>
+          <p className="text-lg" style={{ color: C.muted }}>
+            Respondemos em até 4 horas via WhatsApp ou Telegram.
+          </p>
         </div>
-      </section>
 
-      {/* ── SOBRE NÓS ───────────────────────────────────────────────────────── */}
-      <section id="sobre-nós" className="px-6 md:px-12 py-24 max-w-5xl mx-auto">
-        <motion.div
-          initial="hidden"
-          whileInView="show"
-          viewport={{ once: true }}
-          variants={{ show: { transition: { staggerChildren: 0.1 } } }}
-        >
-          <SectionLabel>Sobre Nós</SectionLabel>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-12 items-center">
-            <motion.div variants={fadeUp}>
-              <h2 className="text-3xl font-bold mb-4" style={{ color: "#C9D1D9" }}>
-                Especialistas em{" "}
-                <span style={{ color: "#58A6FF" }}>Observabilidade</span>{" "}
-                e SRE
-              </h2>
-              <p className="text-sm leading-relaxed mb-4" style={{ color: "#6E7681" }}>
-                A <strong style={{ color: "#C9D1D9" }}>CentralDevOps</strong> é uma empresa brasileira especializada em práticas de DevOps, SRE e Observabilidade para clusters Kubernetes em ambientes de produção.
-              </p>
-              <p className="text-sm leading-relaxed mb-6" style={{ color: "#6E7681" }}>
-                Desenvolvemos o K8s Pod Visualizer a partir da necessidade real de monitorar clusters AKS com VMs Spot, múltiplos namespaces e pressão de memória — problemas que ferramentas genéricas não resolvem com a velocidade que equipes SRE precisam.
-              </p>
-              <div className="flex flex-wrap gap-3">
-                {["Kubernetes", "AKS / GKE / EKS", "SRE", "Observabilidade", "On-premises", "SQLite + PVC"].map((tag) => (
-                  <span
-                    key={tag}
-                    className="text-[11px] font-mono px-2.5 py-1 rounded-md"
-                    style={{ background: "oklch(0.16 0.02 250)", color: "#8B949E", border: "1px solid oklch(0.25 0.04 250)" }}
-                  >
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            </motion.div>
-
-            <motion.div variants={fadeUp} className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
+          {/* Form */}
+          <form onSubmit={handleSubmit} className="lg:col-span-3 space-y-4">
+            <div className="grid grid-cols-2 gap-4">
               {[
-                { icon: <Shield size={18} />, title: "Segurança em primeiro lugar", desc: "RBAC mínimo, sem acesso a secrets, imagem Docker non-root." },
-                { icon: <Zap size={18} />, title: "Performance para escala", desc: "Física adaptativa, zoom/pan e escala dinâmica de bolhas para 500+ pods." },
-                { icon: <Code2 size={18} />, title: "Open source no coração", desc: "Construído sobre React, Node.js, SQLite e Kubernetes APIs padrão." },
-                { icon: <HardDrive size={18} />, title: "Dados que persistem", desc: "SQLite + PVC garante que eventos e histórico sobrevivam a reinicializações." },
-              ].map(({ icon, title, desc }) => (
-                <div key={title} className="flex items-start gap-4 p-4 rounded-xl" style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
-                  <div className="shrink-0 mt-0.5" style={{ color: "#58A6FF" }}>{icon}</div>
-                  <div>
-                    <div className="text-sm font-semibold mb-1" style={{ color: "#C9D1D9" }}>{title}</div>
-                    <div className="text-xs" style={{ color: "#6E7681" }}>{desc}</div>
-                  </div>
+                { key: "name", label: "Nome", placeholder: "Seu nome" },
+                { key: "company", label: "Empresa", placeholder: "Nome da empresa" },
+              ].map(f => (
+                <div key={f.key}>
+                  <label className="block text-xs font-mono mb-1.5" style={{ color: C.muted }}>{f.label}</label>
+                  <input
+                    value={form[f.key as keyof typeof form]}
+                    onChange={e => setForm(p => ({ ...p, [f.key]: e.target.value }))}
+                    placeholder={f.placeholder}
+                    className="w-full px-4 py-2.5 rounded text-sm font-mono outline-none transition-all"
+                    style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }}
+                    onFocus={e => e.currentTarget.style.borderColor = C.cyan}
+                    onBlur={e => e.currentTarget.style.borderColor = C.border}
+                  />
                 </div>
               ))}
-            </motion.div>
-          </div>
-        </motion.div>
-      </section>
+            </div>
+            <div>
+              <label className="block text-xs font-mono mb-1.5" style={{ color: C.muted }}>Email</label>
+              <input
+                type="email"
+                value={form.email}
+                onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
+                placeholder="seu@email.com"
+                className="w-full px-4 py-2.5 rounded text-sm font-mono outline-none transition-all"
+                style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }}
+                onFocus={e => e.currentTarget.style.borderColor = C.cyan}
+                onBlur={e => e.currentTarget.style.borderColor = C.border}
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-mono mb-1.5" style={{ color: C.muted }}>Mensagem</label>
+              <textarea
+                value={form.msg}
+                onChange={e => setForm(p => ({ ...p, msg: e.target.value }))}
+                placeholder="Descreva seu caso de uso, número de pods, cloud provider..."
+                rows={4}
+                className="w-full px-4 py-2.5 rounded text-sm font-mono outline-none transition-all resize-none"
+                style={{ background: C.bg, border: `1px solid ${C.border}`, color: C.text }}
+                onFocus={e => e.currentTarget.style.borderColor = C.cyan}
+                onBlur={e => e.currentTarget.style.borderColor = C.border}
+              />
+            </div>
+            <button type="submit"
+              className="w-full py-3 rounded font-mono font-bold text-sm transition-all hover:opacity-90 flex items-center justify-center gap-2"
+              style={{ background: "#25D366", color: "#fff" }}>
+              <MessageCircle size={16} /> Enviar via WhatsApp
+            </button>
+          </form>
 
-      {/* ── FAQ ─────────────────────────────────────────────────────────────── */}
-      <section className="px-6 md:px-12 py-16" style={{ background: "oklch(0.10 0.015 250)" }}>
-        <div className="max-w-3xl mx-auto">
-          <SectionLabel>FAQ</SectionLabel>
-          <h2 className="text-2xl font-bold text-center mb-8" style={{ color: "#C9D1D9" }}>Perguntas frequentes</h2>
-          <div className="space-y-3">
-            <FaqItem
-              question="O K8s Pod Visualizer funciona em qualquer distribuição Kubernetes?"
-              answer="Sim. Funciona em AKS, GKE, EKS, k3s, RKE2 e clusters bare metal. O único requisito é que o metrics-server esteja instalado para coleta de CPU/MEM em tempo real."
-            />
-            <FaqItem
-              question="Preciso instalar algum agente nos nodes?"
-              answer="Não. A aplicação roda como um único pod no cluster e usa as APIs nativas do Kubernetes (metrics-server e Events API) para coletar dados. Nenhum agente, DaemonSet ou sidecar é necessário."
-            />
-            <FaqItem
-              question="Como funciona a detecção de VMs Spot prestes a serem removidas?"
-              answer="O monitor de nodes verifica a cada 15 segundos se algum node recebeu o taint ToBeDeletedByClusterAutoscaler (AKS) ou equivalentes no GKE/EKS. Quando detectado, um banner de emergência aparece no canvas com contagem regressiva de 2 minutos e lista dos pods afetados."
-            />
-            <FaqItem
-              question="O SQLite suporta múltiplas réplicas do pod?"
-              answer="SQLite com ReadWriteOnce (Azure Disk) suporta apenas 1 réplica. Para múltiplas réplicas, use Azure Files ou NFS com ReadWriteMany. Para a maioria dos casos de monitoramento, 1 réplica é suficiente."
-            />
-            <FaqItem
-              question="Como entro em contato para suporte?"
-              answer="Atendemos via WhatsApp (+55 61 99952-9713) e Telegram (@CentralDevOps). O suporte está disponível em dias úteis das 8h às 18h (Brasília). Para clientes Enterprise, oferecemos SLA com suporte dedicado."
-            />
+          {/* Contact cards */}
+          <div className="lg:col-span-2 flex flex-col gap-4">
+            {[
+              { icon: <MessageCircle size={20} />, color: "#25D366", label: "WhatsApp", value: "+55 61 99952-9713", href: WA_LINK },
+              { icon: <Send size={20} />, color: "#2CA5E0", label: "Telegram", value: "@CentralDevOps", href: TG_LINK },
+              { icon: <GitBranch size={20} />, color: C.muted, label: "GitHub", value: "divinoandersonbastos", href: GH_LINK },
+            ].map((c, i) => (
+              <a key={i} href={c.href} target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-4 p-5 rounded-xl transition-all hover:translate-x-1"
+                style={{ background: C.bg, border: `1px solid ${C.border}` }}>
+                <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0"
+                  style={{ background: `${c.color}18`, color: c.color }}>
+                  {c.icon}
+                </div>
+                <div>
+                  <div className="text-xs font-mono" style={{ color: C.muted }}>{c.label}</div>
+                  <div className="text-sm font-bold font-mono" style={{ color: C.text }}>{c.value}</div>
+                </div>
+                <ExternalLink size={14} className="ml-auto" style={{ color: C.dimmed }} />
+              </a>
+            ))}
+
+            <div className="p-5 rounded-xl mt-2"
+              style={{ background: `${C.cyan}0a`, border: `1px solid ${C.cyan}30` }}>
+              <div className="flex items-center gap-2 mb-2">
+                <Info size={14} style={{ color: C.cyan }} />
+                <span className="text-xs font-mono font-bold" style={{ color: C.cyan }}>Horário de atendimento</span>
+              </div>
+              <p className="text-xs font-mono" style={{ color: C.muted }}>
+                Seg–Sex: 08h–18h (BRT)<br />
+                Emergências 24/7 para planos Professional e Enterprise
+              </p>
+            </div>
           </div>
         </div>
-      </section>
+      </div>
+    </section>
+  );
+}
 
-      {/* ── CONTATO ─────────────────────────────────────────────────────────── */}
-      <section id="contato" className="px-6 md:px-12 py-24 max-w-5xl mx-auto">
-        <motion.div
-          initial="hidden"
-          whileInView="show"
-          viewport={{ once: true }}
-          variants={{ show: { transition: { staggerChildren: 0.1 } } }}
-        >
-          <SectionLabel>Contato</SectionLabel>
-          <motion.h2 variants={fadeUp} className="text-3xl font-bold text-center mb-3" style={{ color: "#C9D1D9" }}>
-            Fale com a CentralDevOps
-          </motion.h2>
-          <motion.p variants={fadeUp} className="text-sm text-center mb-12" style={{ color: "#6E7681" }}>
-            Resposta em até 2 horas em dias úteis. Prefere direto? Use o WhatsApp ou Telegram.
-          </motion.p>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
-            {/* Contact cards */}
-            <motion.div variants={fadeUp} className="space-y-4">
-              <a
-                href={WA_LINK}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-4 p-5 rounded-xl transition-all"
-                style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}
-              >
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "oklch(0.72 0.22 142 / 0.12)" }}>
-                  <MessageCircle size={20} style={{ color: "oklch(0.72 0.22 142)" }} />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: "#C9D1D9" }}>WhatsApp</div>
-                  <div className="text-xs" style={{ color: "#6E7681" }}>+55 61 99952-9713</div>
-                  <div className="text-[11px] mt-0.5" style={{ color: "#484F58" }}>Clique para abrir conversa</div>
-                </div>
-                <ExternalLink size={14} className="ml-auto shrink-0" style={{ color: "#484F58" }} />
-              </a>
-
-              <a
-                href={TG_LINK}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center gap-4 p-5 rounded-xl transition-all"
-                style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}
-              >
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "oklch(0.65 0.20 220 / 0.12)" }}>
-                  <Send size={20} style={{ color: "oklch(0.65 0.20 220)" }} />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: "#C9D1D9" }}>Telegram</div>
-                  <div className="text-xs" style={{ color: "#6E7681" }}>+55 61 99952-9713</div>
-                  <div className="text-[11px] mt-0.5" style={{ color: "#484F58" }}>Clique para abrir conversa</div>
-                </div>
-                <ExternalLink size={14} className="ml-auto shrink-0" style={{ color: "#484F58" }} />
-              </a>
-
-              <div
-                className="flex items-center gap-4 p-5 rounded-xl"
-                style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}
-              >
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "oklch(0.55 0.22 260 / 0.12)" }}>
-                  <Globe size={20} style={{ color: "oklch(0.55 0.22 260)" }} />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: "#C9D1D9" }}>Website</div>
-                  <div className="text-xs" style={{ color: "#6E7681" }}>centraldevops.com</div>
-                  <div className="text-[11px] mt-0.5" style={{ color: "#484F58" }}>Em breve</div>
-                </div>
-              </div>
-
-              <div
-                className="flex items-center gap-4 p-5 rounded-xl"
-                style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}
-              >
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: "oklch(0.28 0.04 250 / 0.5)" }}>
-                  <Monitor size={20} style={{ color: "#8B949E" }} />
-                </div>
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: "#C9D1D9" }}>Horário de Atendimento</div>
-                  <div className="text-xs" style={{ color: "#6E7681" }}>Seg–Sex, 8h–18h (Brasília)</div>
-                  <div className="text-[11px] mt-0.5" style={{ color: "#484F58" }}>Enterprise: 24/7 com SLA</div>
-                </div>
-              </div>
-            </motion.div>
-
-            {/* Contact form */}
-            <motion.div variants={fadeUp}>
-              {submitted ? (
-                <div
-                  className="flex flex-col items-center justify-center h-full gap-4 p-8 rounded-xl text-center"
-                  style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.35 0.18 142 / 0.4)" }}
-                >
-                  <CheckCircle size={40} style={{ color: "#3FB950" }} />
-                  <div className="text-lg font-semibold" style={{ color: "#C9D1D9" }}>Mensagem enviada!</div>
-                  <div className="text-sm" style={{ color: "#6E7681" }}>Redirecionando para o WhatsApp. Responderemos em breve.</div>
-                </div>
-              ) : (
-                <form
-                  onSubmit={handleSubmit}
-                  className="space-y-4 p-6 rounded-xl"
-                  style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}
-                >
-                  <div>
-                    <label className="block text-xs font-mono mb-1.5" style={{ color: "#6E7681" }}>Nome</label>
-                    <input
-                      type="text"
-                      required
-                      value={contactForm.name}
-                      onChange={(e) => setContactForm((f) => ({ ...f, name: e.target.value }))}
-                      className="w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-all"
-                      style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.25 0.04 250)", color: "#C9D1D9" }}
-                      placeholder="Seu nome"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-mono mb-1.5" style={{ color: "#6E7681" }}>E-mail</label>
-                    <input
-                      type="email"
-                      required
-                      value={contactForm.email}
-                      onChange={(e) => setContactForm((f) => ({ ...f, email: e.target.value }))}
-                      className="w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-all"
-                      style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.25 0.04 250)", color: "#C9D1D9" }}
-                      placeholder="seu@email.com"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-mono mb-1.5" style={{ color: "#6E7681" }}>Mensagem</label>
-                    <textarea
-                      required
-                      rows={4}
-                      value={contactForm.message}
-                      onChange={(e) => setContactForm((f) => ({ ...f, message: e.target.value }))}
-                      className="w-full px-3 py-2.5 rounded-lg text-sm outline-none transition-all resize-none"
-                      style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.25 0.04 250)", color: "#C9D1D9" }}
-                      placeholder="Descreva seu cluster e o que precisa..."
-                    />
-                  </div>
-                  <button
-                    type="submit"
-                    className="w-full flex items-center justify-center gap-2 py-3 rounded-lg text-sm font-semibold transition-all"
-                    style={{ background: "oklch(0.55 0.22 260)", color: "#fff" }}
-                  >
-                    <MessageCircle size={15} />
-                    Enviar via WhatsApp
-                  </button>
-                </form>
-              )}
-            </motion.div>
-          </div>
-        </motion.div>
-      </section>
-
-      {/* ── FOOTER ──────────────────────────────────────────────────────────── */}
-      <footer
-        className="px-6 md:px-12 py-10"
-        style={{ borderTop: "1px solid oklch(0.20 0.03 250)", background: "oklch(0.09 0.012 250)" }}
-      >
-        <div className="max-w-5xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
+// ─── Footer ───────────────────────────────────────────────────────────────────
+function Footer() {
+  return (
+    <footer className="py-12 border-t" style={{ background: C.bg, borderColor: C.border }}>
+      <div className="max-w-7xl mx-auto px-6">
+        <div className="flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="flex items-center gap-3">
-            <img src={LOGO_URL} alt="CentralDevOps" className="object-contain" style={{ width: 32, height: 32 }} />
+            <img src={LOGO_ICON} alt="CentralDevOps" className="w-8 h-8 object-contain" />
             <div>
-              <div className="text-sm font-bold font-mono" style={{ color: "#C9D1D9" }}>CentralDevOps</div>
-              <div className="text-[11px]" style={{ color: "#484F58" }}>centraldevops.com</div>
+              <div className="text-sm font-bold font-mono" style={{ color: C.text }}>K8s Pod Visualizer</div>
+              <div className="text-xs font-mono" style={{ color: C.muted }}>by CentralDevOps · v1.3.5</div>
             </div>
           </div>
 
-          <div className="text-[11px] text-center" style={{ color: "#484F58" }}>
-            © {new Date().getFullYear()} CentralDevOps. K8s Pod Visualizer v1.3.3.
-            <br />
-            Desenvolvido com ❤️ para equipes SRE brasileiras.
+          <div className="flex flex-wrap items-center gap-6">
+            {[
+              { label: "GitHub", href: GH_LINK },
+              { label: "WhatsApp", href: WA_LINK },
+              { label: "Telegram", href: TG_LINK },
+              { label: "Instalação", href: "#install" },
+              { label: "Pricing", href: "#pricing" },
+            ].map(l => (
+              <a key={l.label} href={l.href}
+                target={l.href.startsWith("http") ? "_blank" : undefined}
+                rel="noopener noreferrer"
+                className="text-xs font-mono transition-colors hover:text-white"
+                style={{ color: C.muted }}>{l.label}</a>
+            ))}
           </div>
 
-          <div className="flex items-center gap-3">
-            <a href={WA_LINK} target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg hover:bg-white/5 transition-all" style={{ color: "oklch(0.72 0.22 142)" }}>
-              <MessageCircle size={18} />
-            </a>
-            <a href={TG_LINK} target="_blank" rel="noopener noreferrer" className="p-2 rounded-lg hover:bg-white/5 transition-all" style={{ color: "oklch(0.65 0.20 220)" }}>
-              <Send size={18} />
-            </a>
+          <div className="text-xs font-mono text-center" style={{ color: C.dimmed }}>
+            © 2026 CentralDevOps · centraldevops.com
           </div>
         </div>
-      </footer>
+      </div>
+    </footer>
+  );
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+export default function Landing() {
+  return (
+    <div style={{ fontFamily: "'Space Grotesk', sans-serif", background: C.bg, color: C.text }}>
+      <Navbar />
+      <Hero />
+      <Features />
+      <Demo />
+      <Install />
+      <Pricing />
+      <About />
+      <Contact />
+      <Footer />
     </div>
   );
 }

@@ -1,0 +1,100 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-pod-visualizer.fullname" . }}
+  namespace: {{ include "k8s-pod-visualizer.namespace" . }}
+  labels:
+    {{- include "k8s-pod-visualizer.labels" . | nindent 4 }}
+  {{- with .Values.podAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "k8s-pod-visualizer.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "k8s-pod-visualizer.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "k8s-pod-visualizer.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- if and .Values.storage.enabled (eq .Values.storage.type "hostpath") .Values.storage.hostPath.nodeName }}
+      nodeSelector:
+        kubernetes.io/hostname: {{ .Values.storage.hostPath.nodeName }}
+      {{- else }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.env.PORT | default 8080 }}
+              protocol: TCP
+          env:
+            - name: DATA_DIR
+              value: {{ .Values.env.DATA_DIR | default "/app/data" | quote }}
+            - name: PORT
+              value: {{ .Values.env.PORT | default "8080" | quote }}
+            - name: REFRESH_INTERVAL
+              value: {{ .Values.env.REFRESH_INTERVAL | default "3000" | quote }}
+            - name: MAX_EVENTS
+              value: {{ .Values.env.MAX_EVENTS | default "500" | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.env.LOG_LEVEL | default "info" | quote }}
+          {{- with .Values.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.storage.enabled }}
+          volumeMounts:
+            - name: visualizer-data
+              mountPath: {{ .Values.storage.mountPath | default "/app/data" }}
+          {{- end }}
+      {{- if .Values.storage.enabled }}
+      volumes:
+        - name: visualizer-data
+          {{- if eq .Values.storage.type "hostpath" }}
+          hostPath:
+            path: {{ .Values.storage.hostPath.path | default "/opt/k8s-visualizer/data" }}
+            type: DirectoryOrCreate
+          {{- else }}
+          persistentVolumeClaim:
+            claimName: {{ include "k8s-pod-visualizer.fullname" . }}-data
+          {{- end }}
+      {{- end }}

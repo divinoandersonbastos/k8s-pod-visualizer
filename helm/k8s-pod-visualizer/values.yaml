@@ -1,0 +1,179 @@
+# =============================================================================
+# K8s Pod Visualizer — Helm Chart Values
+# CentralDevOps — https://centraldevops.com
+# Suporte: https://wa.me/5561999529713
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Imagem Docker
+# -----------------------------------------------------------------------------
+image:
+  repository: divand/k8s-pod-visualizer
+  tag: "1.3.5"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# -----------------------------------------------------------------------------
+# Réplicas
+# Nota: com storage.enabled=true e accessMode=ReadWriteOnce, manter replicas=1
+# -----------------------------------------------------------------------------
+replicaCount: 1
+
+# -----------------------------------------------------------------------------
+# Service
+# -----------------------------------------------------------------------------
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+  annotations: {}
+
+# -----------------------------------------------------------------------------
+# Ingress
+# -----------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: k8s-visualizer.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: k8s-visualizer-tls
+  #    hosts:
+  #      - k8s-visualizer.example.com
+
+# -----------------------------------------------------------------------------
+# Recursos (CPU/Memória)
+# -----------------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# -----------------------------------------------------------------------------
+# Persistência SQLite
+# -----------------------------------------------------------------------------
+storage:
+  enabled: true
+  # Tipo de storage: azure | gke | eks | longhorn | nfs | hostpath
+  type: longhorn
+  size: 2Gi
+  accessMode: ReadWriteOnce
+  # StorageClass por tipo (sobrescrito automaticamente se type for definido)
+  storageClassName: ""
+  # Mapeamento automático de storageClassName por tipo:
+  #   azure    → managed-csi (Azure Disk StandardSSD_LRS)
+  #   gke      → pd-ssd
+  #   eks      → gp3
+  #   longhorn → longhorn
+  #   nfs      → (requer PV manual — ver deploy/onpremises/nfs/)
+  #   hostpath → (requer nodeSelector — ver deploy/onpremises/hostpath/)
+  mountPath: /app/data
+
+  # NFS — preenchido apenas quando type=nfs
+  nfs:
+    server: ""       # ex: 192.168.1.100
+    path: ""         # ex: /exports/k8s-visualizer
+
+  # hostPath — preenchido apenas quando type=hostpath
+  hostPath:
+    path: /opt/k8s-visualizer/data
+    nodeName: ""     # nome do node para nodeSelector
+
+# -----------------------------------------------------------------------------
+# Variáveis de ambiente da aplicação
+# -----------------------------------------------------------------------------
+env:
+  DATA_DIR: /app/data
+  PORT: "8080"
+  REFRESH_INTERVAL: "3000"
+  MAX_EVENTS: "500"
+  LOG_LEVEL: info
+
+# -----------------------------------------------------------------------------
+# RBAC
+# Cria ServiceAccount, ClusterRole e ClusterRoleBinding automaticamente
+# -----------------------------------------------------------------------------
+rbac:
+  create: true
+  serviceAccountName: k8s-pod-visualizer
+
+# -----------------------------------------------------------------------------
+# Namespace
+# -----------------------------------------------------------------------------
+namespace:
+  create: true
+  name: k8s-pod-visualizer
+
+# -----------------------------------------------------------------------------
+# Probes de saúde
+# -----------------------------------------------------------------------------
+livenessProbe:
+  httpGet:
+    path: /api/health
+    port: 8080
+  initialDelaySeconds: 15
+  periodSeconds: 20
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /api/health
+    port: 8080
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  failureThreshold: 3
+
+# -----------------------------------------------------------------------------
+# Segurança
+# -----------------------------------------------------------------------------
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+podSecurityContext:
+  fsGroup: 1000
+
+# -----------------------------------------------------------------------------
+# Tolerations e Node Affinity
+# -----------------------------------------------------------------------------
+tolerations: []
+affinity: {}
+nodeSelector: {}
+
+# -----------------------------------------------------------------------------
+# Annotations e Labels extras
+# -----------------------------------------------------------------------------
+podAnnotations: {}
+podLabels: {}
+commonLabels: {}
+
+# -----------------------------------------------------------------------------
+# HPA (Horizontal Pod Autoscaler)
+# Desativado por padrão — incompatível com ReadWriteOnce
+# -----------------------------------------------------------------------------
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+# -----------------------------------------------------------------------------
+# ServiceMonitor (Prometheus Operator)
+# -----------------------------------------------------------------------------
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  namespace: monitoring
+  labels: {}

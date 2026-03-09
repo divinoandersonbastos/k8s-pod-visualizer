@@ -299,7 +299,7 @@ async function getNodesHealth() {
 }
 
 // ── /api/nodes/events — eventos de Warning relevantes para nodes ──────────────
-async function getNodeEvents() {
+async function fetchNodeEventsFromK8s() {
   // Busca eventos de Warning de todos os namespaces relacionados a nodes
   const [allEventsRes, ksEventsRes] = await Promise.allSettled([
     k8sRequest("/api/v1/events?fieldSelector=type%3DWarning"),
@@ -479,7 +479,7 @@ const server = http.createServer(async (req, res) => {
   // ── /api/nodes/events ─────────────────────────────────────────────────────────
   if (url.pathname === "/api/nodes/events") {
     try {
-      const events = await getNodeEvents();
+      const events = await fetchNodeEventsFromK8s();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ items: events, timestamp: Date.now() }));
     } catch (err) {

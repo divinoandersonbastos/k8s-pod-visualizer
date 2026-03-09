@@ -16,7 +16,7 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, RotateCcw, Palette, Layout, Type, Sparkles,
-  ChevronDown, ChevronRight, Check, CircleDot,
+  ChevronDown, ChevronRight, Check, CircleDot, Droplets, Zap, Circle,
 } from "lucide-react";
 import {
   useThemeCustomizer,
@@ -28,6 +28,7 @@ import {
   type ThemeConfig,
   type FontFamily,
   type StatusColorConfig,
+  type BubbleStyle,
 } from "@/contexts/ThemeCustomizerContext";
 
 // ── Utilitários ───────────────────────────────────────────────────────────────
@@ -545,6 +546,86 @@ export function CustomizerPanel({ onClose }: CustomizerPanelProps) {
                   </div>
                 );
               })}
+            </div>
+          </div>
+        </Section>
+
+        {/* ── Estilo das Bolhas ── */}
+        <Section title="Estilo das Bolhas" icon={<Circle size={11} />} defaultOpen={true}>
+          <div className="space-y-3">
+            <p className="text-[10px] font-mono" style={{ color: "oklch(0.45 0.015 250)" }}>
+              Define o visual de cada pod no canvas.
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              {([
+                { key: "bubble" as BubbleStyle, label: "Bolha",    icon: <Circle   size={22} strokeWidth={1.5} />, desc: "Reflexo 3D" },
+                { key: "comet" as BubbleStyle,  label: "Cometa",   icon: <Zap      size={22} strokeWidth={1.5} />, desc: "Rastro de luz" },
+                { key: "aquarium" as BubbleStyle, label: "Aquário", icon: <Droplets size={22} strokeWidth={1.5} />, desc: "Efeito água" },
+              ] as { key: BubbleStyle; label: string; icon: React.ReactNode; desc: string }[]).map(({ key, label, icon, desc }) => {
+                const isActive = (theme.bubbleStyle ?? "bubble") === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setTheme({ bubbleStyle: key })}
+                    className="flex flex-col items-center gap-1.5 rounded-lg p-2.5 transition-all"
+                    style={{
+                      background: isActive ? "oklch(0.55 0.22 260 / 0.18)" : "oklch(0.14 0.018 250)",
+                      border: `1.5px solid ${isActive ? "oklch(0.55 0.22 260 / 0.7)" : "oklch(0.22 0.03 250)"}`,
+                      color: isActive ? "oklch(0.72 0.18 260)" : "oklch(0.50 0.015 250)",
+                    }}
+                  >
+                    {icon}
+                    <span className="text-[10px] font-mono font-semibold">{label}</span>
+                    <span className="text-[8px] font-mono" style={{ color: isActive ? "oklch(0.55 0.18 260)" : "oklch(0.38 0.01 250)" }}>{desc}</span>
+                    {isActive && <div className="w-1.5 h-1.5 rounded-full" style={{ background: "oklch(0.55 0.22 260)" }} />}
+                  </button>
+                );
+              })}
+            </div>
+            {/* Mini-preview SVG dos três estilos */}
+            <div className="flex items-end justify-around pt-1">
+              {/* Preview Bolha */}
+              <svg width="44" height="44" viewBox="-22 -22 44 44">
+                <defs>
+                  <radialGradient id="prev-bubble" cx="35%" cy="30%" r="65%">
+                    <stop offset="0%" stopColor={statusColorSet(theme.statusColors.healthyHue, "healthy").stroke} stopOpacity="0.9" />
+                    <stop offset="100%" stopColor={`oklch(0.45 0.18 ${theme.statusColors.healthyHue})`} stopOpacity="0.9" />
+                  </radialGradient>
+                </defs>
+                <circle r={18} fill="url(#prev-bubble)" stroke={statusColorSet(theme.statusColors.healthyHue, "healthy").stroke} strokeWidth="1.5" />
+                <ellipse cx={-5} cy={-6} rx={7} ry={4} fill="white" opacity="0.28" />
+                <ellipse cx={-3} cy={-4} rx={2.5} ry={1.5} fill="white" opacity="0.55" />
+                <circle r={17} fill="none" stroke="white" strokeWidth="0.8" strokeOpacity="0.12" />
+              </svg>
+              {/* Preview Cometa */}
+              <svg width="60" height="44" viewBox="-30 -22 60 44">
+                <defs>
+                  <radialGradient id="prev-comet" cx="35%" cy="30%" r="65%">
+                    <stop offset="0%" stopColor={statusColorSet(theme.statusColors.warningHue, "warning").stroke} stopOpacity="0.9" />
+                    <stop offset="100%" stopColor={`oklch(0.45 0.18 ${theme.statusColors.warningHue})`} stopOpacity="0.9" />
+                  </radialGradient>
+                </defs>
+                <line x1={0} y1={0} x2={-26} y2={8} stroke={statusColorSet(theme.statusColors.warningHue, "warning").glow} strokeWidth={12} strokeLinecap="round" opacity="0.35" />
+                <circle cx={-18} cy={5.5} r={3.5} fill={statusColorSet(theme.statusColors.warningHue, "warning").glow} opacity="0.5" />
+                <circle cx={-10} cy={3} r={2.5} fill={statusColorSet(theme.statusColors.warningHue, "warning").glow} opacity="0.4" />
+                <circle r={16} fill="url(#prev-comet)" stroke={statusColorSet(theme.statusColors.warningHue, "warning").stroke} strokeWidth="2" />
+                <ellipse cx={-4} cy={-5} rx={5.5} ry={3} fill="white" opacity="0.45" />
+              </svg>
+              {/* Preview Aquário */}
+              <svg width="44" height="44" viewBox="-22 -22 44 44">
+                <defs>
+                  <radialGradient id="prev-aqua" cx="40%" cy="25%" r="75%">
+                    <stop offset="0%" stopColor={`oklch(0.92 0.10 ${theme.statusColors.criticalHue})`} stopOpacity="0.95" />
+                    <stop offset="60%" stopColor={`oklch(0.55 0.22 ${theme.statusColors.criticalHue})`} stopOpacity="0.90" />
+                    <stop offset="100%" stopColor={`oklch(0.30 0.18 ${theme.statusColors.criticalHue})`} stopOpacity="0.98" />
+                  </radialGradient>
+                </defs>
+                <circle r={20} fill={statusColorSet(theme.statusColors.criticalHue, "critical").glow} opacity="0.25" />
+                <circle r={18} fill="url(#prev-aqua)" stroke={statusColorSet(theme.statusColors.criticalHue, "critical").stroke} strokeWidth="1.5" />
+                <ellipse cx={2} cy={-9} rx={10} ry={2.2} fill="white" opacity="0.18" />
+                <ellipse cx={-4} cy={-5} rx={6} ry={3} fill="white" opacity="0.35" />
+                <circle cx={6} cy={-7} r={2} fill="white" opacity="0.45" />
+              </svg>
             </div>
           </div>
         </Section>

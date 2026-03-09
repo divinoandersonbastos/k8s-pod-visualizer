@@ -29,6 +29,9 @@ import {
 
 export type FontFamily = "space-grotesk" | "inter" | "jetbrains-mono" | "geist" | "dm-sans";
 
+/** Estilo visual das bolhas de pods */
+export type BubbleStyle = "bubble" | "comet" | "aquarium";
+
 /** Cores de status das bolhas — armazenadas como matiz OKLCH (0-360) */
 export interface StatusColorConfig {
   healthyHue: number;   // padrão: 142 (verde)
@@ -69,6 +72,9 @@ export interface ThemeConfig {
 
   // Bordas
   borderRadius: number;      // 0–16px
+
+  // Estilo das bolhas
+  bubbleStyle: BubbleStyle;
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -103,6 +109,8 @@ export const DEFAULT_THEME: ThemeConfig = {
   bubbleGlowIntensity: 1.0,
 
   borderRadius:        8,
+
+  bubbleStyle:         "bubble",
 };
 
 const STORAGE_KEY = "k8s-viz-theme-v2";

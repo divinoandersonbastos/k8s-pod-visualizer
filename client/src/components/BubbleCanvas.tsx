@@ -498,13 +498,14 @@ export function BubbleCanvas({
     setPan({ x: 0, y: 0 });
   };
 
-  // ── Cores de status dinâmicas do tema ──────────────────────────────────────
+  // ── Cores de status e estilo de bolha dinâmicos do tema ─────────────────────
   const { theme } = useThemeCustomizer();
   const STATUS_COLORS = useMemo(() => ({
     healthy:  statusColorSet(theme.statusColors.healthyHue,  "healthy"),
     warning:  statusColorSet(theme.statusColors.warningHue,  "warning"),
     critical: statusColorSet(theme.statusColors.criticalHue, "critical"),
   }), [theme.statusColors]);
+  const bubbleStyle = theme.bubbleStyle ?? "bubble";
 
   const { width, height } = dimensions;
 
@@ -555,6 +556,44 @@ export function BubbleCanvas({
             <stop offset="60%" stopColor={`oklch(0.62 0.22 ${theme.statusColors.criticalHue})`} stopOpacity="0.85" />
             <stop offset="100%" stopColor={`oklch(0.40 0.22 ${theme.statusColors.criticalHue})`} stopOpacity="0.95" />
           </radialGradient>
+          {/* ─ Gradientes estilo Aquário: mais profundidade e reflexão de água ─ */}
+          {["healthy", "warning", "critical"].map((st) => {
+            const hue = st === "healthy" ? theme.statusColors.healthyHue
+                      : st === "warning" ? theme.statusColors.warningHue
+                      : theme.statusColors.criticalHue;
+            return (
+              <radialGradient key={`aq-${st}`} id={`grad-aq-${st}`} cx="40%" cy="25%" r="75%">
+                <stop offset="0%"   stopColor={`oklch(0.92 0.10 ${hue})`} stopOpacity="0.95" />
+                <stop offset="30%"  stopColor={`oklch(0.78 0.20 ${hue})`} stopOpacity="0.85" />
+                <stop offset="70%"  stopColor={`oklch(0.55 0.22 ${hue})`} stopOpacity="0.90" />
+                <stop offset="100%" stopColor={`oklch(0.30 0.18 ${hue})`} stopOpacity="0.98" />
+              </radialGradient>
+            );
+          })}
+          {/* ─ Filtros especiais por estilo ─ */}
+          {/* Cometa: blur direcional para rastro */}
+          <filter id="comet-trail" x="-100%" y="-50%" width="250%" height="200%">
+            <feGaussianBlur stdDeviation="8 3" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
+          {/* Aquário: turbulência para efeito de água */}
+          <filter id="aqua-ripple" x="-20%" y="-20%" width="140%" height="140%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="3" seed="2" result="noise" />
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="3" xChannelSelector="R" yChannelSelector="G" result="displaced" />
+            <feGaussianBlur in="displaced" stdDeviation="0.8" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
+          {/* Aquário: brilho de superfície */}
+          <filter id="aqua-glow" x="-50%" y="-50%" width="200%" height="200%">
+            <feGaussianBlur stdDeviation="6" result="blur" />
+            <feColorMatrix type="saturate" values="1.8" in="blur" result="sat" />
+            <feComposite in="SourceGraphic" in2="sat" operator="over" />
+          </filter>
+          {/* Bolha: reflexo interno */}
+          <filter id="bubble-inner" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur stdDeviation="2" result="blur" />
+            <feComposite in="SourceGraphic" in2="blur" operator="over" />
+          </filter>
           {namespaces.map((ns, i) => {
             const hue = getNsHue(i);
             return (
@@ -659,40 +698,9 @@ export function BubbleCanvas({
             const nsHue = getNsHue(nsIdx);
             const nsRingColor = `oklch(0.65 0.20 ${nsHue})`;
 
-            return (
-              <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
-                {isSelected && (
-                  <circle
-                    r={node.radius + 8} fill="none"
-                    stroke={colors.stroke} strokeWidth="2"
-                    strokeDasharray="6 3" opacity="0.8"
-                  />
-                )}
-                {layoutMode === "constellation" && (
-                  <circle r={node.radius + 3} fill="none" stroke={nsRingColor} strokeWidth="1.5" strokeOpacity="0.45" />
-                )}
-                <circle r={node.radius + 4} fill={colors.glow} filter={`url(#glow-${node.status})`}>
-                  {node.status === "critical" && (
-                    <animate
-                      attributeName="r"
-                      values={`${node.radius + 4};${node.radius + 12};${node.radius + 4}`}
-                      dur="2s" repeatCount="indefinite"
-                    />
-                  )}
-                </circle>
-                <circle
-                  r={node.radius} fill={`url(#grad-${node.status})`}
-                  stroke={colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}
-                >
-                  {node.status === "critical" && (
-                    <animate attributeName="stroke-opacity" values="0.9;0.4;0.9" dur="1.5s" repeatCount="indefinite" />
-                  )}
-                </circle>
-                <ellipse
-                  cx={-node.radius * 0.25} cy={-node.radius * 0.3}
-                  rx={node.radius * 0.35} ry={node.radius * 0.2}
-                  fill="white" opacity="0.18"
-                />
+            // ── Textos comuns a todos os estilos ──────────────────────────────────────────────
+            const labelNodes = (
+              <>
                 {showName && (
                   <text
                     textAnchor="middle" dy={showValue ? "-0.4em" : "0.35em"}
@@ -722,6 +730,143 @@ export function BubbleCanvas({
                     {Math.round(percent)}%
                   </text>
                 )}
+              </>
+            );
+
+            // ── Anel de seleção e namespace (comum) ───────────────────────────────────────
+            const selectionRing = isSelected && (
+              <circle r={node.radius + 8} fill="none" stroke={colors.stroke} strokeWidth="2" strokeDasharray="6 3" opacity="0.8" />
+            );
+            const nsRing = layoutMode === "constellation" && (
+              <circle r={node.radius + 3} fill="none" stroke={nsRingColor} strokeWidth="1.5" strokeOpacity="0.45" />
+            );
+
+            // ──────────────────────────────────────────────────────────────────────────────
+            // ESTILO: BOLHA — reflexo 3D aprimorado com múltiplos highlights
+            // ──────────────────────────────────────────────────────────────────────────────
+            if (bubbleStyle === "bubble") return (
+              <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
+                {selectionRing}{nsRing}
+                {/* Halo de glow externo */}
+                <circle r={node.radius + 5} fill={colors.glow} filter={`url(#glow-${node.status})`}>
+                  {node.status === "critical" && (
+                    <animate attributeName="r" values={`${node.radius + 5};${node.radius + 14};${node.radius + 5}`} dur="2s" repeatCount="indefinite" />
+                  )}
+                </circle>
+                {/* Corpo principal */}
+                <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}>
+                  {node.status === "critical" && (
+                    <animate attributeName="stroke-opacity" values="0.9;0.4;0.9" dur="1.5s" repeatCount="indefinite" />
+                  )}
+                </circle>
+                {/* Reflexo principal (topo-esquerda) */}
+                <ellipse cx={-node.radius * 0.28} cy={-node.radius * 0.32} rx={node.radius * 0.38} ry={node.radius * 0.22} fill="white" opacity="0.28" />
+                {/* Reflexo secundário (menor, mais brilhante) */}
+                <ellipse cx={-node.radius * 0.18} cy={-node.radius * 0.22} rx={node.radius * 0.14} ry={node.radius * 0.08} fill="white" opacity="0.55" />
+                {/* Brilho inferior (reflexão de ambiente) */}
+                <ellipse cx={node.radius * 0.15} cy={node.radius * 0.55} rx={node.radius * 0.25} ry={node.radius * 0.10} fill={colors.stroke} opacity="0.20" />
+                {/* Anel interno de borda */}
+                <circle r={node.radius - 2} fill="none" stroke="white" strokeWidth="0.8" strokeOpacity="0.12" />
+                {labelNodes}
+              </g>
+            );
+
+            // ──────────────────────────────────────────────────────────────────────────────
+            // ESTILO: COMETA — rastro direcional + núcleo brilhante + partículas
+            // ──────────────────────────────────────────────────────────────────────────────
+            if (bubbleStyle === "comet") {
+              // Ângulo do cometa baseado no ID do pod (determinístico)
+              const cometAngle = (node.id.charCodeAt(0) + node.id.charCodeAt(node.id.length - 1)) % 360;
+              const rad = (cometAngle * Math.PI) / 180;
+              const tailLen = node.radius * 2.2;
+              const tailDx = -Math.cos(rad) * tailLen;
+              const tailDy = -Math.sin(rad) * tailLen;
+              // Partículas do rastro (3 pontos ao longo da cauda)
+              const particles = [0.4, 0.65, 0.88].map((t, pi) => ({
+                x: tailDx * t,
+                y: tailDy * t,
+                r: node.radius * (0.22 - pi * 0.06),
+                op: 0.55 - pi * 0.15,
+              }));
+              return (
+                <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
+                  {selectionRing}{nsRing}
+                  {/* Cauda do cometa */}
+                  <line
+                    x1={0} y1={0} x2={tailDx} y2={tailDy}
+                    stroke={colors.glow} strokeWidth={node.radius * 0.9}
+                    strokeLinecap="round" opacity="0.35"
+                    filter="url(#comet-trail)"
+                  />
+                  <line
+                    x1={0} y1={0} x2={tailDx * 0.7} y2={tailDy * 0.7}
+                    stroke={colors.stroke} strokeWidth={node.radius * 0.45}
+                    strokeLinecap="round" opacity="0.25"
+                  />
+                  {/* Partículas do rastro */}
+                  {particles.map((p, pi) => (
+                    <circle key={pi} cx={p.x} cy={p.y} r={p.r} fill={colors.glow} opacity={p.op}>
+                      <animate attributeName="opacity" values={`${p.op};${p.op * 0.4};${p.op}`} dur={`${1.8 + pi * 0.4}s`} repeatCount="indefinite" />
+                    </circle>
+                  ))}
+                  {/* Halo de glow */}
+                  <circle r={node.radius + 4} fill={colors.glow} filter={`url(#glow-${node.status})`}>
+                    {node.status === "critical" && (
+                      <animate attributeName="r" values={`${node.radius + 4};${node.radius + 12};${node.radius + 4}`} dur="2s" repeatCount="indefinite" />
+                    )}
+                  </circle>
+                  {/* Núcleo */}
+                  <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={colors.stroke} strokeWidth={isSelected ? 3 : 2} strokeOpacity={0.95}>
+                    {node.status === "critical" && (
+                      <animate attributeName="stroke-opacity" values="0.95;0.4;0.95" dur="1.5s" repeatCount="indefinite" />
+                    )}
+                  </circle>
+                  {/* Brilho do núcleo */}
+                  <ellipse cx={-node.radius * 0.2} cy={-node.radius * 0.25} rx={node.radius * 0.3} ry={node.radius * 0.18} fill="white" opacity="0.45" />
+                  <circle cx={-node.radius * 0.15} cy={-node.radius * 0.18} r={node.radius * 0.08} fill="white" opacity="0.7" />
+                  {labelNodes}
+                </g>
+              );
+            }
+
+            // ──────────────────────────────────────────────────────────────────────────────
+            // ESTILO: AQUALRIO — efeito submárino com ondulação e brilho de água
+            // ──────────────────────────────────────────────────────────────────────────────
+            // (aquarium é o default final)
+            const aqDur = 3 + (node.id.charCodeAt(0) % 3); // 3-5s varia por pod
+            return (
+              <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
+                {selectionRing}{nsRing}
+                {/* Halo de água pulsante */}
+                <circle r={node.radius + 6} fill={colors.glow} opacity="0.30" filter="url(#aqua-glow)">
+                  <animate attributeName="r" values={`${node.radius + 4};${node.radius + 10};${node.radius + 4}`} dur={`${aqDur}s`} repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.30;0.12;0.30" dur={`${aqDur}s`} repeatCount="indefinite" />
+                </circle>
+                {/* Anel de ondulação externo */}
+                <circle r={node.radius + 2} fill="none" stroke={colors.stroke} strokeWidth="1.5" strokeOpacity="0.3" filter="url(#aqua-ripple)">
+                  <animate attributeName="r" values={`${node.radius + 2};${node.radius + 16};${node.radius + 2}`} dur={`${aqDur * 1.3}s`} repeatCount="indefinite" />
+                  <animate attributeName="stroke-opacity" values="0.35;0;0.35" dur={`${aqDur * 1.3}s`} repeatCount="indefinite" />
+                </circle>
+                {/* Corpo com gradiente aquático */}
+                <circle r={node.radius} fill={`url(#grad-aq-${node.status})`} stroke={colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.85}>
+                  {node.status === "critical" && (
+                    <animate attributeName="stroke-opacity" values="0.85;0.3;0.85" dur="2s" repeatCount="indefinite" />
+                  )}
+                </circle>
+                {/* Efeito de refração de luz (caustics) */}
+                <ellipse cx={node.radius * 0.1} cy={-node.radius * 0.45} rx={node.radius * 0.55} ry={node.radius * 0.12} fill="white" opacity="0.18">
+                  <animate attributeName="opacity" values="0.18;0.08;0.18" dur={`${aqDur * 0.7}s`} repeatCount="indefinite" />
+                </ellipse>
+                {/* Reflexo principal */}
+                <ellipse cx={-node.radius * 0.22} cy={-node.radius * 0.28} rx={node.radius * 0.32} ry={node.radius * 0.16} fill="white" opacity="0.35" />
+                {/* Bolha de ar interna */}
+                {node.radius >= 20 && (
+                  <circle cx={node.radius * 0.35} cy={-node.radius * 0.35} r={node.radius * 0.10} fill="white" opacity="0.45">
+                    <animate attributeName="cy" values={`${-node.radius * 0.35};${-node.radius * 0.55};${-node.radius * 0.35}`} dur={`${aqDur * 0.9}s`} repeatCount="indefinite" />
+                    <animate attributeName="opacity" values="0.45;0.20;0.45" dur={`${aqDur * 0.9}s`} repeatCount="indefinite" />
+                  </circle>
+                )}
+                {labelNodes}
               </g>
             );
           })}

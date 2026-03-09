@@ -42,6 +42,7 @@ export default function Home() {
   const [showEvents, setShowEvents] = useState(false);
   const [showNodeMonitor, setShowNodeMonitor] = useState(false);
   const [showDeployMonitor, setShowDeployMonitor] = useState(false);
+  const [selectedDeployment, setSelectedDeployment] = useState("");
   const [totalEvents, setTotalEvents] = useState(0);
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
@@ -129,6 +130,10 @@ export default function Home() {
           p.namespace.toLowerCase().includes(q) ||
           p.node.toLowerCase().includes(q)
       );
+    }
+    // Filtro de deployment
+    if (selectedDeployment) {
+      result = result.filter((p) => p.deploymentName === selectedDeployment);
     }
     // Filtro de status (modo destaque)
     if (statusFilter === "critical") {
@@ -245,6 +250,8 @@ export default function Home() {
           onNamespaceChange={setSelectedNamespace}
           selectedNode={selectedNode}
           onNodeChange={setSelectedNode}
+          selectedDeployment={selectedDeployment}
+          onDeploymentChange={setSelectedDeployment}
           isLive={isLive}
           onToggleLive={toggleLive}
           nsCounts={nsCounts}

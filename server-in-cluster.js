@@ -143,6 +143,27 @@ async function getPodsWithMetrics() {
         if (l.memory) totalMemLim = (totalMemLim || 0) + parseMem(l.memory);
       }
 
+      // Resolve deploymentName via ownerReferences:
+      // Pod → ReplicaSet (ownerRef) → Deployment (ownerRef do RS)
+      // Para simplificar sem chamadas extras, extrai o nome do RS e remove o sufixo hash.
+      // Padrão: <deployment>-<rs-hash>-<pod-hash> → deployment = partes[0..n-2]
+      const ownerRefs = p.metadata?.ownerReferences || [];
+      const rsOwner   = ownerRefs.find((r) => r.kind === "ReplicaSet");
+      let deploymentName = "";
+      if (rsOwner) {
+        // Nome do RS: <deployment>-<template-hash>
+        // Remove o último segmento separado por "-" (hash do template)
+        const rsParts = rsOwner.name.split("-");
+        if (rsParts.length > 1) {
+          deploymentName = rsParts.slice(0, -1).join("-");
+        } else {
+          deploymentName = rsOwner.name;
+        }
+      } else {
+        // Pod direto (DaemonSet, StatefulSet, Job) — usa o kind do ownerRef se houver
+        const directOwner = ownerRefs[0];
+        if (directOwner) deploymentName = `[${directOwner.kind}] ${directOwner.name}`;
+      }
       return {
         name:           p.metadata.name,
         namespace:      p.metadata.namespace,
@@ -151,6 +172,8 @@ async function getPodsWithMetrics() {
         cpuUsage:       usage.cpu,
         memoryUsage:    usage.mem,
         containerNames,
+        deploymentName,
+        labels:         p.metadata?.labels || {},
         resources: {
           requests: {
             cpu:    totalCpuReq,

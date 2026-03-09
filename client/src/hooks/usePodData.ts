@@ -65,6 +65,7 @@ export interface PodMetrics {
   containerNames: string[];
   ready: number;
   labels: Record<string, string>;
+  deploymentName: string;
   resources: PodResources;
   alerts: PodAlert[];
   x?: number;
@@ -189,7 +190,8 @@ function apiPodToMetrics(raw: Record<string, unknown>, idx: number): PodMetrics 
     containers:      Array.isArray(raw.containerNames) ? (raw.containerNames as string[]).length : 1,
     containerNames:  Array.isArray(raw.containerNames) ? (raw.containerNames as string[]) : [String(raw.name ?? "app")],
     ready:           1,
-    labels:          {},
+    labels:          (raw.labels as Record<string, string>) || {},
+    deploymentName:  String(raw.deploymentName ?? ""),
     resources,
   };
 
@@ -345,7 +347,9 @@ function generateInitialPods(): PodMetrics[] {
         restarts: Math.floor(Math.random() * 5), age: formatAge(Math.random() * 7 * 24 * 3600000 + now),
         containers: Math.floor(Math.random() * 2) + 1, ready: 1,
         containerNames: [`${t.prefix}`],
-        labels: { app: t.prefix, env: t.namespace }, resources,
+        labels: { app: t.prefix, env: t.namespace },
+        deploymentName: t.prefix,
+        resources,
       };
       pods.push({ ...base, alerts: computePodAlerts(base) });
     }

@@ -5,7 +5,7 @@
 
 import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
-import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server, Search } from "lucide-react";
+import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server, Search, GitBranch, X } from "lucide-react";
 import type { ClusterStats, PodMetrics } from "@/hooks/usePodData";
 import type { ViewMode, LayoutMode } from "./BubbleCanvas";
 import { TopPodsTooltip } from "./TopPodsTooltip";
@@ -26,6 +26,8 @@ interface ClusterSidebarProps {
   nodeCounts?: Record<string, number>;
   nodeMetrics?: Record<string, { avgCpu: number; avgMem: number }>;
   allPods?: PodMetrics[];
+  selectedDeployment?: string;
+  onDeploymentChange?: (deployment: string) => void;
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -83,10 +85,14 @@ export function ClusterSidebar({
   nodeCounts = {},
   nodeMetrics = {},
   allPods = [],
+  selectedDeployment = "",
+  onDeploymentChange,
 }: ClusterSidebarProps) {
-  const [nsExpanded, setNsExpanded] = useState(true);
+  const [nsExpanded, setNsExpanded]     = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
-  const [nsSearch, setNsSearch] = useState("");
+  const [deployExpanded, setDeployExpanded] = useState(true);
+  const [nsSearch, setNsSearch]         = useState("");
+  const [deploySearch, setDeploySearch] = useState("");
 
   // Namespaces filtrados pela busca
   const filteredNamespaces = useMemo(() => {
@@ -95,6 +101,38 @@ export function ClusterSidebar({
     if (!q) return stats.namespaces;
     return stats.namespaces.filter((ns) => ns.toLowerCase().includes(q));
   }, [stats, nsSearch]);
+
+  // Lista de deployments únicos derivada dos pods
+  const deploymentList = useMemo(() => {
+    const map = new Map<string, { count: number; namespace: string; hasAlert: boolean }>();
+    allPods.forEach((p) => {
+      if (!p.deploymentName) return;
+      const existing = map.get(p.deploymentName);
+      if (existing) {
+        existing.count++;
+        if (p.status !== "healthy") existing.hasAlert = true;
+      } else {
+        map.set(p.deploymentName, { count: 1, namespace: p.namespace, hasAlert: p.status !== "healthy" });
+      }
+    });
+    return Array.from(map.entries())
+      .map(([name, info]) => ({ name, ...info }))
+      .sort((a, b) => {
+        // Alertas primeiro, depois alfabético
+        if (a.hasAlert && !b.hasAlert) return -1;
+        if (!a.hasAlert && b.hasAlert) return 1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [allPods]);
+
+  // Deployments filtrados pela busca
+  const filteredDeployments = useMemo(() => {
+    const q = deploySearch.trim().toLowerCase();
+    if (!q) return deploymentList;
+    return deploymentList.filter(
+      (d) => d.name.toLowerCase().includes(q) || d.namespace.toLowerCase().includes(q)
+    );
+  }, [deploymentList, deploySearch]);
 
   return (
     <aside
@@ -498,6 +536,117 @@ export function ClusterSidebar({
                       </div>
                     </button>
                     </TopPodsTooltip>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Filtro por Deployment */}
+        {onDeploymentChange && deploymentList.length > 0 && (
+          <div className="space-y-2">
+            {/* Cabeçalho colapsável */}
+            <button
+              onClick={() => setDeployExpanded((v) => !v)}
+              className="flex items-center justify-between w-full text-[10px] text-slate-500 uppercase tracking-widest"
+            >
+              <div className="flex items-center gap-1.5">
+                <GitBranch size={10} />
+                <span>Deployment</span>
+                {selectedDeployment && (
+                  <span
+                    className="px-1.5 py-0.5 rounded-full text-[9px] font-mono font-bold"
+                    style={{ background: "oklch(0.25 0.10 260 / 0.5)", color: "oklch(0.72 0.18 260)" }}
+                  >
+                    1 ativo
+                  </span>
+                )}
+              </div>
+              {deployExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            </button>
+
+            {deployExpanded && (
+              <div className="space-y-1">
+                {/* Busca de deployment */}
+                {deploymentList.length > 5 && (
+                  <div
+                    className="flex items-center gap-1.5 px-2 py-1 rounded"
+                    style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.24 0.03 250)" }}
+                  >
+                    <Search size={10} style={{ color: "oklch(0.40 0.015 250)" }} />
+                    <input
+                      type="text"
+                      placeholder="Filtrar..."
+                      value={deploySearch}
+                      onChange={(e) => setDeploySearch(e.target.value)}
+                      className="flex-1 bg-transparent text-[10px] font-mono outline-none placeholder:opacity-40"
+                      style={{ color: "oklch(0.75 0.015 250)" }}
+                    />
+                    {deploySearch && (
+                      <button onClick={() => setDeploySearch("")} style={{ color: "oklch(0.40 0.015 250)" }}>
+                        <X size={9} />
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Botão "Todos os deployments" */}
+                <button
+                  onClick={() => onDeploymentChange("")}
+                  className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2"
+                  style={{
+                    background: selectedDeployment === "" ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
+                    color: selectedDeployment === "" ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+                    border: `1px solid ${selectedDeployment === "" ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
+                  }}
+                >
+                  <GitBranch size={10} className="shrink-0 opacity-50" />
+                  <span className="flex-1">Todos</span>
+                  <span className="text-[10px] text-slate-600 shrink-0">{deploymentList.length}</span>
+                </button>
+
+                {/* Lista de deployments */}
+                {filteredDeployments.length === 0 && deploySearch && (
+                  <div className="text-[10px] font-mono text-center py-2" style={{ color: "oklch(0.40 0.015 250)" }}>
+                    Nenhum deployment encontrado
+                  </div>
+                )}
+                {filteredDeployments.map((d) => {
+                  const isSelected = selectedDeployment === d.name;
+                  const alertColor = d.hasAlert ? "oklch(0.72 0.22 50)" : "oklch(0.72 0.22 142)";
+                  // Detecta se é um workload não-deployment (DaemonSet, StatefulSet, Job)
+                  const isNonDeploy = d.name.startsWith("[");
+                  return (
+                    <button
+                      key={d.name}
+                      onClick={() => onDeploymentChange(isSelected ? "" : d.name)}
+                      className="w-full text-left px-2.5 py-1.5 rounded text-xs transition-all font-mono flex items-center gap-2"
+                      style={{
+                        background: isSelected ? "oklch(0.55 0.22 260 / 0.2)" : "transparent",
+                        color: isSelected ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+                        border: `1px solid ${isSelected ? "oklch(0.55 0.22 260 / 0.4)" : "transparent"}`,
+                      }}
+                    >
+                      {/* Dot de status */}
+                      <span
+                        className="w-1.5 h-1.5 rounded-full shrink-0"
+                        style={{
+                          background: isNonDeploy ? "oklch(0.55 0.12 260)" : alertColor,
+                          boxShadow: d.hasAlert ? `0 0 4px ${alertColor}` : "none",
+                        }}
+                      />
+                      {/* Nome */}
+                      <span
+                        className="flex-1 truncate"
+                        style={{ maxWidth: "calc(100% - 40px)", color: isNonDeploy ? "oklch(0.50 0.015 250)" : undefined }}
+                        title={d.name}
+                      >
+                        {d.name}
+                      </span>
+                      {/* Contagem de pods */}
+                      <span className="text-[10px] text-slate-600 shrink-0">{d.count}</span>
+                    </button>
                   );
                 })}
               </div>

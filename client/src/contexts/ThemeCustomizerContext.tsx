@@ -11,6 +11,7 @@
  *  - Grade de fundo (grid-bg) — visível/oculto e cor
  *  - Scanlines — visível/oculto
  *  - Intensidade do glow das bolhas
+ *  - Cores de status das bolhas (saudável, alerta, crítico)
  *
  * Tudo é persistido no localStorage e aplicado como variáveis CSS no :root.
  */
@@ -28,6 +29,13 @@ import {
 
 export type FontFamily = "space-grotesk" | "inter" | "jetbrains-mono" | "geist" | "dm-sans";
 
+/** Cores de status das bolhas — armazenadas como matiz OKLCH (0-360) */
+export interface StatusColorConfig {
+  healthyHue: number;   // padrão: 142 (verde)
+  warningHue: number;   // padrão: 50  (âmbar)
+  criticalHue: number;  // padrão: 25  (vermelho)
+}
+
 export interface ThemeConfig {
   // Cores de fundo
   canvasBg: string;          // fundo do canvas principal
@@ -39,6 +47,9 @@ export interface ThemeConfig {
   // Cor de destaque
   accentHue: number;         // matiz OKLCH 0-360 (padrão: 142 = verde)
   accentChroma: number;      // croma OKLCH 0-0.4 (padrão: 0.22)
+
+  // Cores de status das bolhas
+  statusColors: StatusColorConfig;
 
   // Sidebar
   sidebarWidth: number;      // px (160–400)
@@ -62,6 +73,12 @@ export interface ThemeConfig {
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
+export const DEFAULT_STATUS_COLORS: StatusColorConfig = {
+  healthyHue:  142,
+  warningHue:  50,
+  criticalHue: 25,
+};
+
 export const DEFAULT_THEME: ThemeConfig = {
   canvasBg:            "oklch(0.10 0.015 250)",
   sidebarBg:           "oklch(0.13 0.018 250)",
@@ -71,6 +88,8 @@ export const DEFAULT_THEME: ThemeConfig = {
 
   accentHue:           142,
   accentChroma:        0.22,
+
+  statusColors:        { ...DEFAULT_STATUS_COLORS },
 
   sidebarWidth:        240,
   panelOpacity:        1.0,
@@ -86,7 +105,7 @@ export const DEFAULT_THEME: ThemeConfig = {
   borderRadius:        8,
 };
 
-const STORAGE_KEY = "k8s-viz-theme-v1";
+const STORAGE_KEY = "k8s-viz-theme-v2";
 
 // ── Presets de tema ────────────────────────────────────────────────────────────
 
@@ -107,6 +126,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       panelBg: "oklch(0.12 0.018 250)",
       cardBg: "oklch(0.14 0.02 250)",
       accentHue: 142, accentChroma: 0.22,
+      statusColors: { healthyHue: 142, warningHue: 50, criticalHue: 25 },
       showGrid: true, showScanlines: true,
     },
   },
@@ -120,6 +140,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       panelBg: "oklch(0.11 0.022 240)",
       cardBg: "oklch(0.14 0.025 240)",
       accentHue: 220, accentChroma: 0.25,
+      statusColors: { healthyHue: 180, warningHue: 60, criticalHue: 0 },
       showGrid: true, showScanlines: false,
     },
   },
@@ -133,6 +154,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       panelBg: "oklch(0.11 0.022 280)",
       cardBg: "oklch(0.14 0.025 280)",
       accentHue: 280, accentChroma: 0.28,
+      statusColors: { healthyHue: 200, warningHue: 55, criticalHue: 340 },
       showGrid: true, showScanlines: true,
     },
   },
@@ -146,6 +168,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       panelBg: "oklch(0.11 0.020 20)",
       cardBg: "oklch(0.14 0.022 20)",
       accentHue: 25, accentChroma: 0.22,
+      statusColors: { healthyHue: 142, warningHue: 50, criticalHue: 10 },
       showGrid: false, showScanlines: false,
     },
   },
@@ -159,6 +182,7 @@ export const THEME_PRESETS: ThemePreset[] = [
       panelBg: "oklch(0.10 0.006 250)",
       cardBg: "oklch(0.13 0.008 250)",
       accentHue: 250, accentChroma: 0.12,
+      statusColors: { healthyHue: 150, warningHue: 45, criticalHue: 20 },
       showGrid: false, showScanlines: false,
     },
   },
@@ -172,8 +196,45 @@ export const THEME_PRESETS: ThemePreset[] = [
       panelBg: "oklch(0.11 0.016 60)",
       cardBg: "oklch(0.14 0.018 60)",
       accentHue: 60, accentChroma: 0.25,
+      statusColors: { healthyHue: 120, warningHue: 60, criticalHue: 30 },
       showGrid: true, showScanlines: true,
     },
+  },
+];
+
+// ── Presets de status rápidos (convenções de equipe) ──────────────────────────
+
+export interface StatusPreset {
+  name: string;
+  description: string;
+  colors: StatusColorConfig;
+}
+
+export const STATUS_PRESETS: StatusPreset[] = [
+  {
+    name: "Padrão K8s",
+    description: "Verde / Âmbar / Vermelho",
+    colors: { healthyHue: 142, warningHue: 50, criticalHue: 25 },
+  },
+  {
+    name: "Semáforo",
+    description: "Verde / Amarelo / Vermelho",
+    colors: { healthyHue: 130, warningHue: 70, criticalHue: 10 },
+  },
+  {
+    name: "Azul / Laranja / Vermelho",
+    description: "Convenção alternativa",
+    colors: { healthyHue: 210, warningHue: 40, criticalHue: 15 },
+  },
+  {
+    name: "Ciano / Magenta / Amarelo",
+    description: "Alto contraste",
+    colors: { healthyHue: 190, warningHue: 320, criticalHue: 65 },
+  },
+  {
+    name: "Verde / Roxo / Laranja",
+    description: "Daltonismo (deuteranopia)",
+    colors: { healthyHue: 150, warningHue: 270, criticalHue: 40 },
   },
 ];
 
@@ -181,6 +242,19 @@ export const THEME_PRESETS: ThemePreset[] = [
 
 export function accentColor(hue: number, chroma: number, lightness = 0.72) {
   return `oklch(${lightness} ${chroma.toFixed(3)} ${hue})`;
+}
+
+/** Gera as 3 variantes de cor de status (fill, stroke, glow) a partir do matiz */
+export function statusColorSet(hue: number, status: "healthy" | "warning" | "critical") {
+  const L = status === "critical" ? 0.62 : 0.72;
+  const C = status === "critical" ? 0.22 : 0.18;
+  return {
+    fill:   `oklch(${L} ${C} ${hue} / ${status === "critical" ? "0.80" : "0.75"})`,
+    stroke: `oklch(${L} ${C} ${hue})`,
+    glow:   `oklch(${L} ${C} ${hue} / ${status === "critical" ? "0.50" : "0.40"})`,
+    text:   `oklch(${Math.min(L + 0.18, 0.92)} ${C * 0.7} ${hue})`,
+    label:  `oklch(${Math.min(L + 0.10, 0.85)} ${C * 0.85} ${hue})`,
+  };
 }
 
 export function fontFamilyCSS(family: FontFamily): string {
@@ -208,6 +282,8 @@ interface ThemeCustomizerContextValue {
   setTheme: (patch: Partial<ThemeConfig>) => void;
   resetTheme: () => void;
   applyPreset: (preset: ThemePreset) => void;
+  /** Retorna o conjunto de cores para um status com base no tema atual */
+  getStatusColors: (status: "healthy" | "warning" | "critical") => ReturnType<typeof statusColorSet>;
 }
 
 const ThemeCustomizerContext = createContext<ThemeCustomizerContextValue | null>(null);
@@ -217,7 +293,12 @@ const ThemeCustomizerContext = createContext<ThemeCustomizerContextValue | null>
 function loadTheme(): ThemeConfig {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...DEFAULT_THEME, ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Garantir que statusColors existe (migração de versão anterior)
+      if (!parsed.statusColors) parsed.statusColors = { ...DEFAULT_STATUS_COLORS };
+      return { ...DEFAULT_THEME, ...parsed };
+    }
   } catch { /* ignore */ }
   return { ...DEFAULT_THEME };
 }
@@ -241,6 +322,27 @@ function applyThemeToDOM(theme: ThemeConfig) {
   root.style.setProperty("--theme-accent-bright", accBright);
   root.style.setProperty("--theme-accent-hue",    String(theme.accentHue));
   root.style.setProperty("--theme-accent-chroma", String(theme.accentChroma));
+
+  // Status colors — variáveis CSS para uso em componentes não-React (CSS puro)
+  const sc = theme.statusColors;
+  const healthy  = statusColorSet(sc.healthyHue,  "healthy");
+  const warning  = statusColorSet(sc.warningHue,  "warning");
+  const critical = statusColorSet(sc.criticalHue, "critical");
+
+  root.style.setProperty("--status-healthy",        healthy.stroke);
+  root.style.setProperty("--status-healthy-fill",   healthy.fill);
+  root.style.setProperty("--status-healthy-glow",   healthy.glow);
+  root.style.setProperty("--status-healthy-text",   healthy.text);
+
+  root.style.setProperty("--status-warning",        warning.stroke);
+  root.style.setProperty("--status-warning-fill",   warning.fill);
+  root.style.setProperty("--status-warning-glow",   warning.glow);
+  root.style.setProperty("--status-warning-text",   warning.text);
+
+  root.style.setProperty("--status-critical",       critical.stroke);
+  root.style.setProperty("--status-critical-fill",  critical.fill);
+  root.style.setProperty("--status-critical-glow",  critical.glow);
+  root.style.setProperty("--status-critical-text",  critical.text);
 
   // Sidebar width
   root.style.setProperty("--theme-sidebar-width", `${theme.sidebarWidth}px`);
@@ -279,6 +381,10 @@ export function ThemeCustomizerProvider({ children }: { children: ReactNode }) {
   const setTheme = useCallback((patch: Partial<ThemeConfig>) => {
     setThemeState((prev) => {
       const next = { ...prev, ...patch };
+      // Merge profundo de statusColors
+      if (patch.statusColors) {
+        next.statusColors = { ...prev.statusColors, ...patch.statusColors };
+      }
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(next)); } catch { /* ignore */ }
       return next;
     });
@@ -286,15 +392,21 @@ export function ThemeCustomizerProvider({ children }: { children: ReactNode }) {
 
   const resetTheme = useCallback(() => {
     try { localStorage.removeItem(STORAGE_KEY); } catch { /* ignore */ }
-    setThemeState({ ...DEFAULT_THEME });
+    setThemeState({ ...DEFAULT_THEME, statusColors: { ...DEFAULT_STATUS_COLORS } });
   }, []);
 
   const applyPreset = useCallback((preset: ThemePreset) => {
     setTheme(preset.config);
   }, [setTheme]);
 
+  const getStatusColors = useCallback((status: "healthy" | "warning" | "critical") => {
+    const sc = theme.statusColors;
+    const hue = status === "healthy" ? sc.healthyHue : status === "warning" ? sc.warningHue : sc.criticalHue;
+    return statusColorSet(hue, status);
+  }, [theme.statusColors]);
+
   return (
-    <ThemeCustomizerContext.Provider value={{ theme, setTheme, resetTheme, applyPreset }}>
+    <ThemeCustomizerContext.Provider value={{ theme, setTheme, resetTheme, applyPreset, getStatusColors }}>
       {children}
     </ThemeCustomizerContext.Provider>
   );

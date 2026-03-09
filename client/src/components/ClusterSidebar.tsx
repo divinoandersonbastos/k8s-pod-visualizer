@@ -9,6 +9,7 @@ import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Ser
 import type { ClusterStats, PodMetrics } from "@/hooks/usePodData";
 import type { ViewMode, LayoutMode } from "./BubbleCanvas";
 import { TopPodsTooltip } from "./TopPodsTooltip";
+import { useThemeCustomizer, statusColorSet } from "@/contexts/ThemeCustomizerContext";
 
 interface ClusterSidebarProps {
   stats: ClusterStats | null;
@@ -93,6 +94,13 @@ export function ClusterSidebar({
   const [deployExpanded, setDeployExpanded] = useState(true);
   const [nsSearch, setNsSearch]         = useState("");
   const [deploySearch, setDeploySearch] = useState("");
+
+  // ── Cores de status dinâmicas do tema ─────────────────────────────────────
+  const { theme } = useThemeCustomizer();
+  const sc = theme.statusColors;
+  const healthyColor  = statusColorSet(sc.healthyHue,  "healthy").stroke;
+  const warningColor  = statusColorSet(sc.warningHue,  "warning").stroke;
+  const criticalColor = statusColorSet(sc.criticalHue, "critical").stroke;
 
   // Namespaces filtrados pela busca
   const filteredNamespaces = useMemo(() => {
@@ -256,16 +264,16 @@ export function ClusterSidebar({
             <div className="space-y-2">
               <div className="text-[10px] text-slate-500 uppercase tracking-widest">Status dos Pods</div>
               <div className="grid grid-cols-3 gap-1.5">
-                <div className="rounded-lg p-2 text-center" style={{ background: "oklch(0.72 0.18 142 / 0.1)", border: "1px solid oklch(0.72 0.18 142 / 0.25)" }}>
-                  <div className="font-mono text-lg font-bold" style={{ color: "oklch(0.72 0.18 142)" }}>{stats.healthyPods}</div>
+                <div className="rounded-lg p-2 text-center" style={{ background: `${healthyColor}1a`, border: `1px solid ${healthyColor}40` }}>
+                  <div className="font-mono text-lg font-bold" style={{ color: healthyColor }}>{stats.healthyPods}</div>
                   <div className="text-[9px] text-slate-500 mt-0.5">OK</div>
                 </div>
-                <div className="rounded-lg p-2 text-center" style={{ background: "oklch(0.72 0.18 50 / 0.1)", border: "1px solid oklch(0.72 0.18 50 / 0.25)" }}>
-                  <div className="font-mono text-lg font-bold" style={{ color: "oklch(0.72 0.18 50)" }}>{stats.warningPods}</div>
+                <div className="rounded-lg p-2 text-center" style={{ background: `${warningColor}1a`, border: `1px solid ${warningColor}40` }}>
+                  <div className="font-mono text-lg font-bold" style={{ color: warningColor }}>{stats.warningPods}</div>
                   <div className="text-[9px] text-slate-500 mt-0.5">Alerta</div>
                 </div>
-                <div className="rounded-lg p-2 text-center" style={{ background: "oklch(0.62 0.22 25 / 0.1)", border: "1px solid oklch(0.62 0.22 25 / 0.25)" }}>
-                  <div className="font-mono text-lg font-bold" style={{ color: "oklch(0.62 0.22 25)" }}>{stats.criticalPods}</div>
+                <div className="rounded-lg p-2 text-center" style={{ background: `${criticalColor}1a`, border: `1px solid ${criticalColor}40` }}>
+                  <div className="font-mono text-lg font-bold" style={{ color: criticalColor }}>{stats.criticalPods}</div>
                   <div className="text-[9px] text-slate-500 mt-0.5">Crítico</div>
                 </div>
               </div>
@@ -278,13 +286,13 @@ export function ClusterSidebar({
                 label="CPU"
                 used={stats.totalCpuUsage}
                 total={stats.totalCpuCapacity}
-                color="oklch(0.72 0.18 142)"
+                color={healthyColor}
               />
               <UsageBar
                 label="MEM"
                 used={stats.totalMemoryUsage}
                 total={stats.totalMemoryCapacity}
-                color="oklch(0.72 0.18 50)"
+                color={warningColor}
               />
             </div>
 
@@ -439,21 +447,18 @@ export function ClusterSidebar({
                   // Cor dinâmica baseada no maior consumo entre CPU e MEM
                   const maxPct = Math.max(cpuPct, memPct);
                   const statusColor =
-                    maxPct >= 85
-                      ? "oklch(0.62 0.22 25)"   // vermelho — crítico
-                      : maxPct >= 60
-                      ? "oklch(0.72 0.18 50)"   // laranja — atenção
-                      : "oklch(0.72 0.18 142)"; // verde — saudável
-
+                    maxPct >= 85 ? criticalColor
+                    : maxPct >= 60 ? warningColor
+                    : healthyColor;
                   const cpuBarColor =
-                    cpuPct >= 85 ? "oklch(0.62 0.22 25)" :
-                    cpuPct >= 60 ? "oklch(0.72 0.18 50)" :
-                    "oklch(0.72 0.18 142)";
+                    cpuPct >= 85 ? criticalColor :
+                    cpuPct >= 60 ? warningColor :
+                    healthyColor;;
 
                   const memBarColor =
-                    memPct >= 85 ? "oklch(0.62 0.22 25)" :
-                    memPct >= 60 ? "oklch(0.72 0.18 50)" :
-                    "oklch(0.72 0.18 200)";
+                    memPct >= 85 ? criticalColor :
+                    memPct >= 60 ? warningColor :
+                    healthyColor;
 
                   return (
                     <TopPodsTooltip key={node} pods={nodePods} label={node} context="node" side="right">
@@ -659,9 +664,9 @@ export function ClusterSidebar({
           <div className="text-[10px] text-slate-500 uppercase tracking-widest">Legenda</div>
           <div className="space-y-2">
             {[
-              { color: "oklch(0.72 0.18 142)", label: "Saudável", desc: "< 60%" },
-              { color: "oklch(0.72 0.18 50)", label: "Atenção", desc: "60–85%" },
-              { color: "oklch(0.62 0.22 25)", label: "Crítico", desc: "> 85%" },
+              { color: healthyColor,  label: "Saudável", desc: "< 60%" },
+              { color: warningColor,  label: "Atenção", desc: "60–85%" },
+              { color: criticalColor, label: "Crítico", desc: "> 85%" },
             ].map(({ color, label, desc }) => (
               <div key={label} className="flex items-center gap-2.5">
                 <div

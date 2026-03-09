@@ -20,6 +20,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
+import { useThemeCustomizer, statusColorSet } from "@/contexts/ThemeCustomizerContext";
 
 export type ViewMode = "cpu" | "memory";
 export type LayoutMode = "free" | "constellation";
@@ -47,30 +48,8 @@ function getNsHue(index: number): number {
   return NS_HUE_PALETTE[index % NS_HUE_PALETTE.length];
 }
 
-// ─── Status das bolhas ────────────────────────────────────────────────────────
-const STATUS_COLORS = {
-  healthy: {
-    fill: "oklch(0.72 0.18 142 / 0.75)",
-    stroke: "oklch(0.72 0.18 142)",
-    glow: "oklch(0.72 0.18 142 / 0.4)",
-    text: "#86efac",
-    label: "#4ade80",
-  },
-  warning: {
-    fill: "oklch(0.72 0.18 50 / 0.75)",
-    stroke: "oklch(0.72 0.18 50)",
-    glow: "oklch(0.72 0.18 50 / 0.4)",
-    text: "#fed7aa",
-    label: "#fb923c",
-  },
-  critical: {
-    fill: "oklch(0.62 0.22 25 / 0.8)",
-    stroke: "oklch(0.62 0.22 25)",
-    glow: "oklch(0.62 0.22 25 / 0.5)",
-    text: "#fecaca",
-    label: "#f87171",
-  },
-};
+// ─── Status das bolhas: cores estáticas de fallback (substituídas pelo tema) ──
+// As cores reais são geradas dinamicamente via useThemeCustomizer no componente.
 
 // ─── Escala dinâmica de raio baseada no total de pods ─────────────────────────
 function getRadiusScale(podCount: number): { minR: number; maxR: number } {
@@ -519,6 +498,14 @@ export function BubbleCanvas({
     setPan({ x: 0, y: 0 });
   };
 
+  // ── Cores de status dinâmicas do tema ──────────────────────────────────────
+  const { theme } = useThemeCustomizer();
+  const STATUS_COLORS = useMemo(() => ({
+    healthy:  statusColorSet(theme.statusColors.healthyHue,  "healthy"),
+    warning:  statusColorSet(theme.statusColors.warningHue,  "warning"),
+    critical: statusColorSet(theme.statusColors.criticalHue, "critical"),
+  }), [theme.statusColors]);
+
   const { width, height } = dimensions;
 
   return (
@@ -552,20 +539,21 @@ export function BubbleCanvas({
             <feGaussianBlur stdDeviation="12" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
           </filter>
+          {/* Gradientes de bolha gerados dinamicamente a partir do tema */}
           <radialGradient id="grad-healthy" cx="35%" cy="30%" r="65%">
-            <stop offset="0%" stopColor="oklch(0.85 0.15 142)" stopOpacity="0.9" />
-            <stop offset="60%" stopColor="oklch(0.72 0.18 142)" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="oklch(0.45 0.18 142)" stopOpacity="0.9" />
+            <stop offset="0%" stopColor={`oklch(0.85 0.15 ${theme.statusColors.healthyHue})`} stopOpacity="0.9" />
+            <stop offset="60%" stopColor={`oklch(0.72 0.18 ${theme.statusColors.healthyHue})`} stopOpacity="0.8" />
+            <stop offset="100%" stopColor={`oklch(0.45 0.18 ${theme.statusColors.healthyHue})`} stopOpacity="0.9" />
           </radialGradient>
           <radialGradient id="grad-warning" cx="35%" cy="30%" r="65%">
-            <stop offset="0%" stopColor="oklch(0.85 0.15 50)" stopOpacity="0.9" />
-            <stop offset="60%" stopColor="oklch(0.72 0.18 50)" stopOpacity="0.8" />
-            <stop offset="100%" stopColor="oklch(0.50 0.18 50)" stopOpacity="0.9" />
+            <stop offset="0%" stopColor={`oklch(0.85 0.15 ${theme.statusColors.warningHue})`} stopOpacity="0.9" />
+            <stop offset="60%" stopColor={`oklch(0.72 0.18 ${theme.statusColors.warningHue})`} stopOpacity="0.8" />
+            <stop offset="100%" stopColor={`oklch(0.50 0.18 ${theme.statusColors.warningHue})`} stopOpacity="0.9" />
           </radialGradient>
           <radialGradient id="grad-critical" cx="35%" cy="30%" r="65%">
-            <stop offset="0%" stopColor="oklch(0.80 0.18 25)" stopOpacity="0.9" />
-            <stop offset="60%" stopColor="oklch(0.62 0.22 25)" stopOpacity="0.85" />
-            <stop offset="100%" stopColor="oklch(0.40 0.22 25)" stopOpacity="0.95" />
+            <stop offset="0%" stopColor={`oklch(0.80 0.18 ${theme.statusColors.criticalHue})`} stopOpacity="0.9" />
+            <stop offset="60%" stopColor={`oklch(0.62 0.22 ${theme.statusColors.criticalHue})`} stopOpacity="0.85" />
+            <stop offset="100%" stopColor={`oklch(0.40 0.22 ${theme.statusColors.criticalHue})`} stopOpacity="0.95" />
           </radialGradient>
           {namespaces.map((ns, i) => {
             const hue = getNsHue(i);

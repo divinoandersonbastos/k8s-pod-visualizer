@@ -16,15 +16,18 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, RotateCcw, Palette, Layout, Type, Sparkles,
-  ChevronDown, ChevronRight, Check,
+  ChevronDown, ChevronRight, Check, CircleDot,
 } from "lucide-react";
 import {
   useThemeCustomizer,
   THEME_PRESETS,
   FONT_OPTIONS,
+  STATUS_PRESETS,
   accentColor,
+  statusColorSet,
   type ThemeConfig,
   type FontFamily,
+  type StatusColorConfig,
 } from "@/contexts/ThemeCustomizerContext";
 
 // ── Utilitários ───────────────────────────────────────────────────────────────
@@ -422,6 +425,128 @@ export function CustomizerPanel({ onClose }: CustomizerPanelProps) {
             min={0} max={2.0} step={0.1}
             onChange={(v) => set("bubbleGlowIntensity", v)}
           />
+        </Section>
+
+        {/* ── Cores de Status das Bolhas ── */}
+        <Section title="Cores de Status das Bolhas" icon={<CircleDot size={11} />} defaultOpen={true}>
+          {/* Presets de convenção */}
+          <div className="space-y-1.5">
+            <div className="text-[10px] font-mono" style={{ color: "oklch(0.50 0.015 250)" }}>Convenções de equipe</div>
+            <div className="space-y-1">
+              {STATUS_PRESETS.map((preset) => {
+                const hColors = statusColorSet(preset.colors.healthyHue, "healthy");
+                const wColors = statusColorSet(preset.colors.warningHue, "warning");
+                const cColors = statusColorSet(preset.colors.criticalHue, "critical");
+                const isActive =
+                  theme.statusColors.healthyHue  === preset.colors.healthyHue &&
+                  theme.statusColors.warningHue  === preset.colors.warningHue &&
+                  theme.statusColors.criticalHue === preset.colors.criticalHue;
+                return (
+                  <button
+                    key={preset.name}
+                    onClick={() => setTheme({ statusColors: { ...preset.colors } })}
+                    className="flex items-center justify-between w-full px-3 py-2 rounded-lg transition-all"
+                    style={{
+                      background: isActive ? "oklch(0.16 0.02 250)" : "oklch(0.13 0.015 250)",
+                      border: `1px solid ${isActive ? accentColor(theme.accentHue, theme.accentChroma) : "oklch(0.20 0.025 250)"}`,
+                    }}
+                  >
+                    <div className="flex flex-col items-start gap-0.5">
+                      <span className="text-[10px] font-mono" style={{ color: isActive ? accentColor(theme.accentHue, theme.accentChroma) : "oklch(0.65 0.015 250)" }}>
+                        {preset.name}
+                      </span>
+                      <span className="text-[9px] font-mono" style={{ color: "oklch(0.38 0.015 250)" }}>
+                        {preset.description}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-4 h-4 rounded-full" style={{ background: hColors.stroke, boxShadow: `0 0 6px ${hColors.glow}` }} />
+                      <div className="w-4 h-4 rounded-full" style={{ background: wColors.stroke, boxShadow: `0 0 6px ${wColors.glow}` }} />
+                      <div className="w-4 h-4 rounded-full" style={{ background: cColors.stroke, boxShadow: `0 0 6px ${cColors.glow}` }} />
+                      {isActive && <Check size={10} style={{ color: accentColor(theme.accentHue, theme.accentChroma) }} />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Controles individuais por status */}
+          <div className="space-y-3 pt-1">
+            <div className="text-[10px] font-mono" style={{ color: "oklch(0.50 0.015 250)" }}>Ajuste fino por status</div>
+
+            {/* Saudável */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ background: statusColorSet(theme.statusColors.healthyHue, "healthy").stroke, boxShadow: `0 0 6px ${statusColorSet(theme.statusColors.healthyHue, "healthy").glow}` }} />
+                  <span className="text-[10px] font-mono" style={{ color: "oklch(0.60 0.015 250)" }}>Saudável</span>
+                </div>
+                <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.015 250)" }}>{theme.statusColors.healthyHue}°</span>
+              </div>
+              <div className="relative h-5 flex items-center rounded-full overflow-hidden" style={{ background: "linear-gradient(to right, oklch(0.65 0.22 0), oklch(0.65 0.22 45), oklch(0.65 0.22 90), oklch(0.65 0.22 135), oklch(0.65 0.22 180), oklch(0.65 0.22 225), oklch(0.65 0.22 270), oklch(0.65 0.22 315), oklch(0.65 0.22 360))" }}>
+                <input type="range" min={0} max={360} step={1} value={theme.statusColors.healthyHue}
+                  onChange={(e) => setTheme({ statusColors: { ...theme.statusColors, healthyHue: parseInt(e.target.value) } })}
+                  className="absolute inset-0 w-full opacity-0 cursor-pointer h-5" />
+                <div className="absolute w-3 h-3 rounded-full border-2 border-white pointer-events-none shadow-md"
+                  style={{ left: `calc(${(theme.statusColors.healthyHue / 360) * 100}% - 6px)`, background: statusColorSet(theme.statusColors.healthyHue, "healthy").stroke }} />
+              </div>
+            </div>
+
+            {/* Atenção */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ background: statusColorSet(theme.statusColors.warningHue, "warning").stroke, boxShadow: `0 0 6px ${statusColorSet(theme.statusColors.warningHue, "warning").glow}` }} />
+                  <span className="text-[10px] font-mono" style={{ color: "oklch(0.60 0.015 250)" }}>Atenção</span>
+                </div>
+                <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.015 250)" }}>{theme.statusColors.warningHue}°</span>
+              </div>
+              <div className="relative h-5 flex items-center rounded-full overflow-hidden" style={{ background: "linear-gradient(to right, oklch(0.65 0.22 0), oklch(0.65 0.22 45), oklch(0.65 0.22 90), oklch(0.65 0.22 135), oklch(0.65 0.22 180), oklch(0.65 0.22 225), oklch(0.65 0.22 270), oklch(0.65 0.22 315), oklch(0.65 0.22 360))" }}>
+                <input type="range" min={0} max={360} step={1} value={theme.statusColors.warningHue}
+                  onChange={(e) => setTheme({ statusColors: { ...theme.statusColors, warningHue: parseInt(e.target.value) } })}
+                  className="absolute inset-0 w-full opacity-0 cursor-pointer h-5" />
+                <div className="absolute w-3 h-3 rounded-full border-2 border-white pointer-events-none shadow-md"
+                  style={{ left: `calc(${(theme.statusColors.warningHue / 360) * 100}% - 6px)`, background: statusColorSet(theme.statusColors.warningHue, "warning").stroke }} />
+              </div>
+            </div>
+
+            {/* Crítico */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-3 h-3 rounded-full" style={{ background: statusColorSet(theme.statusColors.criticalHue, "critical").stroke, boxShadow: `0 0 6px ${statusColorSet(theme.statusColors.criticalHue, "critical").glow}` }} />
+                  <span className="text-[10px] font-mono" style={{ color: "oklch(0.60 0.015 250)" }}>Crítico</span>
+                </div>
+                <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.015 250)" }}>{theme.statusColors.criticalHue}°</span>
+              </div>
+              <div className="relative h-5 flex items-center rounded-full overflow-hidden" style={{ background: "linear-gradient(to right, oklch(0.65 0.22 0), oklch(0.65 0.22 45), oklch(0.65 0.22 90), oklch(0.65 0.22 135), oklch(0.65 0.22 180), oklch(0.65 0.22 225), oklch(0.65 0.22 270), oklch(0.65 0.22 315), oklch(0.65 0.22 360))" }}>
+                <input type="range" min={0} max={360} step={1} value={theme.statusColors.criticalHue}
+                  onChange={(e) => setTheme({ statusColors: { ...theme.statusColors, criticalHue: parseInt(e.target.value) } })}
+                  className="absolute inset-0 w-full opacity-0 cursor-pointer h-5" />
+                <div className="absolute w-3 h-3 rounded-full border-2 border-white pointer-events-none shadow-md"
+                  style={{ left: `calc(${(theme.statusColors.criticalHue / 360) * 100}% - 6px)`, background: statusColorSet(theme.statusColors.criticalHue, "critical").stroke }} />
+              </div>
+            </div>
+
+            {/* Preview das bolhas */}
+            <div className="flex items-center justify-center gap-4 pt-2">
+              {(["healthy", "warning", "critical"] as const).map((s) => {
+                const hue = s === "healthy" ? theme.statusColors.healthyHue : s === "warning" ? theme.statusColors.warningHue : theme.statusColors.criticalHue;
+                const sc = statusColorSet(hue, s);
+                const label = s === "healthy" ? "Saudável" : s === "warning" ? "Atenção" : "Crítico";
+                return (
+                  <div key={s} className="flex flex-col items-center gap-1.5">
+                    <div className="w-10 h-10 rounded-full flex items-center justify-center text-[8px] font-mono"
+                      style={{ background: sc.fill, border: `2px solid ${sc.stroke}`, boxShadow: `0 0 12px ${sc.glow}`, color: sc.text }}>
+                      pod
+                    </div>
+                    <span className="text-[8px] font-mono" style={{ color: sc.stroke }}>{label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </Section>
 
         {/* Espaço extra no final */}

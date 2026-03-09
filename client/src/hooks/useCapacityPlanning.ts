@@ -348,17 +348,22 @@ export function useCapacityPlanning({
 
 // ── Utilitários de formatação ─────────────────────────────────────────────────
 
+/**
+ * Formata CPU em cores inteiros (ex: "4 cores") ou milicores quando < 1 core.
+ * Nunca exibe decimais para valores >= 1 core.
+ */
 export function fmtCpu(milicores: number): string {
-  if (milicores >= 1000) return `${(milicores / 1000).toFixed(1)}`;
+  if (milicores >= 1000) return `${Math.round(milicores / 1000)}`;
   return `${Math.round(milicores)}m`;
 }
 
+/**
+ * Formata memória sempre em GiB (2 casas decimais).
+ * Valores < 1 GiB são exibidos como fração de GiB (ex: "0.25 GiB").
+ */
 export function fmtMem(bytes: number): string {
   const GiB = 1024 ** 3;
-  const MiB = 1024 ** 2;
-  if (bytes >= GiB) return `${(bytes / GiB).toFixed(1)} GiB`;
-  if (bytes >= MiB) return `${(bytes / MiB).toFixed(0)} MiB`;
-  return `${Math.round(bytes / 1024)} KiB`;
+  return `${(bytes / GiB).toFixed(2)} GiB`;
 }
 
 export const SIZING_LABEL: Record<SizingStatus, string> = {

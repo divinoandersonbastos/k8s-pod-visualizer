@@ -25,6 +25,7 @@ import {
   saveNodeEventsBatch, getNodeEvents, getAllNodeEvents,
   saveNodeTransition, getNodeTransitions,
   saveDeploymentEventsBatch, getDeploymentEvents, getAllDeploymentEvents,
+  insertCapacitySnapshot, getCapacityHistory,
   getDbStats, clearAllData,
 } from "./db.js";
 
@@ -1256,6 +1257,21 @@ const server = http.createServer(async (req, res) => {
     }
     return;
   }
+  // ── /api/capacity/history ────────────────────────────────────────────────────
+  if (url.pathname === "/api/capacity/history") {
+    try {
+      const poolName = url.searchParams.get("pool") || null;
+      const hours    = parseInt(url.searchParams.get("hours") || "24", 10);
+      const rows     = getCapacityHistory(poolName, Math.min(hours, 72));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ rows, pool: poolName, hours }));
+    } catch (err) {
+      console.error("[error] /api/capacity/history:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
   // ── /api/cluster-info ──────────────────────────────────────────────────────
   if (url.pathname === "/api/cluster-info") {
     try {
@@ -1297,4 +1313,22 @@ server.listen(PORT, () => {
   console.log(`[k8s-pod-visualizer] API Kubernetes: ${K8S_API}`);
   console.log(`[k8s-pod-visualizer] ServiceAccount token: ${fs.existsSync(SA_TOKEN_PATH) ? "encontrado ✓" : "não encontrado ✗"}`);
   console.log(`[k8s-pod-visualizer] Namespace: ${getSANamespace()}`);
+
+  // ── Job de snapshot de capacidade: a cada 5 minutos ─────────────────────────────────
+  const runCapacitySnapshot = async () => {
+    try {
+      const data = await getCapacity();
+      if (data.hasRealMetrics && data.pools.length > 0) {
+        insertCapacitySnapshot(data.pools);
+        console.log(`[capacity] Snapshot salvo: ${data.pools.length} pools`);
+      }
+    } catch (err) {
+      console.error("[capacity] Erro ao salvar snapshot:", err.message);
+    }
+  };
+  // Primeiro snapshot após 30s (aguarda o servidor estabilizar)
+  setTimeout(runCapacitySnapshot, 30_000);
+  // Snapshots subsequentes a cada 5 minutos
+  setInterval(runCapacitySnapshot, 5 * 60_000);
+  console.log("[capacity] Job de snapshot iniciado (intervalo: 5min)");
 });

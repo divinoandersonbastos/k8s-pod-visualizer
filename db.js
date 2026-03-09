@@ -156,6 +156,32 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_de_recorded ON deployment_events(recorded_at DESC);
     `,
   },
+
+  // v3 — Snapshots de capacidade por node-pool (para gráfico de tendência 24h)
+  {
+    version: 3,
+    sql: `
+      CREATE TABLE IF NOT EXISTS capacity_snapshots (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        pool_name      TEXT NOT NULL,
+        cpu_usage_pct  REAL NOT NULL,   -- % uso real de CPU
+        mem_usage_pct  REAL NOT NULL,   -- % uso real de memória
+        pod_usage_pct  REAL NOT NULL,   -- % pods usados
+        cpu_req_pct    REAL NOT NULL,   -- % requests de CPU
+        mem_req_pct    REAL NOT NULL,   -- % requests de memória
+        cpu_alloc_m    INTEGER NOT NULL, -- CPU allocatable em milicores
+        mem_alloc_b    INTEGER NOT NULL, -- MEM allocatable em bytes
+        cpu_usage_m    INTEGER NOT NULL, -- CPU uso real em milicores
+        mem_usage_b    INTEGER NOT NULL, -- MEM uso real em bytes
+        node_count     INTEGER NOT NULL,
+        pod_count      INTEGER NOT NULL,
+        sizing         TEXT NOT NULL,   -- 'critical'|'underprovisioned'|'balanced'|'overprovisioned'
+        recorded_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_cs_pool     ON capacity_snapshots(pool_name, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_cs_recorded ON capacity_snapshots(recorded_at DESC);
+    `,
+  },
 ];
 
 // Aplicar migrações pendentes dentro de uma transação
@@ -499,6 +525,85 @@ export function pruneOldDeploymentEvents(days = 60) {
   return result.changes;
 }
 
+// ── capacity_snapshots ───────────────────────────────────────────────────────
+
+const csStmts = {
+  insert: db.prepare(`
+    INSERT INTO capacity_snapshots
+      (pool_name, cpu_usage_pct, mem_usage_pct, pod_usage_pct,
+       cpu_req_pct, mem_req_pct, cpu_alloc_m, mem_alloc_b,
+       cpu_usage_m, mem_usage_b, node_count, pod_count, sizing, recorded_at)
+    VALUES
+      (@pool_name, @cpu_usage_pct, @mem_usage_pct, @pod_usage_pct,
+       @cpu_req_pct, @mem_req_pct, @cpu_alloc_m, @mem_alloc_b,
+       @cpu_usage_m, @mem_usage_b, @node_count, @pod_count, @sizing, @recorded_at)
+  `),
+  getByPool: db.prepare(`
+    SELECT * FROM capacity_snapshots
+    WHERE pool_name = @pool_name
+      AND recorded_at >= datetime('now', @since)
+    ORDER BY recorded_at ASC
+  `),
+  getAll: db.prepare(`
+    SELECT * FROM capacity_snapshots
+    WHERE recorded_at >= datetime('now', @since)
+    ORDER BY pool_name, recorded_at ASC
+  `),
+  prune: db.prepare(`
+    DELETE FROM capacity_snapshots
+    WHERE recorded_at < datetime('now', @days)
+  `),
+};
+
+/**
+ * Persiste um snapshot de todos os pools de capacidade.
+ * @param {Array} pools — array de CapacityPool do getCapacity()
+ */
+export function insertCapacitySnapshot(pools) {
+  const now = new Date().toISOString();
+  const insert = db.transaction(() => {
+    for (const p of pools) {
+      const m = p.metrics;
+      const t = p.totals;
+      csStmts.insert.run({
+        pool_name:     p.pool,
+        cpu_usage_pct: m.cpuUsagePct,
+        mem_usage_pct: m.memUsagePct,
+        pod_usage_pct: m.podUsagePct,
+        cpu_req_pct:   m.cpuReqPct,
+        mem_req_pct:   m.memReqPct,
+        cpu_alloc_m:   Math.round(t.cpuAlloc),
+        mem_alloc_b:   Math.round(t.memAlloc),
+        cpu_usage_m:   Math.round(t.cpuUsage),
+        mem_usage_b:   Math.round(t.memUsage),
+        node_count:    p.nodeCount,
+        pod_count:     t.podCount,
+        sizing:        p.sizing,
+        recorded_at:   now,
+      });
+    }
+  });
+  insert();
+}
+
+/**
+ * Retorna snapshots das últimas N horas para um pool (ou todos os pools).
+ * @param {string|null} poolName — null para todos os pools
+ * @param {number} hours — janela de tempo (padrão 24h)
+ */
+export function getCapacityHistory(poolName = null, hours = 24) {
+  const since = `-${hours} hours`;
+  if (poolName) return csStmts.getByPool.all({ pool_name: poolName, since });
+  return csStmts.getAll.all({ since });
+}
+
+/** Remove snapshots mais antigos que N dias */
+export function pruneOldCapacitySnapshots(days = 3) {
+  const result = csStmts.prune.run({ days: `-${days} days` });
+  console.log(`[db] Pruned ${result.changes} old capacity snapshots (>${days} days)`);
+  return result.changes;
+}
+
 /** Estatísticas gerais do banco */
 export function getDbStats() {
   return {
@@ -507,6 +612,7 @@ export function getDbStats() {
     nodeEvents:         db.prepare("SELECT COUNT(*) AS c FROM node_events").get().c,
     nodeTransitions:    db.prepare("SELECT COUNT(*) AS c FROM node_transitions").get().c,
     deploymentEvents:   db.prepare("SELECT COUNT(*) AS c FROM deployment_events").get().c,
+    capacitySnapshots:  db.prepare("SELECT COUNT(*) AS c FROM capacity_snapshots").get().c,
     dbPath:             DB_PATH,
     dbSizeBytes:        fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,
     schemaVersion:      db.prepare("SELECT MAX(version) AS v FROM schema_version").get().v,
@@ -533,6 +639,7 @@ setInterval(() => {
     pruneOldMetrics(7);           // histórico de métricas: 7 dias
     pruneOldNodeEvents(30);       // eventos de nodes: 30 dias
     pruneOldDeploymentEvents(60); // eventos de deployments: 60 dias
+    pruneOldCapacitySnapshots(3);  // snapshots de capacidade: 3 dias
     db.exec("PRAGMA wal_checkpoint(PASSIVE)"); // checkpoint do WAL
   } catch (err) {
     console.error("[db] Erro na manutenção automática:", err.message);

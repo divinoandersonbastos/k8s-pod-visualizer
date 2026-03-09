@@ -8,13 +8,13 @@
  *  3. Detalhe do pool selecionado (tabela de nodes + recomendações SRE)
  */
 
-import { useState } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, RefreshCw, ChevronDown, ChevronRight,
   AlertTriangle, AlertCircle, CheckCircle2, Info,
   Server, Cpu, MemoryStick, Box, Zap, TrendingUp, TrendingDown,
-  Activity,
+  Activity, History,
 } from "lucide-react";
 import {
   useCapacityPlanning,
@@ -22,6 +22,7 @@ import {
   SIZING_LABEL, SIZING_COLOR, SIZING_BG,
   type CapacityPool, type SizingStatus, type RecommendationSeverity,
 } from "@/hooks/useCapacityPlanning";
+import { getHeadroomThreshold } from "@/components/ConfigModal";
 
 // ── Utilitários visuais ───────────────────────────────────────────────────────
 
@@ -250,9 +251,185 @@ function PoolCard({
   );
 }
 
+// ── Tipos de histórico ──────────────────────────────────────────────────────────
+interface CapacitySnapshotRow {
+  id: number;
+  pool_name: string;
+  cpu_usage_pct: number;
+  mem_usage_pct: number;
+  pod_usage_pct: number;
+  cpu_req_pct: number;
+  mem_req_pct: number;
+  node_count: number;
+  pod_count: number;
+  sizing: string;
+  recorded_at: string;
+}
+
+// ── Gráfico de tendência 24h (Canvas) ─────────────────────────────────────────
+function PoolHistoryChart({ poolName, apiUrl }: { poolName: string; apiUrl: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [rows, setRows] = useState<CapacitySnapshotRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const base = apiUrl || window.location.origin;
+      const res = await fetch(`${base}/api/capacity/history?pool=${encodeURIComponent(poolName)}&hours=24`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      setRows(json.rows ?? []);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [poolName, apiUrl]);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Desenhar o gráfico quando os dados chegarem
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || rows.length < 2) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const W = canvas.width;
+    const H = canvas.height;
+    const PAD = { top: 20, right: 12, bottom: 28, left: 36 };
+    const chartW = W - PAD.left - PAD.right;
+    const chartH = H - PAD.top - PAD.bottom;
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Background
+    ctx.fillStyle = "oklch(0.10 0.012 250)";
+    ctx.fillRect(0, 0, W, H);
+
+    // Grid lines
+    ctx.strokeStyle = "oklch(0.20 0.02 250)";
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+      const y = PAD.top + (chartH / 4) * i;
+      ctx.beginPath();
+      ctx.moveTo(PAD.left, y);
+      ctx.lineTo(PAD.left + chartW, y);
+      ctx.stroke();
+      // Labels eixo Y
+      ctx.fillStyle = "oklch(0.40 0.015 250)";
+      ctx.font = "9px monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(`${100 - i * 25}%`, PAD.left - 4, y + 3);
+    }
+
+    const times = rows.map((r) => new Date(r.recorded_at).getTime());
+    const minT = Math.min(...times);
+    const maxT = Math.max(...times);
+    const rangeT = maxT - minT || 1;
+
+    const xFor = (t: number) => PAD.left + ((t - minT) / rangeT) * chartW;
+    const yFor = (v: number) => PAD.top + chartH - (Math.min(100, Math.max(0, v)) / 100) * chartH;
+
+    // Desenhar linhas
+    const series = [
+      { key: "cpu_usage_pct" as keyof CapacitySnapshotRow, color: "oklch(0.72 0.22 142)", label: "CPU" },
+      { key: "mem_usage_pct" as keyof CapacitySnapshotRow, color: "oklch(0.72 0.22 50)",  label: "MEM" },
+    ];
+
+    for (const s of series) {
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      rows.forEach((r, i) => {
+        const x = xFor(new Date(r.recorded_at).getTime());
+        const y = yFor(r[s.key] as number);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Área preenchida
+      ctx.fillStyle = s.color.replace(")", " / 0.08)");
+      ctx.beginPath();
+      rows.forEach((r, i) => {
+        const x = xFor(new Date(r.recorded_at).getTime());
+        const y = yFor(r[s.key] as number);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.lineTo(xFor(times[times.length - 1]), PAD.top + chartH);
+      ctx.lineTo(xFor(times[0]), PAD.top + chartH);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    // Labels eixo X (hora)
+    ctx.fillStyle = "oklch(0.35 0.015 250)";
+    ctx.font = "8px monospace";
+    ctx.textAlign = "center";
+    const steps = Math.min(6, rows.length);
+    for (let i = 0; i <= steps; i++) {
+      const idx = Math.round((i / steps) * (rows.length - 1));
+      const t = new Date(times[idx]);
+      const x = xFor(times[idx]);
+      ctx.fillText(`${t.getHours().toString().padStart(2, "0")}:${t.getMinutes().toString().padStart(2, "0")}`, x, H - 4);
+    }
+
+    // Legenda
+    series.forEach((s, i) => {
+      ctx.fillStyle = s.color;
+      ctx.fillRect(PAD.left + i * 60, 4, 20, 2);
+      ctx.fillStyle = "oklch(0.55 0.015 250)";
+      ctx.font = "8px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(s.label, PAD.left + i * 60 + 24, 8);
+    });
+  }, [rows]);
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-6 text-[10px] font-mono" style={{ color: "oklch(0.40 0.015 250)" }}>
+      <RefreshCw size={12} className="animate-spin mr-2" /> Carregando histórico...
+    </div>
+  );
+
+  if (error) return (
+    <div className="text-[10px] font-mono py-4 text-center" style={{ color: "oklch(0.65 0.22 25)" }}>
+      Erro ao carregar histórico: {error}
+    </div>
+  );
+
+  if (rows.length < 2) return (
+    <div className="text-[10px] font-mono py-6 text-center space-y-1" style={{ color: "oklch(0.40 0.015 250)" }}>
+      <History size={16} className="mx-auto mb-2" style={{ color: "oklch(0.35 0.015 250)" }} />
+      <div>Aguardando snapshots...</div>
+      <div style={{ color: "oklch(0.30 0.015 250)" }}>O primeiro snapshot é salvo 30s após o servidor iniciar.</div>
+      <div style={{ color: "oklch(0.30 0.015 250)" }}>Snapshots subsequentes a cada 5 minutos.</div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-1">
+      <canvas
+        ref={canvasRef}
+        width={340}
+        height={140}
+        className="w-full rounded-lg"
+        style={{ display: "block" }}
+      />
+      <div className="text-[8px] font-mono text-right" style={{ color: "oklch(0.30 0.015 250)" }}>
+        {rows.length} snapshots · últimas 24h
+      </div>
+    </div>
+  );
+}
+
 // Detalhe do pool selecionado
-function PoolDetail({ pool, onClose }: { pool: CapacityPool; onClose: () => void }) {
+function PoolDetail({ pool, onClose, apiUrl = "" }: { pool: CapacityPool; onClose: () => void; apiUrl?: string }) {
   const [expanded, setExpanded] = useState(true);
+  const [activeTab, setActiveTab] = useState<"metrics" | "history">("metrics");
   const t = pool.totals;
   const m = pool.metrics;
 
@@ -281,7 +458,51 @@ function PoolDetail({ pool, onClose }: { pool: CapacityPool; onClose: () => void
         </button>
       </div>
 
-      <div className="p-4 space-y-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 280px)" }}>
+      {/* Tabs */}
+      <div className="flex" style={{ borderBottom: "1px solid oklch(0.20 0.025 250)" }}>
+        {(["metrics", "history"] as const).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setActiveTab(tab)}
+            className="flex items-center gap-1.5 px-4 py-2 text-[10px] font-mono transition-colors"
+            style={{
+              color: activeTab === tab ? "oklch(0.72 0.18 200)" : "oklch(0.40 0.015 250)",
+              borderBottom: activeTab === tab ? "2px solid oklch(0.72 0.18 200)" : "2px solid transparent",
+              marginBottom: "-1px",
+            }}
+          >
+            {tab === "metrics" ? <Activity size={10} /> : <History size={10} />}
+            {tab === "metrics" ? "Métricas" : "Histórico 24h"}
+          </button>
+        ))}
+      </div>
+
+      <div className="p-4 space-y-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 320px)" }}>
+
+        {/* Aba de histórico */}
+        {activeTab === "history" && (
+          <div className="space-y-3">
+            <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.015 250)" }}>
+              Tendência de Uso Real — Últimas 24h
+            </div>
+            <PoolHistoryChart poolName={pool.pool} apiUrl={apiUrl} />
+            <div className="rounded-lg p-3 text-[10px] font-mono space-y-1"
+              style={{ background: "oklch(0.11 0.015 250)", border: "1px solid oklch(0.20 0.025 250)" }}>
+              <div className="flex items-center gap-2 mb-2">
+                <div className="w-4 h-1 rounded" style={{ background: "oklch(0.72 0.22 142)" }} />
+                <span style={{ color: "oklch(0.55 0.015 250)" }}>CPU uso real</span>
+                <div className="w-4 h-1 rounded ml-3" style={{ background: "oklch(0.72 0.22 50)" }} />
+                <span style={{ color: "oklch(0.55 0.015 250)" }}>MEM uso real</span>
+              </div>
+              <div style={{ color: "oklch(0.35 0.015 250)" }}>
+                Snapshots salvos a cada 5 minutos. Apenas quando metrics-server está disponível.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Aba de métricas */}
+        {activeTab === "metrics" && (<>
 
         {/* Recomendações SRE */}
         {pool.recommendations.length > 0 && (
@@ -435,6 +656,7 @@ function PoolDetail({ pool, onClose }: { pool: CapacityPool; onClose: () => void
             </div>
           )}
         </div>
+        </>)}
       </div>
     </motion.div>
   );
@@ -450,9 +672,22 @@ interface CapacityPlanningPanelProps {
 export function CapacityPlanningPanel({ onClose, apiUrl = "" }: CapacityPlanningPanelProps) {
   const { data, loading, error, refresh, lastUpdated } = useCapacityPlanning({ apiUrl, refreshInterval: 30_000 });
   const [selectedPool, setSelectedPool] = useState<string | null>(null);
+  const [headroom, setHeadroom] = useState<number>(() => getHeadroomThreshold());
+
+  // Reler o threshold quando o modal de config for fechado (storage event)
+  useEffect(() => {
+    const onStorage = () => setHeadroom(getHeadroomThreshold());
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
 
   const pool = data?.pools.find((p) => p.pool === selectedPool) ?? null;
   const hasDetail = pool !== null;
+
+  // Pools abaixo do headroom mínimo (uso real > 100 - headroom)
+  const headroomAlerts = data?.pools.filter(
+    (p) => p.metrics.cpuUsagePct > (100 - headroom) || p.metrics.memUsagePct > (100 - headroom)
+  ) ?? [];
 
   const sizingCounts = data
     ? {
@@ -489,7 +724,7 @@ export function CapacityPlanningPanel({ onClose, apiUrl = "" }: CapacityPlanning
             style={{ background: "oklch(0.12 0.018 250)", borderRight: "1px solid oklch(0.22 0.03 250)" }}
           >
             <div className="w-[380px] h-full p-4 overflow-y-auto">
-              <PoolDetail pool={pool} onClose={() => setSelectedPool(null)} />
+              <PoolDetail pool={pool} onClose={() => setSelectedPool(null)} apiUrl={apiUrl} />
             </div>
           </motion.div>
         )}
@@ -645,6 +880,56 @@ export function CapacityPlanningPanel({ onClose, apiUrl = "" }: CapacityPlanning
                 />
               ))}
             </div>
+          )}
+
+          {/* Banner de alerta de headroom mínimo */}
+          {headroomAlerts.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="rounded-xl px-4 py-3 space-y-2"
+              style={{
+                background: "oklch(0.15 0.06 25 / 0.5)",
+                border: "1px solid oklch(0.65 0.22 25 / 0.5)",
+                boxShadow: "0 0 16px oklch(0.65 0.22 25 / 0.1)",
+              }}
+            >
+              <div className="flex items-center gap-2">
+                <AlertTriangle size={13} style={{ color: "oklch(0.65 0.22 25)" }} />
+                <span className="text-xs font-mono font-bold" style={{ color: "oklch(0.65 0.22 25)" }}>
+                  Headroom crítico — {headroomAlerts.length} pool{headroomAlerts.length > 1 ? "s" : ""} abaixo de {headroom}%
+                </span>
+              </div>
+              <div className="space-y-1">
+                {headroomAlerts.map((p) => (
+                  <div key={p.pool} className="flex items-center justify-between text-[10px] font-mono">
+                    <button
+                      onClick={() => setSelectedPool(p.pool)}
+                      className="flex items-center gap-1.5 hover:underline"
+                      style={{ color: "oklch(0.75 0.015 250)" }}
+                    >
+                      <Server size={9} style={{ color: "oklch(0.65 0.22 25)" }} />
+                      {p.pool}
+                    </button>
+                    <div className="flex gap-3" style={{ color: "oklch(0.55 0.015 250)" }}>
+                      {p.metrics.cpuUsagePct > (100 - headroom) && (
+                        <span style={{ color: "oklch(0.65 0.22 25)" }}>
+                          CPU {p.metrics.cpuUsagePct.toFixed(0)}%
+                        </span>
+                      )}
+                      {p.metrics.memUsagePct > (100 - headroom) && (
+                        <span style={{ color: "oklch(0.65 0.22 25)" }}>
+                          MEM {p.metrics.memUsagePct.toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.015 250)" }}>
+                Threshold configurado: headroom mínimo de {headroom}% (uso máx. {100 - headroom}%). Ajuste em Configurações.
+              </div>
+            </motion.div>
           )}
 
           {/* Nota sobre metrics-server */}

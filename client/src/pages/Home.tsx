@@ -27,10 +27,12 @@ import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
 import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
 import { DeploymentMonitorPanel } from "@/components/DeploymentMonitorPanel";
 import { CapacityPlanningPanel } from "@/components/CapacityPlanningPanel";
+import { CustomizerPanel } from "@/components/CustomizerPanel";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
 import { useDeploymentMonitor } from "@/hooks/useDeploymentMonitor";
 import { useCapacityPlanning } from "@/hooks/useCapacityPlanning";
+import { useThemeCustomizer } from "@/contexts/ThemeCustomizerContext";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -45,6 +47,7 @@ export default function Home() {
   const [showNodeMonitor, setShowNodeMonitor] = useState(false);
   const [showDeployMonitor, setShowDeployMonitor] = useState(false);
   const [showCapacity, setShowCapacity] = useState(false);
+  const [showCustomizer, setShowCustomizer] = useState(false);
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
@@ -53,6 +56,7 @@ export default function Home() {
   const [clusterName, setClusterName] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("");
 
+  const { theme } = useThemeCustomizer();
   const { clusterInfo, nodes: realNodes } = useClusterMeta();
   const [refreshInterval, setRefreshInterval] = useState(3000);
 
@@ -193,7 +197,7 @@ export default function Home() {
     return (
       <div
         className="min-h-screen flex items-center justify-center grid-bg"
-        style={{ background: "oklch(0.10 0.015 250)" }}
+        style={{ background: theme.canvasBg }}
       >
         <div className="text-center space-y-4">
           <div className="relative w-16 h-16 mx-auto">
@@ -221,7 +225,7 @@ export default function Home() {
   return (
     <div
       className="min-h-screen flex flex-col overflow-hidden"
-      style={{ background: "oklch(0.10 0.015 250)", height: "100vh" }}
+      style={{ background: theme.canvasBg, height: "100vh" }}
     >
       {/* Header */}
       <ClusterHeader
@@ -240,6 +244,7 @@ export default function Home() {
         deployAlertCount={deployMonitor.alertCount}
         onShowCapacity={() => setShowCapacity(true)}
         capacityAlertCount={capacityPlanning.alertCount}
+        onShowCustomizer={() => setShowCustomizer(true)}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
@@ -478,6 +483,13 @@ export default function Home() {
                 onClose={() => setShowCapacity(false)}
                 apiUrl={apiUrl}
               />
+            )}
+          </AnimatePresence>
+
+          {/* Painel de Personalização Visual */}
+          <AnimatePresence>
+            {showCustomizer && (
+              <CustomizerPanel onClose={() => setShowCustomizer(false)} />
             )}
           </AnimatePresence>
         </main>

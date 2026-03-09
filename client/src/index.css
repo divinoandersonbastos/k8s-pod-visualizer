@@ -93,7 +93,8 @@
   }
   body {
     @apply bg-background text-foreground;
-    font-family: 'Space Grotesk', sans-serif;
+    font-family: var(--theme-font-family, 'Space Grotesk', sans-serif);
+    font-size: var(--theme-font-size, 14px);
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -144,8 +145,8 @@
   /* Grid background pattern */
   .grid-bg {
     background-image:
-      linear-gradient(oklch(0.28 0.04 250 / 0.3) 1px, transparent 1px),
-      linear-gradient(90deg, oklch(0.28 0.04 250 / 0.3) 1px, transparent 1px);
+      linear-gradient(oklch(0.28 0.04 250 / var(--theme-grid-opacity, 0.3)) 1px, transparent 1px),
+      linear-gradient(90deg, oklch(0.28 0.04 250 / var(--theme-grid-opacity, 0.3)) 1px, transparent 1px);
     background-size: 40px 40px;
   }
 

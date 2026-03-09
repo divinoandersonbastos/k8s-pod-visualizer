@@ -138,9 +138,9 @@ export function ClusterSidebar({
     <aside
       className="flex flex-col h-full overflow-y-auto"
       style={{
-        width: "240px",
-        minWidth: "240px",
-        background: "oklch(0.13 0.018 250)",
+        width: "var(--theme-sidebar-width, 240px)",
+        minWidth: "var(--theme-sidebar-width, 240px)",
+        background: "var(--theme-sidebar-bg, oklch(0.13 0.018 250))",
         borderRight: "1px solid oklch(0.22 0.03 250)",
       }}
     >

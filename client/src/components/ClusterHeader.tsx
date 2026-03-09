@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3 } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -29,6 +29,7 @@ interface ClusterHeaderProps {
   deployAlertCount?: number;
   onShowCapacity?: () => void;
   capacityAlertCount?: number;
+  onShowCustomizer?: () => void;
   clusterName?: string;
   statusFilter: StatusFilter;
   onStatusFilterChange: (f: StatusFilter) => void;
@@ -50,6 +51,7 @@ export function ClusterHeader({
   deployAlertCount = 0,
   onShowCapacity,
   capacityAlertCount = 0,
+  onShowCustomizer,
   clusterName,
   statusFilter,
   onStatusFilterChange,
@@ -378,6 +380,17 @@ export function ClusterHeader({
         >
           <Info size={14} />
         </button>
+
+        {onShowCustomizer && (
+          <button
+            onClick={onShowCustomizer}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Personalizar interface"
+            style={{ color: "var(--theme-accent, oklch(0.72 0.22 142))" }}
+          >
+            <Paintbrush size={14} />
+          </button>
+        )}
 
         <button
           onClick={onShowConfig}

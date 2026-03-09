@@ -76,7 +76,7 @@ export function ClusterHeader({
         backdropFilter: "blur(8px)",
       }}
     >
-      {/* Logo CentralDevOps */}
+      {/* Logo CentralDevOps + badge de versão */}
       <div className="flex items-center gap-2 shrink-0 mr-1">
         <img
           src="https://d2xsxph8kpxj0f.cloudfront.net/310519663406127203/NsKpNt8m3o24ycQZ2kPk4i/centraldevops-icon_33d8da50.png"
@@ -84,11 +84,35 @@ export function ClusterHeader({
           className="object-contain"
           style={{ width: 28, height: 28 }}
         />
+        <div className="hidden lg:flex flex-col leading-none gap-0.5">
+          <span
+            className="text-xs font-mono font-bold tracking-wide"
+            style={{ color: "oklch(0.72 0.18 200)" }}
+          >
+            CentralDevOps
+          </span>
+          <span
+            className="text-[9px] font-mono px-1.5 py-0.5 rounded-full w-fit"
+            style={{
+              background: "oklch(0.55 0.22 260 / 0.15)",
+              border: "1px solid oklch(0.55 0.22 260 / 0.35)",
+              color: "oklch(0.62 0.16 260)",
+              letterSpacing: "0.04em",
+            }}
+          >
+            K8s Pods Visualizer v2.0
+          </span>
+        </div>
+        {/* Badge compacto para telas menores */}
         <span
-          className="hidden lg:block text-xs font-mono font-bold tracking-wide"
-          style={{ color: "oklch(0.72 0.18 200)" }}
+          className="lg:hidden text-[9px] font-mono px-1.5 py-0.5 rounded-full"
+          style={{
+            background: "oklch(0.55 0.22 260 / 0.15)",
+            border: "1px solid oklch(0.55 0.22 260 / 0.35)",
+            color: "oklch(0.62 0.16 260)",
+          }}
         >
-          CentralDevOps
+          v2.0
         </span>
       </div>
 

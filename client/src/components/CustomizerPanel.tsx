@@ -16,7 +16,7 @@ import { useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, RotateCcw, Palette, Layout, Type, Sparkles,
-  ChevronDown, ChevronRight, Check, CircleDot, Droplets, Zap, Circle,
+  ChevronDown, ChevronRight, Check, CircleDot, Droplets, Zap, Circle, Grid2x2,
 } from "lucide-react";
 import {
   useThemeCustomizer,
@@ -558,9 +558,10 @@ export function CustomizerPanel({ onClose }: CustomizerPanelProps) {
             </p>
             <div className="grid grid-cols-3 gap-2">
               {([
-                { key: "bubble" as BubbleStyle, label: "Bolha",    icon: <Circle   size={22} strokeWidth={1.5} />, desc: "Reflexo 3D" },
-                { key: "comet" as BubbleStyle,  label: "Cometa",   icon: <Zap      size={22} strokeWidth={1.5} />, desc: "Rastro de luz" },
-                { key: "aquarium" as BubbleStyle, label: "Aquário", icon: <Droplets size={22} strokeWidth={1.5} />, desc: "Efeito água" },
+                { key: "bubble" as BubbleStyle,   label: "Bolha",    icon: <Circle   size={22} strokeWidth={1.5} />, desc: "Reflexo 3D" },
+                { key: "comet" as BubbleStyle,    label: "Cometa",   icon: <Zap      size={22} strokeWidth={1.5} />, desc: "Rastro de luz" },
+                { key: "aquarium" as BubbleStyle, label: "Aquário",  icon: <Droplets size={22} strokeWidth={1.5} />, desc: "Efeito água" },
+                { key: "heatmap" as BubbleStyle,  label: "Calor",    icon: <Grid2x2  size={22} strokeWidth={1.5} />, desc: "Grade densa" },
               ] as { key: BubbleStyle; label: string; icon: React.ReactNode; desc: string }[]).map(({ key, label, icon, desc }) => {
                 const isActive = (theme.bubbleStyle ?? "bubble") === key;
                 return (
@@ -582,7 +583,7 @@ export function CustomizerPanel({ onClose }: CustomizerPanelProps) {
                 );
               })}
             </div>
-            {/* Mini-preview SVG dos três estilos */}
+            {/* Mini-preview SVG dos quatro estilos */}
             <div className="flex items-end justify-around pt-1">
               {/* Preview Bolha */}
               <svg width="44" height="44" viewBox="-22 -22 44 44">
@@ -625,6 +626,29 @@ export function CustomizerPanel({ onClose }: CustomizerPanelProps) {
                 <ellipse cx={2} cy={-9} rx={10} ry={2.2} fill="white" opacity="0.18" />
                 <ellipse cx={-4} cy={-5} rx={6} ry={3} fill="white" opacity="0.35" />
                 <circle cx={6} cy={-7} r={2} fill="white" opacity="0.45" />
+              </svg>
+              {/* Preview Mapa de Calor */}
+              <svg width="44" height="44" viewBox="0 0 44 44">
+                {[0,1,2,3].map((row) =>
+                  [0,1,2,3].map((col) => {
+                    const hues = [theme.statusColors.criticalHue, theme.statusColors.warningHue, theme.statusColors.healthyHue, theme.statusColors.healthyHue];
+                    const hue = hues[(row + col) % 4];
+                    const pct = Math.random() * 0.5 + 0.25;
+                    return (
+                      <rect
+                        key={`${row}-${col}`}
+                        x={col * 11 + 1}
+                        y={row * 11 + 1}
+                        width={9}
+                        height={9}
+                        rx={1.5}
+                        fill={`oklch(${(0.30 + pct * 0.35).toFixed(2)} ${(0.12 + pct * 0.12).toFixed(2)} ${hue})`}
+                        stroke={`oklch(0.55 0.15 ${hue} / 0.50)`}
+                        strokeWidth="0.5"
+                      />
+                    );
+                  })
+                )}
               </svg>
             </div>
           </div>

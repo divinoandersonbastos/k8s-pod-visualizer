@@ -30,7 +30,7 @@ import {
 export type FontFamily = "space-grotesk" | "inter" | "jetbrains-mono" | "geist" | "dm-sans";
 
 /** Estilo visual das bolhas de pods */
-export type BubbleStyle = "bubble" | "comet" | "aquarium";
+export type BubbleStyle = "bubble" | "comet" | "aquarium" | "heatmap";
 
 /** Cores de status das bolhas — armazenadas como matiz OKLCH (0-360) */
 export interface StatusColorConfig {

@@ -870,8 +870,158 @@ export function BubbleCanvas({
               </g>
             );
           })}
-        </g>
+         </g>
       </svg>
+
+      {/* ── MAPA DE CALOR — grade densa de quadrados coloridos ──────────────────────── */}
+      {bubbleStyle === "heatmap" && (() => {
+        // Ordena pods por status (crítico primeiro) depois por uso
+        const sorted = [...pods].sort((a, b) => {
+          const sOrder = { critical: 0, warning: 1, healthy: 2, unknown: 3 };
+          const sDiff = (sOrder[a.status as keyof typeof sOrder] ?? 3) - (sOrder[b.status as keyof typeof sOrder] ?? 3);
+          if (sDiff !== 0) return sDiff;
+          return (b.cpuPercent ?? 0) - (a.cpuPercent ?? 0);
+        });
+        const total = sorted.length;
+        if (total === 0) return null;
+        // Calcula tamanho do tile para preencher o canvas
+        const PAD = 12;
+        const GAP = 2;
+        const availW = width - PAD * 2;
+        const availH = height - PAD * 2;
+        // Encontra o tamanho ideal de tile
+        let bestTile = 8;
+        for (let t = 40; t >= 8; t -= 1) {
+          const cols = Math.floor((availW + GAP) / (t + GAP));
+          const rows = Math.ceil(total / cols);
+          if (rows * (t + GAP) - GAP <= availH) { bestTile = t; break; }
+        }
+        const tileSize = bestTile;
+        const cols = Math.floor((availW + GAP) / (tileSize + GAP));
+        const radius = Math.max(1, Math.round(tileSize * 0.15));
+        return (
+          <div
+            className="absolute inset-0 overflow-auto"
+            style={{ background: "transparent", padding: PAD }}
+          >
+            {/* Legenda de namespace no topo */}
+            <div className="flex flex-wrap gap-x-3 gap-y-1 mb-2">
+              {Array.from(new Set(sorted.map((p) => p.namespace))).map((ns, i) => (
+                <div key={ns} className="flex items-center gap-1">
+                  <div
+                    className="w-2 h-2 rounded-sm"
+                    style={{ background: `oklch(0.65 0.20 ${getNsHue(i)})` }}
+                  />
+                  <span className="text-[9px] font-mono" style={{ color: "oklch(0.50 0.015 250)" }}>{ns}</span>
+                </div>
+              ))}
+            </div>
+            {/* Grade de tiles */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: `repeat(${cols}, ${tileSize}px)`,
+                gap: GAP,
+              }}
+            >
+              {sorted.map((pod) => {
+                const sc = STATUS_COLORS[pod.status as keyof typeof STATUS_COLORS] ?? STATUS_COLORS.healthy;
+                const nsIdx = Array.from(new Set(sorted.map((p) => p.namespace))).indexOf(pod.namespace);
+                const nsHue = getNsHue(nsIdx);
+                const val = viewMode === "cpu" ? pod.cpuPercent : pod.memoryPercent;
+                const pct = Math.min(100, Math.max(0, val ?? 0));
+                // Intensidade do fill baseada no uso
+                const fillL = 0.30 + (pct / 100) * 0.35;
+                const fillC = 0.12 + (pct / 100) * 0.12;
+                const hue = pod.status === "healthy"
+                  ? theme.statusColors.healthyHue
+                  : pod.status === "warning"
+                  ? theme.statusColors.warningHue
+                  : theme.statusColors.criticalHue;
+                const isSelected = pod.id === selectedPodId;
+                return (
+                  <div
+                    key={pod.id}
+                    title={`${pod.name}\n${pod.namespace}\nCPU: ${pod.cpuPercent?.toFixed(1)}%  MEM: ${pod.memoryPercent?.toFixed(1)}%\nStatus: ${pod.status}`}
+                    onClick={() => onSelectPod(isSelected ? null : pod)}
+                    style={{
+                      width: tileSize,
+                      height: tileSize,
+                      borderRadius: radius,
+                      background: `oklch(${fillL.toFixed(2)} ${fillC.toFixed(2)} ${hue})`,
+                      border: isSelected
+                        ? `2px solid oklch(0.90 0.20 ${hue})`
+                        : `1px solid oklch(${(fillL + 0.10).toFixed(2)} ${(fillC + 0.06).toFixed(2)} ${nsHue} / 0.50)`,
+                      boxShadow: isSelected
+                        ? `0 0 6px oklch(0.72 0.22 ${hue} / 0.80)`
+                        : pod.status === "critical"
+                        ? `0 0 4px ${sc.glow}`
+                        : "none",
+                      cursor: "pointer",
+                      flexShrink: 0,
+                      position: "relative",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {/* Barra de uso na base do tile (visível apenas em tiles grandes) */}
+                    {tileSize >= 16 && (
+                      <div
+                        style={{
+                          position: "absolute",
+                          bottom: 0,
+                          left: 0,
+                          width: `${pct}%`,
+                          height: Math.max(2, Math.round(tileSize * 0.12)),
+                          background: `oklch(0.85 0.20 ${hue} / 0.70)`,
+                          borderRadius: `0 0 ${radius}px ${radius}px`,
+                        }}
+                      />
+                    )}
+                    {/* Label do pod (apenas em tiles grandes) */}
+                    {tileSize >= 28 && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          top: "50%",
+                          left: "50%",
+                          transform: "translate(-50%, -50%)",
+                          fontSize: Math.max(6, Math.round(tileSize * 0.22)),
+                          fontFamily: "'JetBrains Mono', monospace",
+                          color: `oklch(0.92 0.05 ${hue})`,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          maxWidth: tileSize - 4,
+                          pointerEvents: "none",
+                          userSelect: "none",
+                        }}
+                      >
+                        {pod.name.length > Math.floor(tileSize / 7) ? pod.name.substring(0, Math.floor(tileSize / 7)) + "…" : pod.name}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {/* Rodapé com contagem */}
+            <div className="mt-2 flex items-center gap-3">
+              <span className="text-[9px] font-mono" style={{ color: "oklch(0.38 0.015 250)" }}>
+                {total} pods • {cols} colunas • tile {tileSize}px
+              </span>
+              {["critical", "warning", "healthy"].map((s) => {
+                const cnt = sorted.filter((p) => p.status === s).length;
+                if (cnt === 0) return null;
+                const hue = s === "healthy" ? theme.statusColors.healthyHue : s === "warning" ? theme.statusColors.warningHue : theme.statusColors.criticalHue;
+                return (
+                  <span key={s} className="flex items-center gap-1 text-[9px] font-mono" style={{ color: `oklch(0.65 0.18 ${hue})` }}>
+                    <span className="w-2 h-2 rounded-sm inline-block" style={{ background: `oklch(0.55 0.18 ${hue})` }} />
+                    {cnt} {s === "healthy" ? "ok" : s === "warning" ? "alerta" : "crítico"}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Controles de Zoom ─────────────────────────────────────────────────── */}
       <div

@@ -12,7 +12,7 @@
  *  - Refresh manual e indicador de última atualização
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, RefreshCw, ChevronRight, ChevronDown, AlertCircle,
@@ -506,6 +506,8 @@ function DeploymentDetail({
 interface DeploymentMonitorPanelProps {
   onClose: () => void;
   apiUrl?: string;
+  /** Nome do deployment a ser selecionado automaticamente ao abrir o painel */
+  initialDeployment?: string;
 }
 
 const STATUS_FILTERS: { value: DeploymentRolloutStatus | ""; label: string }[] = [
@@ -517,16 +519,29 @@ const STATUS_FILTERS: { value: DeploymentRolloutStatus | ""; label: string }[] =
   { value: "Paused",      label: "Pausados" },
 ];
 
-export function DeploymentMonitorPanel({ onClose, apiUrl = "" }: DeploymentMonitorPanelProps) {
+export function DeploymentMonitorPanel({ onClose, apiUrl = "", initialDeployment = "" }: DeploymentMonitorPanelProps) {
   const [search, setSearch]               = useState("");
   const [nsFilter, setNsFilter]           = useState("");
   const [statusFilter, setStatusFilter]   = useState<DeploymentRolloutStatus | "">("");
   const [selectedDeploy, setSelectedDeploy] = useState<Deployment | null>(null);
+  // Controla se já tentamos a seleção automática pelo initialDeployment
+  const autoSelectedRef = useRef(false);
 
   const {
     deployments, stats, loading, error, lastUpdated, refresh,
     alertCount, fetchRolloutHistory, fetchK8sEvents, fetchDbHistory,
   } = useDeploymentMonitor({ apiUrl, refreshInterval: 15_000 });
+
+  // Auto-seleciona o deployment quando os dados chegarem (apenas uma vez)
+  useEffect(() => {
+    if (!initialDeployment || autoSelectedRef.current) return;
+    if (deployments.length === 0) return;
+    const match = deployments.find((d) => d.name === initialDeployment);
+    if (match) {
+      setSelectedDeploy(match);
+      autoSelectedRef.current = true;
+    }
+  }, [deployments, initialDeployment]);
 
   // Namespaces únicos
   const namespaces = Array.from(new Set(deployments.map((d) => d.namespace))).sort();

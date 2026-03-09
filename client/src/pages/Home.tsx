@@ -42,6 +42,8 @@ export default function Home() {
   const [showEvents, setShowEvents] = useState(false);
   const [showNodeMonitor, setShowNodeMonitor] = useState(false);
   const [showDeployMonitor, setShowDeployMonitor] = useState(false);
+  // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
+  const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
   const [totalEvents, setTotalEvents] = useState(0);
   const [apiUrl, setApiUrl] = useState("");
@@ -251,7 +253,14 @@ export default function Home() {
           selectedNode={selectedNode}
           onNodeChange={setSelectedNode}
           selectedDeployment={selectedDeployment}
-          onDeploymentChange={setSelectedDeployment}
+          onDeploymentChange={(name) => {
+            setSelectedDeployment(name);
+            if (name) {
+              // Abre o painel de monitoramento com o deployment selecionado
+              setDeployMonitorTarget(name);
+              setShowDeployMonitor(true);
+            }
+          }}
           isLive={isLive}
           onToggleLive={toggleLive}
           nsCounts={nsCounts}
@@ -446,8 +455,12 @@ export default function Home() {
           <AnimatePresence>
             {showDeployMonitor && (
               <DeploymentMonitorPanel
-                onClose={() => setShowDeployMonitor(false)}
+                onClose={() => {
+                  setShowDeployMonitor(false);
+                  setDeployMonitorTarget("");
+                }}
                 apiUrl={apiUrl}
+                initialDeployment={deployMonitorTarget}
               />
             )}
           </AnimatePresence>

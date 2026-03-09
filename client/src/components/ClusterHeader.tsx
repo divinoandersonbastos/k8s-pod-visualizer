@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -25,6 +25,8 @@ interface ClusterHeaderProps {
   totalEvents?: number;
   onShowNodeMonitor?: () => void;
   nodeAlertCount?: number;
+  onShowDeployMonitor?: () => void;
+  deployAlertCount?: number;
   clusterName?: string;
   statusFilter: StatusFilter;
   onStatusFilterChange: (f: StatusFilter) => void;
@@ -42,6 +44,8 @@ export function ClusterHeader({
   totalEvents = 0,
   onShowNodeMonitor,
   nodeAlertCount = 0,
+  onShowDeployMonitor,
+  deployAlertCount = 0,
   clusterName,
   statusFilter,
   onStatusFilterChange,
@@ -303,6 +307,33 @@ export function ClusterHeader({
                 }}
               >
                 {nodeAlertCount > 99 ? "99+" : nodeAlertCount}
+              </span>
+            )}
+          </button>
+        )}
+
+        {onShowDeployMonitor && (
+          <button
+            onClick={onShowDeployMonitor}
+            className="relative p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Monitoramento de Deployments (rollout status)"
+            style={{
+              color: deployAlertCount > 0
+                ? "oklch(0.72 0.18 260)"
+                : "oklch(0.55 0.015 250)",
+            }}
+          >
+            <Layers size={14} />
+            {deployAlertCount > 0 && (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-mono font-bold flex items-center justify-center animate-pulse"
+                style={{
+                  background: "oklch(0.55 0.18 260)",
+                  color: "oklch(0.98 0 0)",
+                  boxShadow: "0 0 6px oklch(0.55 0.18 260 / 0.70)",
+                }}
+              >
+                {deployAlertCount > 99 ? "99+" : deployAlertCount}
               </span>
             )}
           </button>

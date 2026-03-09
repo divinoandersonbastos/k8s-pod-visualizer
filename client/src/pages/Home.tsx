@@ -25,8 +25,10 @@ import { ConfigModal } from "@/components/ConfigModal";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
 import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
+import { DeploymentMonitorPanel } from "@/components/DeploymentMonitorPanel";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
+import { useDeploymentMonitor } from "@/hooks/useDeploymentMonitor";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -39,6 +41,7 @@ export default function Home() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
   const [showNodeMonitor, setShowNodeMonitor] = useState(false);
+  const [showDeployMonitor, setShowDeployMonitor] = useState(false);
   const [totalEvents, setTotalEvents] = useState(0);
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
@@ -88,6 +91,7 @@ export default function Home() {
   const { recordStatusSnapshot, getEventsForPod, getEventsForPodSync, getAllEvents, clearEvents } = usePodStatusEvents();
   const nodeMonitor = useNodeMonitor(inCluster);
   const oomRisk = usePodOomRisk(pods);
+  const deployMonitor = useDeploymentMonitor({ apiUrl: apiUrl || undefined, refreshInterval: 15_000 });
 
   useEffect(() => {
     if (pods.length > 0) {
@@ -221,6 +225,8 @@ export default function Home() {
         totalEvents={totalEvents}
         onShowNodeMonitor={() => setShowNodeMonitor(true)}
         nodeAlertCount={nodeMonitor.criticalCount + nodeMonitor.warningCount}
+        onShowDeployMonitor={() => setShowDeployMonitor(true)}
+        deployAlertCount={deployMonitor.alertCount}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
@@ -428,6 +434,16 @@ export default function Home() {
               }
             }}
           />
+
+          {/* Painel de monitoramento de deployments */}
+          <AnimatePresence>
+            {showDeployMonitor && (
+              <DeploymentMonitorPanel
+                onClose={() => setShowDeployMonitor(false)}
+                apiUrl={apiUrl}
+              />
+            )}
+          </AnimatePresence>
         </main>
       </div>
 

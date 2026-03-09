@@ -24,6 +24,7 @@ import {
   savePodMetricsSnapshotsBatch, getPodMetricsHistory,
   saveNodeEventsBatch, getNodeEvents, getAllNodeEvents,
   saveNodeTransition, getNodeTransitions,
+  saveDeploymentEventsBatch, getDeploymentEvents, getAllDeploymentEvents,
   getDbStats, clearAllData,
 } from "./db.js";
 
@@ -373,6 +374,123 @@ async function fetchNodeEventsFromK8s() {
     }))
     .sort((a, b) => new Date(b.lastTime).getTime() - new Date(a.lastTime).getTime())
     .slice(0, 200); // limita a 200 eventos mais recentes
+}
+
+// ── /api/deployments ─────────────────────────────────────────────────────────
+async function getDeployments(namespace) {
+  const path = namespace
+    ? `/apis/apps/v1/namespaces/${namespace}/deployments`
+    : "/apis/apps/v1/deployments";
+  const result = await k8sRequest(path);
+  const items  = result.body?.items || [];
+
+  return items.map((d) => {
+    const spec   = d.spec   || {};
+    const status = d.status || {};
+    const meta   = d.metadata || {};
+
+    // Condições do deployment
+    const conditions = (status.conditions || []).map((c) => ({
+      type:               c.type,
+      status:             c.status,
+      reason:             c.reason || "",
+      message:            c.message || "",
+      lastTransitionTime: c.lastTransitionTime,
+      lastUpdateTime:     c.lastUpdateTime,
+    }));
+
+    const progressing = conditions.find((c) => c.type === "Progressing");
+    const available   = conditions.find((c) => c.type === "Available");
+    const replicaFail = conditions.find((c) => c.type === "ReplicaFailure");
+
+    // Detecta rollout em andamento
+    const desired   = spec.replicas ?? 1;
+    const ready     = status.readyReplicas     ?? 0;
+    const updated   = status.updatedReplicas   ?? 0;
+    const avail     = status.availableReplicas ?? 0;
+    const unavail   = status.unavailableReplicas ?? 0;
+
+    const isRolling = updated < desired || ready < desired || avail < desired;
+    const isFailed  = replicaFail?.status === "True" ||
+                      (progressing?.status === "False" && progressing?.reason === "ProgressDeadlineExceeded");
+    const isPaused  = spec.paused === true;
+
+    let rolloutStatus = "Healthy";
+    if (isFailed)  rolloutStatus = "Failed";
+    else if (isPaused) rolloutStatus = "Paused";
+    else if (isRolling) rolloutStatus = "Progressing";
+    else if (available?.status !== "True") rolloutStatus = "Degraded";
+
+    // Imagem do container principal
+    const containers = (spec.template?.spec?.containers || []).map((c) => ({
+      name:  c.name,
+      image: c.image || "",
+    }));
+    const mainImage = containers[0]?.image || "";
+
+    // Revisão atual
+    const revision = parseInt(meta.annotations?.["deployment.kubernetes.io/revision"] || "0");
+
+    // Seletores
+    const selector = spec.selector?.matchLabels || {};
+
+    return {
+      name:          meta.name,
+      namespace:     meta.namespace,
+      uid:           meta.uid,
+      createdAt:     meta.creationTimestamp,
+      labels:        meta.labels || {},
+      annotations:   meta.annotations || {},
+      revision,
+      rolloutStatus,
+      isRolling,
+      isFailed,
+      isPaused,
+      replicas: { desired, ready, updated, available: avail, unavailable: unavail },
+      strategy:  spec.strategy?.type || "RollingUpdate",
+      maxSurge:  spec.strategy?.rollingUpdate?.maxSurge,
+      maxUnavailable: spec.strategy?.rollingUpdate?.maxUnavailable,
+      minReadySeconds: spec.minReadySeconds ?? 0,
+      progressDeadlineSeconds: spec.progressDeadlineSeconds ?? 600,
+      selector,
+      containers,
+      mainImage,
+      conditions,
+    };
+  });
+}
+
+// ── /api/deployments/:ns/:name/rollout — histórico de ReplicaSets ─────────────
+async function getDeploymentRolloutHistory(namespace, deployName) {
+  // Busca todos os ReplicaSets do namespace e filtra pelo deployment
+  const rsRes = await k8sRequest(`/apis/apps/v1/namespaces/${namespace}/replicasets`);
+  const allRS = rsRes.body?.items || [];
+
+  // Filtra RSs que pertencem ao deployment (via ownerReferences)
+  const ownedRS = allRS.filter((rs) =>
+    (rs.metadata.ownerReferences || []).some(
+      (ref) => ref.kind === "Deployment" && ref.name === deployName
+    )
+  );
+
+  // Ordena por revisão (annotation deployment.kubernetes.io/revision)
+  const sorted = ownedRS
+    .map((rs) => ({
+      revision:    parseInt(rs.metadata.annotations?.["deployment.kubernetes.io/revision"] || "0"),
+      name:        rs.metadata.name,
+      createdAt:   rs.metadata.creationTimestamp,
+      replicas:    rs.status?.replicas ?? 0,
+      ready:       rs.status?.readyReplicas ?? 0,
+      available:   rs.status?.availableReplicas ?? 0,
+      image:       rs.spec?.template?.spec?.containers?.[0]?.image || "",
+      containers:  (rs.spec?.template?.spec?.containers || []).map((c) => ({
+        name: c.name, image: c.image || "",
+      })),
+      labels:      rs.metadata.labels || {},
+    }))
+    .sort((a, b) => b.revision - a.revision);
+
+  return sorted;
 }
 
 // ── /api/cluster-info ─────────────────────────────────────────────────────────
@@ -772,6 +890,120 @@ const server = http.createServer(async (req, res) => {
       try {
         const limit  = parseInt(url.searchParams.get("limit") || "100");
         const events = getNodeEvents(nodeName, limit);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(events));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+  }
+
+  // ── /api/deployments ──────────────────────────────────────────────────────
+  if (url.pathname === "/api/deployments") {
+    try {
+      const namespace = url.searchParams.get("namespace") || null;
+      const deploys   = await getDeployments(namespace);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(deploys));
+    } catch (err) {
+      console.error("[error] /api/deployments:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/deployments/:ns/:name/rollout ─────────────────────────────────────
+  const deployRolloutMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/([^/]+)\/rollout$/);
+  if (deployRolloutMatch) {
+    const [, namespace, deployName] = deployRolloutMatch;
+    try {
+      const history = await getDeploymentRolloutHistory(namespace, deployName);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(history));
+    } catch (err) {
+      console.error("[error] /api/deployments rollout:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/deployments/:ns/:name/events — eventos K8s do deployment ──────────
+  const deployEventsMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/([^/]+)\/events$/);
+  if (deployEventsMatch) {
+    const [, namespace, deployName] = deployEventsMatch;
+    try {
+      const evRes = await k8sRequest(
+        `/api/v1/namespaces/${namespace}/events?fieldSelector=involvedObject.name%3D${deployName}`
+      );
+      const items = (evRes.body?.items || [])
+        .map((e) => ({
+          uid:       e.metadata.uid,
+          reason:    e.reason || "",
+          message:   e.message || "",
+          type:      e.type || "Normal",
+          count:     e.count || 1,
+          firstTime: e.firstTimestamp || e.eventTime || "",
+          lastTime:  e.lastTimestamp  || e.eventTime || "",
+          source:    e.source?.component || "",
+        }))
+        .sort((a, b) => new Date(b.lastTime).getTime() - new Date(a.lastTime).getTime());
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(items));
+    } catch (err) {
+      console.error("[error] /api/deployments events:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/events/deployments — histórico persistido no SQLite ───────────────
+  if (url.pathname === "/api/events/deployments") {
+    if (req.method === "GET") {
+      try {
+        const limit     = parseInt(url.searchParams.get("limit")     || "500");
+        const eventType = url.searchParams.get("eventType") || null;
+        const namespace = url.searchParams.get("namespace") || null;
+        const events    = getAllDeploymentEvents(limit, eventType, namespace);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(events));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+      return;
+    }
+    if (req.method === "POST") {
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const payload = JSON.parse(body);
+          const events  = Array.isArray(payload) ? payload : [payload];
+          const results = saveDeploymentEventsBatch(events);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ saved: results.length }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  // ── /api/events/deployments/:ns/:name ─────────────────────────────────────
+  const deployHistoryMatch = url.pathname.match(/^\/api\/events\/deployments\/([^/]+)\/([^/]+)$/);
+  if (deployHistoryMatch) {
+    const [, namespace, deployName] = deployHistoryMatch;
+    if (req.method === "GET") {
+      try {
+        const limit  = parseInt(url.searchParams.get("limit") || "100");
+        const events = getDeploymentEvents(deployName, namespace, limit);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(events));
       } catch (err) {

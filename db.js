@@ -5,10 +5,11 @@
  * O banco é criado em DATA_DIR/events.db (padrão: ./data/events.db).
  *
  * Tabelas:
- *   pod_status_events  — transições de status de pods (healthy/warning/critical)
- *   pod_metrics_history — snapshots de CPU/MEM por pod (para análise de tendência)
- *   node_events        — eventos de nodes (OOMKill, SpotEviction, NotReady)
- *   node_transitions   — transições de status de nodes
+ *   pod_status_events    — transições de status de pods (healthy/warning/critical)
+ *   pod_metrics_history  — snapshots de CPU/MEM por pod (para análise de tendência)
+ *   node_events          — eventos de nodes (OOMKill, SpotEviction, NotReady)
+ *   node_transitions     — transições de status de nodes
+ *   deployment_events    — histórico de rollouts e eventos de Deployments
  *
  * Migrações automáticas via tabela schema_version.
  */
@@ -125,6 +126,34 @@ const migrations = [
       );
       CREATE INDEX IF NOT EXISTS idx_nt_node     ON node_transitions(node_name);
       CREATE INDEX IF NOT EXISTS idx_nt_recorded ON node_transitions(recorded_at DESC);
+    `,
+  },
+
+  // v2 — Tabela de histórico de Deployments
+  {
+    version: 2,
+    sql: `
+      -- Histórico de eventos de Deployments (rollouts, falhas, scaling)
+      CREATE TABLE IF NOT EXISTS deployment_events (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        deploy_name     TEXT NOT NULL,
+        namespace       TEXT NOT NULL,
+        event_type      TEXT NOT NULL,  -- 'RolloutStarted' | 'RolloutComplete' | 'RolloutFailed' | 'Scaled' | 'Degraded' | 'Available' | 'Progressing'
+        from_revision   INTEGER,        -- revisão anterior
+        to_revision     INTEGER,        -- revisão atual
+        from_image      TEXT,           -- imagem anterior (container principal)
+        to_image        TEXT,           -- imagem atual (container principal)
+        desired         INTEGER,        -- réplicas desejadas
+        ready           INTEGER,        -- réplicas prontas
+        available       INTEGER,        -- réplicas disponíveis
+        updated         INTEGER,        -- réplicas atualizadas
+        message         TEXT,           -- mensagem da condição
+        reason          TEXT,           -- reason da condição
+        recorded_at     TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_de_deploy   ON deployment_events(deploy_name, namespace);
+      CREATE INDEX IF NOT EXISTS idx_de_type     ON deployment_events(event_type);
+      CREATE INDEX IF NOT EXISTS idx_de_recorded ON deployment_events(recorded_at DESC);
     `,
   },
 ];
@@ -245,6 +274,43 @@ const stmts = {
     SELECT * FROM node_transitions
     ORDER BY recorded_at DESC
     LIMIT @limit
+  `),
+
+  // deployment_events
+  insertDeploymentEvent: db.prepare(`
+    INSERT INTO deployment_events
+      (deploy_name, namespace, event_type, from_revision, to_revision,
+       from_image, to_image, desired, ready, available, updated, message, reason, recorded_at)
+    VALUES
+      (@deploy_name, @namespace, @event_type, @from_revision, @to_revision,
+       @from_image, @to_image, @desired, @ready, @available, @updated, @message, @reason, @recorded_at)
+  `),
+  getDeploymentEvents: db.prepare(`
+    SELECT * FROM deployment_events
+    WHERE deploy_name = @deploy_name AND namespace = @namespace
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  getAllDeploymentEvents: db.prepare(`
+    SELECT * FROM deployment_events
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  getDeploymentEventsByType: db.prepare(`
+    SELECT * FROM deployment_events
+    WHERE event_type = @event_type
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  getDeploymentEventsByNamespace: db.prepare(`
+    SELECT * FROM deployment_events
+    WHERE namespace = @namespace
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  deleteOldDeploymentEvents: db.prepare(`
+    DELETE FROM deployment_events
+    WHERE recorded_at < datetime('now', @days)
   `),
 };
 
@@ -387,6 +453,52 @@ export function getNodeTransitions(limit = 200) {
   return stmts.getNodeTransitions.all({ limit });
 }
 
+// ── Deployment Events ─────────────────────────────────────────────────────────
+
+/** Registra evento de deployment */
+export function saveDeploymentEvent(event) {
+  return stmts.insertDeploymentEvent.run({
+    deploy_name:   event.deployName,
+    namespace:     event.namespace,
+    event_type:    event.eventType,
+    from_revision: event.fromRevision ?? null,
+    to_revision:   event.toRevision   ?? null,
+    from_image:    event.fromImage    || null,
+    to_image:      event.toImage      || null,
+    desired:       event.desired      ?? null,
+    ready:         event.ready        ?? null,
+    available:     event.available    ?? null,
+    updated:       event.updated      ?? null,
+    message:       event.message      || null,
+    reason:        event.reason       || null,
+    recorded_at:   event.recordedAt   || new Date().toISOString(),
+  });
+}
+
+/** Registra múltiplos eventos de deployment em lote */
+export const saveDeploymentEventsBatch = db.transaction((events) => {
+  return events.map((e) => saveDeploymentEvent(e));
+});
+
+/** Retorna eventos de um deployment específico */
+export function getDeploymentEvents(deployName, namespace, limit = 100) {
+  return stmts.getDeploymentEvents.all({ deploy_name: deployName, namespace, limit });
+}
+
+/** Retorna todos os eventos de deployments */
+export function getAllDeploymentEvents(limit = 500, eventType = null, namespace = null) {
+  if (eventType)  return stmts.getDeploymentEventsByType.all({ event_type: eventType, limit });
+  if (namespace)  return stmts.getDeploymentEventsByNamespace.all({ namespace, limit });
+  return stmts.getAllDeploymentEvents.all({ limit });
+}
+
+/** Remove eventos de deployment mais antigos que N dias */
+export function pruneOldDeploymentEvents(days = 60) {
+  const result = stmts.deleteOldDeploymentEvents.run({ days: `-${days} days` });
+  console.log(`[db] Pruned ${result.changes} old deployment events (>${days} days)`);
+  return result.changes;
+}
+
 /** Estatísticas gerais do banco */
 export function getDbStats() {
   return {
@@ -394,6 +506,7 @@ export function getDbStats() {
     podMetricsHistory:  db.prepare("SELECT COUNT(*) AS c FROM pod_metrics_history").get().c,
     nodeEvents:         db.prepare("SELECT COUNT(*) AS c FROM node_events").get().c,
     nodeTransitions:    db.prepare("SELECT COUNT(*) AS c FROM node_transitions").get().c,
+    deploymentEvents:   db.prepare("SELECT COUNT(*) AS c FROM deployment_events").get().c,
     dbPath:             DB_PATH,
     dbSizeBytes:        fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,
     schemaVersion:      db.prepare("SELECT MAX(version) AS v FROM schema_version").get().v,
@@ -407,6 +520,7 @@ export function clearAllData() {
     DELETE FROM pod_metrics_history;
     DELETE FROM node_events;
     DELETE FROM node_transitions;
+    DELETE FROM deployment_events;
   `);
   console.log("[db] Todos os dados foram limpos.");
 }
@@ -415,9 +529,10 @@ export function clearAllData() {
 // Roda uma vez por hora para evitar crescimento ilimitado do banco
 setInterval(() => {
   try {
-    pruneOldEvents(30);    // eventos de pods: 30 dias
-    pruneOldMetrics(7);    // histórico de métricas: 7 dias
-    pruneOldNodeEvents(30); // eventos de nodes: 30 dias
+    pruneOldEvents(30);           // eventos de pods: 30 dias
+    pruneOldMetrics(7);           // histórico de métricas: 7 dias
+    pruneOldNodeEvents(30);       // eventos de nodes: 30 dias
+    pruneOldDeploymentEvents(60); // eventos de deployments: 60 dias
     db.exec("PRAGMA wal_checkpoint(PASSIVE)"); // checkpoint do WAL
   } catch (err) {
     console.error("[db] Erro na manutenção automática:", err.message);

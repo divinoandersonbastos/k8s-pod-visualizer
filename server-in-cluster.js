@@ -723,7 +723,7 @@ async function getCapacity() {
 }
 
 // ── /api/cluster-info ──────────────────────────────────────────────────────
-async function getClusterInfo()o() {
+async function getClusterInfo() {
   let version = "unknown";
   try {
     const vRes = await k8sRequest("/version");

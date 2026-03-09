@@ -516,8 +516,214 @@ async function getDeploymentRolloutHistory(namespace, deployName) {
   return sorted;
 }
 
-// ── /api/cluster-info ─────────────────────────────────────────────────────────
-async function getClusterInfo() {
+// ── /api/capacity — Capacity Planning por node-pool ──────────────────────────────
+async function getCapacity() {
+  // 1. Busca nodes, pods e métricas em paralelo
+  const [nodesRes, podsRes, nodeMetricsRes] = await Promise.allSettled([
+    k8sRequest("/api/v1/nodes"),
+    k8sRequest("/api/v1/pods?fieldSelector=status.phase%3DRunning"),
+    k8sRequest("/apis/metrics.k8s.io/v1beta1/nodes"),
+  ]);
+
+  const rawNodes   = nodesRes.status   === "fulfilled" ? (nodesRes.value.body?.items   || []) : [];
+  const rawPods    = podsRes.status    === "fulfilled" ? (podsRes.value.body?.items    || []) : [];
+  const rawMetrics = nodeMetricsRes.status === "fulfilled" ? (nodeMetricsRes.value.body?.items || []) : [];
+
+  // Mapa de métricas de uso real por node
+  const usageMap = {};
+  for (const m of rawMetrics) {
+    usageMap[m.metadata.name] = {
+      cpu: parseCPU(m.usage?.cpu || "0") * 1000, // milicores
+      mem: parseMem(m.usage?.memory || "0"),      // bytes
+    };
+  }
+
+  // Agrega pods por node
+  const podsByNode = {};
+  for (const p of rawPods) {
+    const nodeName = p.spec?.nodeName || "unknown";
+    if (!podsByNode[nodeName]) podsByNode[nodeName] = [];
+    podsByNode[nodeName].push(p);
+  }
+
+  // Detecta o node-pool de um node via labels conhecidas (GKE, EKS, AKS, generico)
+  function detectPool(labels) {
+    return (
+      labels["cloud.google.com/gke-nodepool"] ||
+      labels["eks.amazonaws.com/nodegroup"]   ||
+      labels["agentpool"]                      ||
+      labels["kubernetes.azure.com/agentpool"] ||
+      labels["node.kubernetes.io/instance-type"] ||
+      labels["alpha.eksctl.io/nodegroup-name"]  ||
+      labels["kops.k8s.io/instancegroup"]       ||
+      "default-pool"
+    );
+  }
+
+  // Agrupa nodes por pool
+  const poolMap = {};
+  for (const n of rawNodes) {
+    const labels  = n.metadata.labels || {};
+    const pool    = detectPool(labels);
+    const cpuAlloc = parseCPU(n.status?.allocatable?.cpu    || n.status?.capacity?.cpu    || "0") * 1000;
+    const memAlloc = parseMem(n.status?.allocatable?.memory || n.status?.capacity?.memory || "0");
+    const maxPods  = parseInt(n.status?.allocatable?.pods   || n.status?.capacity?.pods   || "110", 10);
+    const nodeName = n.metadata.name;
+    const usage    = usageMap[nodeName] || { cpu: 0, mem: 0 };
+    const pods     = podsByNode[nodeName] || [];
+
+    // Soma requests/limits dos pods no node
+    let cpuReq = 0, cpuLim = 0, memReq = 0, memLim = 0;
+    for (const p of pods) {
+      for (const c of (p.spec?.containers || [])) {
+        const r = c.resources?.requests || {};
+        const l = c.resources?.limits   || {};
+        cpuReq += parseCPU(r.cpu    || "0") * 1000;
+        cpuLim += parseCPU(l.cpu    || "0") * 1000;
+        memReq += parseMem(r.memory || "0");
+        memLim += parseMem(l.memory || "0");
+      }
+    }
+
+    const isSpot = (
+      labels["kubernetes.azure.com/scalesetpriority"] === "spot" ||
+      labels["cloud.google.com/gke-spot"] === "true" ||
+      labels["eks.amazonaws.com/capacityType"] === "SPOT"
+    );
+    const roles = Object.keys(labels)
+      .filter((k) => k.startsWith("node-role.kubernetes.io/"))
+      .map((k) => k.replace("node-role.kubernetes.io/", ""))
+      .join(",") || "worker";
+
+    if (!poolMap[pool]) {
+      poolMap[pool] = {
+        pool,
+        nodes: [],
+        totals: { cpuAlloc: 0, memAlloc: 0, maxPods: 0, cpuUsage: 0, memUsage: 0, cpuReq: 0, cpuLim: 0, memReq: 0, memLim: 0, podCount: 0 },
+        isSpot,
+        roles,
+      };
+    }
+    const pg = poolMap[pool];
+    pg.nodes.push({
+      name: nodeName, cpuAlloc, memAlloc, maxPods,
+      cpuUsage: usage.cpu, memUsage: usage.mem,
+      cpuReq, cpuLim, memReq, memLim,
+      podCount: pods.length,
+      isSpot,
+      labels,
+    });
+    pg.totals.cpuAlloc  += cpuAlloc;
+    pg.totals.memAlloc  += memAlloc;
+    pg.totals.maxPods   += maxPods;
+    pg.totals.cpuUsage  += usage.cpu;
+    pg.totals.memUsage  += usage.mem;
+    pg.totals.cpuReq    += cpuReq;
+    pg.totals.cpuLim    += cpuLim;
+    pg.totals.memReq    += memReq;
+    pg.totals.memLim    += memLim;
+    pg.totals.podCount  += pods.length;
+  }
+
+  // Calcula scores SRE por pool
+  const pools = Object.values(poolMap).map((pg) => {
+    const t = pg.totals;
+    const nodeCount = pg.nodes.length;
+
+    // Percentuais de uso real
+    const cpuUsagePct = t.cpuAlloc > 0 ? (t.cpuUsage / t.cpuAlloc) * 100 : 0;
+    const memUsagePct = t.memAlloc > 0 ? (t.memUsage / t.memAlloc) * 100 : 0;
+    const podUsagePct = t.maxPods  > 0 ? (t.podCount / t.maxPods)  * 100 : 0;
+
+    // Percentuais de requests vs allocatable
+    const cpuReqPct   = t.cpuAlloc > 0 ? (t.cpuReq  / t.cpuAlloc) * 100 : 0;
+    const memReqPct   = t.memAlloc > 0 ? (t.memReq  / t.memAlloc) * 100 : 0;
+    const cpuLimPct   = t.cpuAlloc > 0 ? (t.cpuLim  / t.cpuAlloc) * 100 : 0;
+    const memLimPct   = t.memAlloc > 0 ? (t.memLim  / t.memAlloc) * 100 : 0;
+
+    // Ratio limits/requests (headroom)
+    const cpuLimReqRatio = t.cpuReq > 0 ? t.cpuLim / t.cpuReq : 0;
+    const memLimReqRatio = t.memReq > 0 ? t.memLim / t.memReq : 0;
+
+    // Scoring SRE de dimensionamento
+    // Subdimensionado: uso real > 70% OU requests > 80% do allocatable
+    // Superdimensionado: uso real < 20% E requests < 25% do allocatable
+    // Balanceado: entre os dois extremos
+    let sizing = "balanced"; // "underprovisioned" | "overprovisioned" | "balanced" | "critical"
+    const cpuScore = Math.max(cpuUsagePct, cpuReqPct);
+    const memScore = Math.max(memUsagePct, memReqPct);
+    const maxScore = Math.max(cpuScore, memScore, podUsagePct);
+    const minScore = Math.min(
+      t.cpuAlloc > 0 ? cpuUsagePct : 100,
+      t.memAlloc > 0 ? memUsagePct : 100
+    );
+
+    if (maxScore >= 90 || podUsagePct >= 90) {
+      sizing = "critical";          // Crítico: iminente exaustão
+    } else if (maxScore >= 70) {
+      sizing = "underprovisioned";  // Subdimensionado
+    } else if (minScore < 15 && cpuReqPct < 20 && memReqPct < 20) {
+      sizing = "overprovisioned";   // Superdimensionado
+    }
+
+    // Recomendações SRE
+    const recommendations = [];
+    if (cpuUsagePct > 70)  recommendations.push({ type: "cpu_high",    severity: "warning", msg: `CPU real ${cpuUsagePct.toFixed(0)}% — considere adicionar nodes` });
+    if (cpuUsagePct > 90)  recommendations.push({ type: "cpu_critical", severity: "critical", msg: `CPU crítico ${cpuUsagePct.toFixed(0)}% — adicione nodes imediatamente` });
+    if (memUsagePct > 70)  recommendations.push({ type: "mem_high",    severity: "warning", msg: `Memória real ${memUsagePct.toFixed(0)}% — risco de OOMKill` });
+    if (memUsagePct > 90)  recommendations.push({ type: "mem_critical", severity: "critical", msg: `Memória crítica ${memUsagePct.toFixed(0)}% — adicione nodes imediatamente` });
+    if (podUsagePct > 80)  recommendations.push({ type: "pod_high",    severity: "warning", msg: `Pods ${t.podCount}/${t.maxPods} (${podUsagePct.toFixed(0)}%) — limite se aproximando` });
+    if (cpuReqPct > 100)   recommendations.push({ type: "overcommit_cpu", severity: "critical", msg: `CPU overcommitted: requests ${cpuReqPct.toFixed(0)}% do allocatable` });
+    if (memReqPct > 100)   recommendations.push({ type: "overcommit_mem", severity: "critical", msg: `Memória overcommitted: requests ${memReqPct.toFixed(0)}% do allocatable` });
+    if (cpuLimReqRatio > 5 && t.cpuReq > 0) recommendations.push({ type: "limit_ratio_cpu", severity: "info", msg: `Ratio limit/request CPU ${cpuLimReqRatio.toFixed(1)}x — possível burst excessivo` });
+    if (memLimReqRatio > 3 && t.memReq > 0) recommendations.push({ type: "limit_ratio_mem", severity: "info", msg: `Ratio limit/request Mem ${memLimReqRatio.toFixed(1)}x — revise os limites` });
+    if (sizing === "overprovisioned" && nodeCount > 1) recommendations.push({ type: "scale_down", severity: "info", msg: `Pool subutilizado — considere reduzir de ${nodeCount} para ${Math.max(1, nodeCount - 1)} node(s)` });
+    if (t.cpuReq === 0 && t.podCount > 0) recommendations.push({ type: "no_requests", severity: "warning", msg: `Nenhum pod define CPU requests — scheduler sem informação de bin-packing` });
+    if (t.memReq === 0 && t.podCount > 0) recommendations.push({ type: "no_mem_requests", severity: "warning", msg: `Nenhum pod define Memory requests — risco de OOMKill imprevisível` });
+
+    return {
+      pool: pg.pool,
+      nodeCount,
+      isSpot: pg.isSpot,
+      roles: pg.roles,
+      sizing,
+      nodes: pg.nodes,
+      totals: t,
+      metrics: {
+        cpuUsagePct, memUsagePct, podUsagePct,
+        cpuReqPct, memReqPct, cpuLimPct, memLimPct,
+        cpuLimReqRatio, memLimReqRatio,
+      },
+      recommendations,
+    };
+  });
+
+  // Totais globais do cluster
+  const clusterTotals = pools.reduce((acc, p) => ({
+    cpuAlloc:  acc.cpuAlloc  + p.totals.cpuAlloc,
+    memAlloc:  acc.memAlloc  + p.totals.memAlloc,
+    maxPods:   acc.maxPods   + p.totals.maxPods,
+    cpuUsage:  acc.cpuUsage  + p.totals.cpuUsage,
+    memUsage:  acc.memUsage  + p.totals.memUsage,
+    cpuReq:    acc.cpuReq    + p.totals.cpuReq,
+    memReq:    acc.memReq    + p.totals.memReq,
+    podCount:  acc.podCount  + p.totals.podCount,
+    nodeCount: acc.nodeCount + p.nodeCount,
+  }), { cpuAlloc: 0, memAlloc: 0, maxPods: 0, cpuUsage: 0, memUsage: 0, cpuReq: 0, memReq: 0, podCount: 0, nodeCount: 0 });
+
+  return {
+    pools: pools.sort((a, b) => {
+      const order = { critical: 0, underprovisioned: 1, balanced: 2, overprovisioned: 3 };
+      return (order[a.sizing] ?? 4) - (order[b.sizing] ?? 4);
+    }),
+    clusterTotals,
+    hasRealMetrics: rawMetrics.length > 0,
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+// ── /api/cluster-info ──────────────────────────────────────────────────────
+async function getClusterInfo()o() {
   let version = "unknown";
   try {
     const vRes = await k8sRequest("/version");
@@ -1037,6 +1243,19 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // ── /api/capacity ────────────────────────────────────────────────────────────
+  if (url.pathname === "/api/capacity") {
+    try {
+      const data = await getCapacity();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(data));
+    } catch (err) {
+      console.error("[error] /api/capacity:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
   // ── /api/cluster-info ──────────────────────────────────────────────────────
   if (url.pathname === "/api/cluster-info") {
     try {

@@ -26,9 +26,11 @@ import { AlertsPanel } from "@/components/AlertsPanel";
 import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
 import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
 import { DeploymentMonitorPanel } from "@/components/DeploymentMonitorPanel";
+import { CapacityPlanningPanel } from "@/components/CapacityPlanningPanel";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
 import { useDeploymentMonitor } from "@/hooks/useDeploymentMonitor";
+import { useCapacityPlanning } from "@/hooks/useCapacityPlanning";
 import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
@@ -42,6 +44,7 @@ export default function Home() {
   const [showEvents, setShowEvents] = useState(false);
   const [showNodeMonitor, setShowNodeMonitor] = useState(false);
   const [showDeployMonitor, setShowDeployMonitor] = useState(false);
+  const [showCapacity, setShowCapacity] = useState(false);
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
@@ -94,7 +97,8 @@ export default function Home() {
   const { recordStatusSnapshot, getEventsForPod, getEventsForPodSync, getAllEvents, clearEvents } = usePodStatusEvents();
   const nodeMonitor = useNodeMonitor(inCluster);
   const oomRisk = usePodOomRisk(pods);
-  const deployMonitor = useDeploymentMonitor({ apiUrl: apiUrl || undefined, refreshInterval: 15_000 });
+  const deployMonitor    = useDeploymentMonitor({ apiUrl: apiUrl || undefined, refreshInterval: 15_000 });
+  const capacityPlanning = useCapacityPlanning({ apiUrl: apiUrl || undefined, refreshInterval: 30_000 });
 
   useEffect(() => {
     if (pods.length > 0) {
@@ -234,6 +238,8 @@ export default function Home() {
         nodeAlertCount={nodeMonitor.criticalCount + nodeMonitor.warningCount}
         onShowDeployMonitor={() => setShowDeployMonitor(true)}
         deployAlertCount={deployMonitor.alertCount}
+        onShowCapacity={() => setShowCapacity(true)}
+        capacityAlertCount={capacityPlanning.alertCount}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
@@ -461,6 +467,16 @@ export default function Home() {
                 }}
                 apiUrl={apiUrl}
                 initialDeployment={deployMonitorTarget}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Painel de Capacity Planning */}
+          <AnimatePresence>
+            {showCapacity && (
+              <CapacityPlanningPanel
+                onClose={() => setShowCapacity(false)}
+                apiUrl={apiUrl}
               />
             )}
           </AnimatePresence>

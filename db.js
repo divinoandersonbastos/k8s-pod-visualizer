@@ -182,6 +182,58 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_cs_recorded ON capacity_snapshots(recorded_at DESC);
     `,
   },
+
+  // v4 — Usuários SRE/Squad e sessões de autenticação
+  {
+    version: 4,
+    sql: `
+      -- Usuários do sistema (SRE e Squad)
+      CREATE TABLE IF NOT EXISTS users (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        username     TEXT NOT NULL UNIQUE,
+        password_hash TEXT NOT NULL,
+        role         TEXT NOT NULL DEFAULT 'squad',  -- 'sre' | 'squad'
+        namespaces   TEXT NOT NULL DEFAULT '[]',     -- JSON array de namespaces permitidos
+        display_name TEXT,
+        email        TEXT,
+        active       INTEGER NOT NULL DEFAULT 1,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        last_login   TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
+      CREATE INDEX IF NOT EXISTS idx_users_role     ON users(role);
+
+      -- Tokens de sessão (JWT revogação)
+      CREATE TABLE IF NOT EXISTS sessions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token_jti    TEXT NOT NULL UNIQUE,  -- JWT ID para revogação
+        expires_at   TEXT NOT NULL,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        revoked      INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_jti     ON sessions(token_jti);
+      CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
+
+      -- Audit log de ações SRE (edições de recursos)
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER REFERENCES users(id),
+        username     TEXT NOT NULL,
+        action       TEXT NOT NULL,  -- 'scale'|'restart'|'patch'|'apply'
+        resource_type TEXT NOT NULL, -- 'deployment'|'configmap'|'hpa'
+        resource_name TEXT NOT NULL,
+        namespace    TEXT NOT NULL,
+        payload      TEXT,           -- JSON do payload enviado
+        result       TEXT,           -- 'success'|'error'
+        error_msg    TEXT,
+        recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_audit_user      ON audit_log(user_id, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_audit_resource  ON audit_log(resource_name, namespace, recorded_at DESC);
+    `,
+  },
 ];
 
 // Aplicar migrações pendentes dentro de uma transação
@@ -617,6 +669,149 @@ export function getDbStats() {
     dbSizeBytes:        fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,
     schemaVersion:      db.prepare("SELECT MAX(version) AS v FROM schema_version").get().v,
   };
+}
+
+// ── Funções de Usuários (SRE/Squad) ──────────────────────────────────────────
+
+const userStmts = {
+  create: db.prepare(`
+    INSERT INTO users (username, password_hash, role, namespaces, display_name, email)
+    VALUES (@username, @password_hash, @role, @namespaces, @display_name, @email)
+  `),
+  findByUsername: db.prepare(`SELECT * FROM users WHERE username = @username AND active = 1`),
+  findById:       db.prepare(`SELECT * FROM users WHERE id = @id`),
+  listAll:        db.prepare(`SELECT id, username, role, namespaces, display_name, email, active, created_at, last_login FROM users ORDER BY role, username`),
+  listSquad:      db.prepare(`SELECT id, username, role, namespaces, display_name, email, active, created_at, last_login FROM users WHERE role = 'squad' ORDER BY username`),
+  update:         db.prepare(`
+    UPDATE users SET
+      display_name = @display_name,
+      email        = @email,
+      namespaces   = @namespaces,
+      active       = @active,
+      updated_at   = datetime('now')
+    WHERE id = @id
+  `),
+  updatePassword: db.prepare(`UPDATE users SET password_hash = @password_hash, updated_at = datetime('now') WHERE id = @id`),
+  updateLastLogin:db.prepare(`UPDATE users SET last_login = datetime('now') WHERE id = @id`),
+  delete:         db.prepare(`DELETE FROM users WHERE id = @id AND role != 'sre'`),
+  countSRE:       db.prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'sre'`),
+};
+
+export function createUser({ username, passwordHash, role = 'squad', namespaces = [], displayName = '', email = '' }) {
+  return userStmts.create.run({
+    username,
+    password_hash: passwordHash,
+    role,
+    namespaces: JSON.stringify(namespaces),
+    display_name: displayName,
+    email,
+  });
+}
+
+export function findUserByUsername(username) {
+  const u = userStmts.findByUsername.get({ username });
+  if (!u) return null;
+  return { ...u, namespaces: JSON.parse(u.namespaces || '[]') };
+}
+
+export function findUserById(id) {
+  const u = userStmts.findById.get({ id });
+  if (!u) return null;
+  return { ...u, namespaces: JSON.parse(u.namespaces || '[]') };
+}
+
+export function listUsers() {
+  return userStmts.listAll.all().map(u => ({ ...u, namespaces: JSON.parse(u.namespaces || '[]') }));
+}
+
+export function listSquadUsers() {
+  return userStmts.listSquad.all().map(u => ({ ...u, namespaces: JSON.parse(u.namespaces || '[]') }));
+}
+
+export function updateUser({ id, displayName, email, namespaces, active }) {
+  return userStmts.update.run({
+    id,
+    display_name: displayName,
+    email: email || '',
+    namespaces: JSON.stringify(namespaces || []),
+    active: active ? 1 : 0,
+  });
+}
+
+export function updateUserPassword(id, passwordHash) {
+  return userStmts.updatePassword.run({ id, password_hash: passwordHash });
+}
+
+export function updateLastLogin(id) {
+  return userStmts.updateLastLogin.run({ id });
+}
+
+export function deleteUser(id) {
+  return userStmts.delete.run({ id });
+}
+
+export function hasSREUser() {
+  return userStmts.countSRE.get().c > 0;
+}
+
+// ── Funções de Sessões ────────────────────────────────────────────────────────
+
+const sessionStmts = {
+  create:    db.prepare(`INSERT INTO sessions (user_id, token_jti, expires_at) VALUES (@user_id, @token_jti, @expires_at)`),
+  findByJti: db.prepare(`SELECT * FROM sessions WHERE token_jti = @jti AND revoked = 0 AND expires_at > datetime('now')`),
+  revoke:    db.prepare(`UPDATE sessions SET revoked = 1 WHERE token_jti = @jti`),
+  revokeAll: db.prepare(`UPDATE sessions SET revoked = 1 WHERE user_id = @user_id`),
+  prune:     db.prepare(`DELETE FROM sessions WHERE expires_at < datetime('now', '-1 day')`),
+};
+
+export function createSession(userId, jti, expiresAt) {
+  return sessionStmts.create.run({ user_id: userId, token_jti: jti, expires_at: expiresAt });
+}
+
+export function isSessionValid(jti) {
+  return !!sessionStmts.findByJti.get({ jti });
+}
+
+export function revokeSession(jti) {
+  return sessionStmts.revoke.run({ jti });
+}
+
+export function revokeAllUserSessions(userId) {
+  return sessionStmts.revokeAll.run({ user_id: userId });
+}
+
+// ── Funções de Audit Log ──────────────────────────────────────────────────────
+
+const auditStmts = {
+  insert: db.prepare(`
+    INSERT INTO audit_log (user_id, username, action, resource_type, resource_name, namespace, payload, result, error_msg)
+    VALUES (@user_id, @username, @action, @resource_type, @resource_name, @namespace, @payload, @result, @error_msg)
+  `),
+  getAll:  db.prepare(`SELECT * FROM audit_log ORDER BY recorded_at DESC LIMIT @limit`),
+  getByNs: db.prepare(`SELECT * FROM audit_log WHERE namespace = @namespace ORDER BY recorded_at DESC LIMIT @limit`),
+  getByUser: db.prepare(`SELECT * FROM audit_log WHERE user_id = @user_id ORDER BY recorded_at DESC LIMIT @limit`),
+};
+
+export function insertAuditLog({ userId, username, action, resourceType, resourceName, namespace, payload, result, errorMsg = null }) {
+  return auditStmts.insert.run({
+    user_id:       userId || null,
+    username,
+    action,
+    resource_type: resourceType,
+    resource_name: resourceName,
+    namespace,
+    payload:       payload ? JSON.stringify(payload) : null,
+    result,
+    error_msg:     errorMsg,
+  });
+}
+
+export function getAuditLog(limit = 100) {
+  return auditStmts.getAll.all({ limit });
+}
+
+export function getAuditLogByNamespace(namespace, limit = 50) {
+  return auditStmts.getByNs.all({ namespace, limit });
 }
 
 /** Limpa todos os dados (útil para reset via UI) */

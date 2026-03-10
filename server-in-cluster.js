@@ -28,6 +28,12 @@ import {
   insertCapacitySnapshot, getCapacityHistory,
   getDbStats, clearAllData,
 } from "./db.js";
+import {
+  requireAuth, requireSRE,
+  handleSetup, handleLogin, handleLogout, handleMe, handleSetupStatus,
+  handleListUsers, handleCreateUser, handleUpdateUser, handleDeleteUser,
+  handleAuditLog, insertAuditLog,
+} from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -87,6 +93,51 @@ function k8sRequest(urlPath) {
   });
 }
 
+// ── k8sGet / k8sPatch — helpers para o Resource Editor ───────────────────────
+function k8sGet(urlPath) {
+  return k8sRequest(urlPath).then(r => {
+    if (r.status >= 400) throw new Error(r.body?.message || `HTTP ${r.status}`);
+    return r.body;
+  });
+}
+function k8sPatch(urlPath, patchData) {
+  return new Promise((resolve, reject) => {
+    const token = getToken();
+    const ca    = getCA();
+    const apiHost = K8S_API.replace(/^https?:\/\//, "");
+    const isHttps = K8S_API.startsWith("https");
+    const body = JSON.stringify(patchData);
+    const options = {
+      hostname: apiHost,
+      port: isHttps ? 443 : 80,
+      path: urlPath,
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/strategic-merge-patch+json",
+        Accept: "application/json",
+        "Content-Length": Buffer.byteLength(body),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      ...(ca ? { ca } : { rejectUnauthorized: false }),
+    };
+    const proto = isHttps ? https : http;
+    const req = proto.request(options, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (res.statusCode >= 400) reject(new Error(parsed?.message || `HTTP ${res.statusCode}`));
+          else resolve(parsed);
+        } catch { resolve(data); }
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(10000, () => { req.destroy(new Error("timeout")); });
+    req.write(body);
+    req.end();
+  });
+}
 // ── Parsers de unidades Kubernetes ────────────────────────────────────────────
 function parseCPU(val) {
   if (!val) return 0;
@@ -778,7 +829,7 @@ const server = http.createServer(async (req, res) => {
 
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
@@ -1332,3 +1383,7 @@ server.listen(PORT, () => {
   setInterval(runCapacitySnapshot, 5 * 60_000);
   console.log("[capacity] Job de snapshot iniciado (intervalo: 5min)");
 });
+
+// ── Rotas de Autenticação e Gestão de Usuários (adicionadas em v3.0) ──────────
+// Estas rotas são registradas via patch no final do arquivo para não quebrar
+// a estrutura existente. O roteamento é feito dentro do createServer handler.

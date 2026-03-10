@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -30,6 +30,12 @@ interface ClusterHeaderProps {
   onShowCapacity?: () => void;
   capacityAlertCount?: number;
   onShowCustomizer?: () => void;
+  onShowUserManagement?: () => void;
+  onShowResourceEditor?: () => void;
+  onShowTrace?: () => void;
+  onLogout?: () => void;
+  isSRE?: boolean;
+  currentUser?: { displayName?: string; username: string; role: string };
   clusterName?: string;
   statusFilter: StatusFilter;
   onStatusFilterChange: (f: StatusFilter) => void;
@@ -52,6 +58,12 @@ export function ClusterHeader({
   onShowCapacity,
   capacityAlertCount = 0,
   onShowCustomizer,
+  onShowUserManagement,
+  onShowResourceEditor,
+  onShowTrace,
+  onLogout,
+  isSRE,
+  currentUser,
   clusterName,
   statusFilter,
   onStatusFilterChange,
@@ -416,6 +428,39 @@ export function ClusterHeader({
           </button>
         )}
 
+        {onShowTrace && (
+          <button
+            onClick={onShowTrace}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Trace Distribuído (Jaeger/Tempo)"
+            style={{ color: "oklch(0.65 0.22 320)" }}
+          >
+            <GitBranch size={14} />
+          </button>
+        )}
+
+        {isSRE && onShowResourceEditor && (
+          <button
+            onClick={onShowResourceEditor}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Editor de Recursos K8s (SRE)"
+            style={{ color: "oklch(0.65 0.22 280)" }}
+          >
+            <Code2 size={14} />
+          </button>
+        )}
+
+        {isSRE && onShowUserManagement && (
+          <button
+            onClick={onShowUserManagement}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Gestão de Usuários Squad (SRE)"
+            style={{ color: "oklch(0.65 0.22 200)" }}
+          >
+            <Users size={14} />
+          </button>
+        )}
+
         <button
           onClick={onShowConfig}
           className="p-2 rounded-lg transition-all hover:bg-white/5"
@@ -424,6 +469,40 @@ export function ClusterHeader({
         >
           <Settings size={14} />
         </button>
+
+        {/* Badge de usuário + logout */}
+        {currentUser && (
+          <>
+            <div className="w-px h-5" style={{ background: "oklch(0.28 0.04 250)" }} />
+            <div className="flex items-center gap-1.5 shrink-0">
+              <div
+                className="flex items-center gap-1.5 px-2 py-1 rounded-lg"
+                style={{
+                  background: isSRE ? "oklch(0.55 0.22 260 / 0.12)" : "oklch(0.55 0.22 142 / 0.12)",
+                  border: `1px solid ${isSRE ? "oklch(0.55 0.22 260 / 0.30)" : "oklch(0.55 0.22 142 / 0.30)"}`,
+                }}
+              >
+                {isSRE ? <Shield size={11} style={{ color: "oklch(0.65 0.22 260)" }} /> : <User size={11} style={{ color: "oklch(0.65 0.22 142)" }} />}
+                <span className="text-[10px] font-mono" style={{ color: isSRE ? "oklch(0.72 0.18 260)" : "oklch(0.72 0.18 142)" }}>
+                  {currentUser.displayName || currentUser.username}
+                </span>
+                <span className="text-[9px] font-mono uppercase" style={{ color: isSRE ? "oklch(0.55 0.18 260)" : "oklch(0.55 0.18 142)" }}>
+                  {currentUser.role}
+                </span>
+              </div>
+              {onLogout && (
+                <button
+                  onClick={onLogout}
+                  className="p-1.5 rounded-lg transition-all hover:bg-white/5"
+                  title="Sair"
+                  style={{ color: "oklch(0.55 0.015 250)" }}
+                >
+                  <LogOut size={13} />
+                </button>
+              )}
+            </div>
+          </>
+        )}
 
         <div className="w-px h-5" style={{ background: "oklch(0.28 0.04 250)" }} />
 

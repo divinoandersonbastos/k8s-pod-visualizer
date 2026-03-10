@@ -28,6 +28,10 @@ import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
 import { DeploymentMonitorPanel } from "@/components/DeploymentMonitorPanel";
 import { CapacityPlanningPanel } from "@/components/CapacityPlanningPanel";
 import { CustomizerPanel } from "@/components/CustomizerPanel";
+import UserManagementPanel from "@/components/UserManagementPanel";
+import ResourceEditorPanel from "@/components/ResourceEditorPanel";
+import TracePanel from "@/components/TracePanel";
+import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
 import { useDeploymentMonitor } from "@/hooks/useDeploymentMonitor";
@@ -48,6 +52,10 @@ export default function Home() {
   const [showDeployMonitor, setShowDeployMonitor] = useState(false);
   const [showCapacity, setShowCapacity] = useState(false);
   const [showCustomizer, setShowCustomizer] = useState(false);
+  const [showUserManagement, setShowUserManagement] = useState(false);
+  const [showResourceEditor, setShowResourceEditor] = useState(false);
+  const [showTrace, setShowTrace] = useState(false);
+  const { user, isSRE, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
@@ -245,6 +253,12 @@ export default function Home() {
         onShowCapacity={() => setShowCapacity(true)}
         capacityAlertCount={capacityPlanning.alertCount}
         onShowCustomizer={() => setShowCustomizer(true)}
+        onShowUserManagement={() => setShowUserManagement(true)}
+        onShowResourceEditor={() => setShowResourceEditor(true)}
+        onShowTrace={() => setShowTrace(true)}
+        onLogout={logout}
+        isSRE={isSRE}
+        currentUser={user ? { displayName: user.displayName, username: user.username, role: user.role } : undefined}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
@@ -490,6 +504,35 @@ export default function Home() {
           <AnimatePresence>
             {showCustomizer && (
               <CustomizerPanel onClose={() => setShowCustomizer(false)} />
+            )}
+          </AnimatePresence>
+
+          {/* Painel de Gestão de Usuários (SRE only) */}
+          <AnimatePresence>
+            {showUserManagement && isSRE && (
+              <UserManagementPanel
+                onClose={() => setShowUserManagement(false)}
+                availableNamespaces={Object.keys(nsCounts)}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Editor de Recursos (SRE only) */}
+          <AnimatePresence>
+            {showResourceEditor && isSRE && (
+              <ResourceEditorPanel
+                onClose={() => setShowResourceEditor(false)}
+              />
+            )}
+          </AnimatePresence>
+
+          {/* Painel de Trace Distribuído */}
+          <AnimatePresence>
+            {showTrace && (
+              <TracePanel
+                onClose={() => setShowTrace(false)}
+                namespace={user?.namespaces?.[0] || selectedNamespace}
+              />
             )}
           </AnimatePresence>
         </main>

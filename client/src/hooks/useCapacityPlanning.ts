@@ -320,6 +320,7 @@ export function useCapacityPlanning({
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const ct = res.headers.get("content-type") ?? "";
       if (!ct.includes("application/json")) throw new Error("not-in-cluster");
+      if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) throw new Error(`HTTP ${res.status}`);
       const json: CapacityData = await res.json();
       setData(json);
       setLastUpdated(new Date());

@@ -523,15 +523,19 @@ export function useClusterMeta() {
       // Busca info do cluster
       try {
         const res  = await fetch("/api/cluster-info", { signal: AbortSignal.timeout(4000) });
-        const data = await res.json();
-        setClusterInfo(data as ClusterInfo);
+        if (res.ok && (res.headers.get("content-type") ?? "").includes("json")) {
+          const data = await res.json();
+          setClusterInfo(data as ClusterInfo);
+        }
       } catch { /* ignora */ }
 
       // Busca nodes
       try {
         const res  = await fetch("/api/nodes", { signal: AbortSignal.timeout(4000) });
-        const data = await res.json();
-        setNodes((data.items ?? []) as NodeInfo[]);
+        if (res.ok && (res.headers.get("content-type") ?? "").includes("json")) {
+          const data = await res.json();
+          setNodes((data.items ?? []) as NodeInfo[]);
+        }
       } catch { /* ignora */ }
     })();
   }, []);

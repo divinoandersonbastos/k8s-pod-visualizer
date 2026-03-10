@@ -62,6 +62,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const checkSetupStatus = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/auth/setup-status`);
+      // Se backend não disponível (404/HTML do Vite), pula autenticação
+      if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) {
+        setSetupDone(true);
+        setIsLoading(false);
+        return true;
+      }
       const data = await res.json();
       setSetupDone(data.setupDone);
       return data.setupDone;
@@ -109,6 +115,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });
+    if (!(res.headers.get("content-type") ?? "").includes("json")) {
+      throw new Error("Servidor indisponível — verifique se o backend está rodando");
+    }
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Falha no login");
     localStorage.setItem(TOKEN_KEY, data.token);
@@ -131,6 +140,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password, displayName }),
     });
+    if (!(res.headers.get("content-type") ?? "").includes("json")) {
+      throw new Error("Servidor indisponível — verifique se o backend está rodando");
+    }
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || "Falha no setup");
     localStorage.setItem(TOKEN_KEY, data.token);

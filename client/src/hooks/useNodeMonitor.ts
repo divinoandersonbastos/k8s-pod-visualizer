@@ -197,8 +197,8 @@ export function useNodeMonitor(inCluster: boolean | null) {
 
     try {
       const [healthRes, eventsRes] = await Promise.allSettled([
-        fetch("/api/nodes/health", { signal: AbortSignal.timeout(10_000) }).then((r) => r.json()),
-        fetch("/api/nodes/events", { signal: AbortSignal.timeout(10_000) }).then((r) => r.json()),
+        fetch("/api/nodes/health", { signal: AbortSignal.timeout(10_000) }).then((r) => r.ok && (r.headers.get("content-type")??"").includes("json") ? r.json() : Promise.reject("not-json")),
+        fetch("/api/nodes/events", { signal: AbortSignal.timeout(10_000) }).then((r) => r.ok && (r.headers.get("content-type")??"").includes("json") ? r.json() : Promise.reject("not-json")),
       ]);
 
       const nodes: NodeHealthInfo[] =

@@ -288,19 +288,19 @@ export function useDeploymentMonitor({
   // ── Funções auxiliares ───────────────────────────────────────────────────────
   const fetchRolloutHistory = useCallback(async (ns: string, name: string): Promise<ReplicaSetRevision[]> => {
     const res = await fetch(`${base}/api/deployments/${ns}/${name}/rollout`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     return res.json();
   }, [base]);
 
   const fetchK8sEvents = useCallback(async (ns: string, name: string): Promise<K8sDeploymentEvent[]> => {
     const res = await fetch(`${base}/api/deployments/${ns}/${name}/events`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     return res.json();
   }, [base]);
 
   const fetchDbHistory = useCallback(async (ns: string, name: string): Promise<DeploymentEvent[]> => {
     const res = await fetch(`${base}/api/events/deployments/${ns}/${name}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     return res.json();
   }, [base]);
 

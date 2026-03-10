@@ -93,7 +93,7 @@ function eventToDbPayload(e: StatusEvent) {
 async function fetchEventsFromBackend(limit = 500): Promise<StatusEvent[]> {
   try {
     const res = await fetch(`/api/events/pods?limit=${limit}`);
-    if (!res.ok) return [];
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     const rows: Record<string, unknown>[] = await res.json();
     return rows.map(dbRowToEvent);
   } catch {
@@ -108,7 +108,7 @@ async function fetchEventsForPodFromBackend(
 ): Promise<{ events: StatusEvent[]; count: number }> {
   try {
     const res = await fetch(`/api/events/pods/${namespace}/${podName}?limit=${limit}`);
-    if (!res.ok) return { events: [], count: 0 };
+    if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return { events: [], count: 0 };
     const data = await res.json();
     return {
       events: (data.events || []).map(dbRowToEvent),

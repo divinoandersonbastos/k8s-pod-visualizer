@@ -1337,6 +1337,150 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/auth/* — Autenticação JWT ────────────────────────────────────────
+  if (url.pathname === "/api/auth/setup-status" && req.method === "GET") {
+    return handleSetupStatus(req, res);
+  }
+  if (url.pathname === "/api/auth/setup" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", async () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      await handleSetup(req, res);
+    });
+    return;
+  }
+  if (url.pathname === "/api/auth/login" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", async () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      await handleLogin(req, res);
+    });
+    return;
+  }
+  if (url.pathname === "/api/auth/logout" && req.method === "POST") {
+    return handleLogout(req, res);
+  }
+  if (url.pathname === "/api/auth/me" && req.method === "GET") {
+    return handleMe(req, res, () => {});
+  }
+  // ── /api/users — Gestão de usuários Squad (SRE only) ─────────────────────────
+  if (url.pathname === "/api/users" && req.method === "GET") {
+    return requireSRE(req, res, () => handleListUsers(req, res));
+  }
+  if (url.pathname === "/api/users" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", async () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      requireSRE(req, res, () => handleCreateUser(req, res));
+    });
+    return;
+  }
+  const userIdMatch = url.pathname.match(/^\/api\/users\/(\d+)$/);
+  if (userIdMatch) {
+    req.params = { id: userIdMatch[1] };
+    if (req.method === "PUT") {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", async () => {
+        try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+        requireSRE(req, res, () => handleUpdateUser(req, res));
+      });
+      return;
+    }
+    if (req.method === "DELETE") {
+      return requireSRE(req, res, () => handleDeleteUser(req, res));
+    }
+  }
+  if (url.pathname === "/api/audit-log" && req.method === "GET") {
+    req.query = Object.fromEntries(url.searchParams);
+    return requireSRE(req, res, () => handleAuditLog(req, res));
+  }
+
+  // ── /api/resources/* — Resource Editor (SRE only) ─────────────────────────
+  // GET /api/resources/yaml?kind=deployment&namespace=ns&name=name
+  if (url.pathname === "/api/resources/yaml" && req.method === "GET") {
+    return requireSRE(req, res, async () => {
+      const kind      = url.searchParams.get("kind") || "deployment";
+      const namespace = url.searchParams.get("namespace");
+      const name      = url.searchParams.get("name");
+      if (!namespace || !name) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        return res.end(JSON.stringify({ error: "namespace e name são obrigatórios" }));
+      }
+      try {
+        let k8sPath;
+        if (kind === "deployment")  k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
+        else if (kind === "configmap") k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
+        else if (kind === "hpa")    k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
+        else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
+        const data = await k8sGet(k8sPath);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(data));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+  }
+  // POST /api/resources/scale
+  if (url.pathname === "/api/resources/scale" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      requireSRE(req, res, async () => {
+        const { namespace, name, replicas } = req.body;
+        if (!namespace || !name || replicas === undefined) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "namespace, name e replicas são obrigatórios" }));
+        }
+        try {
+          const result = await k8sPatch(
+            `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`,
+            { spec: { replicas: parseInt(replicas) } }
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, replicas: result.spec?.replicas }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
+  // POST /api/resources/restart
+  if (url.pathname === "/api/resources/restart" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      requireSRE(req, res, async () => {
+        const { namespace, name } = req.body;
+        if (!namespace || !name) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "namespace e name são obrigatórios" }));
+        }
+        try {
+          const now = new Date().toISOString();
+          await k8sPatch(
+            `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`,
+            { spec: { template: { metadata: { annotations: { "kubectl.kubernetes.io/restartedAt": now } } } } }
+          );
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, restartedAt: now }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
+
   // ── Arquivos estáticos ─────────────────────────────────────────────────────
   let filePath = path.join(
     __dirname, "public",

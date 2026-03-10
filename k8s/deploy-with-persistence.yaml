@@ -1,0 +1,262 @@
+# =============================================================================
+# K8s Pod Visualizer v2.0 — Manifesto de Deploy COM Persistência de Dados
+# =============================================================================
+#
+# Instalação rápida (uma linha):
+#   kubectl apply -f deploy-with-persistence.yaml
+#
+# Acesso via NodePort:
+#   http://<IP-DO-NODE>:30080
+#
+# Acesso via port-forward:
+#   kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n k8s-pod-visualizer
+#   http://localhost:8080
+#
+# Funcionalidades EXTRAS com persistência ativada:
+#   ✓ Histórico de eventos de pods (últimas 24h no SQLite)
+#   ✓ Histórico de eventos de deployments
+#   ✓ Gráfico de tendência 24h de Capacity Planning
+#   ✓ Snapshots de capacity a cada 5 minutos
+#
+# Requisito adicional: StorageClass disponível no cluster
+#   Verifique com: kubectl get storageclass
+#
+# =============================================================================
+
+---
+# 1. Namespace dedicado
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: kubectl
+
+---
+# 2. ServiceAccount — identidade do pod dentro do cluster
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+automountServiceAccountToken: true
+
+---
+# 3. ClusterRole — permissões de somente leitura
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces", "events", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+
+---
+# 4. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+subjects:
+  - kind: ServiceAccount
+    name: k8s-pod-visualizer
+    namespace: k8s-pod-visualizer
+roleRef:
+  kind: ClusterRole
+  name: k8s-pod-visualizer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 5. PersistentVolumeClaim — armazenamento para o banco SQLite
+#    Ajuste storageClassName conforme o seu cluster:
+#      GKE:        standard-rwo  ou  premium-rwo
+#      EKS:        gp2           ou  gp3
+#      AKS:        managed-premium
+#      On-premise: local-path    ou  nfs-client
+#      Minikube:   standard
+#      k3s:        local-path
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-pod-visualizer-data
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+  # Descomente e ajuste se necessário:
+  # storageClassName: standard-rwo
+
+---
+# 6. Deployment — com volume SQLite montado
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    app.kubernetes.io/version: "2.0.0"
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 1
+  # IMPORTANTE: ReadWriteOnce não suporta múltiplas réplicas simultâneas.
+  # Para escalar, use ReadWriteMany com NFS ou migre para um banco externo.
+  selector:
+    matchLabels:
+      app: k8s-pod-visualizer
+  strategy:
+    type: Recreate   # Recreate garante que o PVC seja liberado antes do novo pod
+  template:
+    metadata:
+      labels:
+        app: k8s-pod-visualizer
+        app.kubernetes.io/name: k8s-pod-visualizer
+        app.kubernetes.io/version: "2.0.0"
+    spec:
+      serviceAccountName: k8s-pod-visualizer
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: k8s-pod-visualizer
+          image: ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: "production"
+            - name: K8S_API_URL
+              value: "https://kubernetes.default.svc"
+            - name: USE_SERVICE_ACCOUNT
+              value: "true"
+            # Persistência ATIVADA (padrão quando DISABLE_DB não está definido)
+            # - name: DISABLE_DB
+            #   value: "false"
+            # Diretório onde o SQLite será criado (deve coincidir com mountPath)
+            - name: DATA_DIR
+              value: "/app/data"
+            # Nome do cluster exibido no header (personalize)
+            - name: CLUSTER_NAME
+              value: "meu-cluster"
+            # Retenção de eventos em dias (padrão: 1 dia para pods, 60 para deployments)
+            # - name: EVENT_RETENTION_DAYS
+            #   value: "1"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/pods
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: k8s-pod-visualizer-data
+      restartPolicy: Always
+      terminationGracePeriodSeconds: 30
+
+---
+# 7. Service — expõe o visualizador via NodePort
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  selector:
+    app: k8s-pod-visualizer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      protocol: TCP
+      nodePort: 30080
+  type: NodePort
+
+---
+# 8. Ingress (OPCIONAL) — acesso via hostname com Ingress Controller
+# Descomente e ajuste se tiver nginx-ingress, traefik, etc.
+#
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: k8s-pod-visualizer
+#   namespace: k8s-pod-visualizer
+#   annotations:
+#     nginx.ingress.kubernetes.io/rewrite-target: /
+#     # Para HTTPS com cert-manager:
+#     # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+# spec:
+#   ingressClassName: nginx
+#   # tls:
+#   #   - hosts:
+#   #       - k8s-visualizer.seu-dominio.com
+#   #     secretName: k8s-pod-visualizer-tls
+#   rules:
+#     - host: k8s-visualizer.seu-dominio.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: k8s-pod-visualizer
+#                 port:
+#                   number: 80

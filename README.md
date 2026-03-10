@@ -8,7 +8,7 @@
 
 **Dashboard interativo de bolhas para monitoramento de Kubernetes em tempo real**
 
-[![Version](https://img.shields.io/badge/version-1.3.5-00b5d8?style=flat-square&logo=kubernetes&logoColor=white)](https://github.com/divinoandersonbastos/k8s-pod-visualizer/releases)
+[![Version](https://img.shields.io/badge/version-2.0.0-00b5d8?style=flat-square&logo=kubernetes&logoColor=white)](https://github.com/divinoandersonbastos/k8s-pod-visualizer/releases)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-48bb78?style=flat-square&logo=node.js&logoColor=white)](https://nodejs.org)
 [![React](https://img.shields.io/badge/react-19-61dafb?style=flat-square&logo=react&logoColor=white)](https://react.dev)
 [![Kubernetes](https://img.shields.io/badge/kubernetes-%3E%3D1.20-326ce5?style=flat-square&logo=kubernetes&logoColor=white)](https://kubernetes.io)
@@ -67,13 +67,14 @@ Desenvolvido pela [CentralDevOps](https://centraldevops.com) e testado em cluste
 
 ---
 
-## 🚀 Instalação rápida
+## 🚀 Instalação rápida (v2.0)
 
 ### Pré-requisitos
 
-- Kubernetes ≥ 1.20 com **Metrics Server** instalado
+- Kubernetes ≥ 1.20
 - `kubectl` configurado com acesso ao cluster
 - Permissões para criar `ClusterRole`, `ServiceAccount` e `Deployment`
+- **metrics-server** (opcional — modo DEMO sem ele)
 
 ```bash
 # Verificar Metrics Server
@@ -83,57 +84,70 @@ kubectl get deployment metrics-server -n kube-system
 kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
 ```
 
-### kubectl apply (recomendado)
+### Modo 1 — Sem Persistência (stateless)
+
+Ideal para ambientes sem StorageClass, instalações temporárias ou onde a simplicidade operacional é prioritária. Não requer PVC.
 
 ```bash
-# 1. RBAC e namespace
-kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/base/00-namespace-rbac.yaml
-
-# 2. Storage — escolha seu ambiente:
-
-## Azure AKS
-kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/cloud/azure/
-
-## On-premises com Longhorn
-kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/onpremises/longhorn/
-
-## On-premises com NFS
-kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/onpremises/nfs/
-
-## On-premises com hostPath (teste/dev)
-kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/deploy/onpremises/hostpath/
-
-# 3. Verificar
-kubectl get pods -n k8s-pod-visualizer
-kubectl get pvc  -n k8s-pod-visualizer
-
-# 4. Acessar
-kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n k8s-pod-visualizer
-# Abrir: http://localhost:8080
+# Instalação direta
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/k8s/deploy-no-persistence.yaml
 ```
 
-### Helm Chart
+Ou com o script interativo:
 
 ```bash
-helm repo add centraldevops https://centraldevops.github.io/helm-charts
-helm repo update
+git clone https://github.com/divinoandersonbastos/k8s-pod-visualizer.git
+cd k8s-pod-visualizer/k8s
+chmod +x install-no-persistence.sh
+./install-no-persistence.sh --cluster-name "meu-cluster"
+```
 
-# Instalar (Azure AKS)
-helm install k8s-pod-visualizer centraldevops/k8s-pod-visualizer \
-  --namespace k8s-pod-visualizer \
-  --create-namespace \
-  --set storage.type=azure \
-  --set storage.size=2Gi \
-  --set image.tag=1.3.5
+### Modo 2 — Com Persistência (SQLite + PVC)
+
+Habilita o histórico de eventos, histórico de deployments e o gráfico de tendência 24h do Capacity Planning. Requer StorageClass disponível.
+
+```bash
+# Instalação direta
+kubectl apply -f https://raw.githubusercontent.com/divinoandersonbastos/k8s-pod-visualizer/main/k8s/deploy-with-persistence.yaml
+```
+
+Ou com o script interativo (detecta StorageClass automaticamente):
+
+```bash
+cd k8s-pod-visualizer/k8s
+chmod +x install-with-persistence.sh
+./install-with-persistence.sh --cluster-name "meu-cluster"
+```
+
+### Comparativo dos modos
+
+| Funcionalidade | Sem Persistência | Com Persistência |
+|---|:---:|:---:|
+| Visualização de pods, Deploy Monitor, Capacity Planning | ✅ | ✅ |
+| Histórico de eventos de pods e deployments | ❌ | ✅ |
+| Gráfico de tendência 24h (Capacity) | ❌ | ✅ |
+| PersistentVolumeClaim necessário | ❌ | ✅ |
+| Réplicas múltiplas | ✅ | ❌ (ReadWriteOnce) |
+
+### Acesso ao painel
+
+```bash
+# Via NodePort (porta 30080)
+kubectl get nodes -o wide
+http://<IP-DO-NODE>:30080
+
+# Via port-forward
+kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n k8s-pod-visualizer
+# Abrir: http://localhost:8080
 ```
 
 ### Docker (desenvolvimento local)
 
 ```bash
-docker run -p 8080:8080 \
+docker run -p 8080:3000 \
   -e DATA_DIR=/data \
   -v $(pwd)/data:/data \
-  divand/k8s-pod-visualizer:1.3.5
+  ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest
 # Abrir: http://localhost:8080
 ```
 

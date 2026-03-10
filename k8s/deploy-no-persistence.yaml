@@ -1,0 +1,246 @@
+# =============================================================================
+# K8s Pod Visualizer v2.0 — Manifesto de Deploy SEM Persistência de Dados
+# =============================================================================
+#
+# Instalação rápida (uma linha):
+#   kubectl apply -f deploy-no-persistence.yaml
+#
+# Acesso via NodePort:
+#   http://<IP-DO-NODE>:30080
+#
+# Acesso via port-forward:
+#   kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n k8s-pod-visualizer
+#   http://localhost:8080
+#
+# Funcionalidades disponíveis SEM persistência:
+#   ✓ Visualização de pods em tempo real (bolha, cometa, aquário, mapa de calor)
+#   ✓ Filtros por namespace, node, deployment, status
+#   ✓ Deploy Monitor (rollouts, condições, eventos K8s)
+#   ✓ Capacity Planning (node-pools, CPU/MEM, scoring SRE)
+#   ✓ Node Monitor (pressão de memória, OOMKill, Spot VMs)
+#   ✓ Alertas de recursos e eventos críticos
+#   ✓ Personalização visual completa (temas, cores, estilos de bolha)
+#   ✗ Histórico de eventos (requer SQLite)
+#   ✗ Gráfico de tendência 24h de capacity (requer SQLite)
+#
+# =============================================================================
+
+---
+# 1. Namespace dedicado
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/managed-by: kubectl
+
+---
+# 2. ServiceAccount — identidade do pod dentro do cluster
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+automountServiceAccountToken: true
+
+---
+# 3. ClusterRole — permissões de leitura (somente leitura, sem escrita)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+rules:
+  # Recursos core: pods, nodes, namespaces, eventos e logs
+  - apiGroups: [""]
+    resources: ["pods", "nodes", "namespaces", "events", "configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list"]
+  # Recursos apps: deployments e replicasets (Deploy Monitor)
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Métricas de CPU e memória (requer metrics-server instalado)
+  # Se o metrics-server não estiver disponível, o modo DEMO será ativado automaticamente
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["pods", "nodes"]
+    verbs: ["get", "list"]
+
+---
+# 4. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+subjects:
+  - kind: ServiceAccount
+    name: k8s-pod-visualizer
+    namespace: k8s-pod-visualizer
+roleRef:
+  kind: ClusterRole
+  name: k8s-pod-visualizer
+  apiGroup: rbac.authorization.k8s.io
+
+---
+# 5. Deployment — sem volume, sem PVC, sem SQLite
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    app.kubernetes.io/version: "2.0.0"
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: k8s-pod-visualizer
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: k8s-pod-visualizer
+        app.kubernetes.io/name: k8s-pod-visualizer
+        app.kubernetes.io/version: "2.0.0"
+    spec:
+      serviceAccountName: k8s-pod-visualizer
+      # Segurança: roda como usuário não-root
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      # Tolerância a nodes com taints comuns (opcional — remova se não necessário)
+      # tolerations:
+      #   - key: "node-role.kubernetes.io/control-plane"
+      #     operator: "Exists"
+      #     effect: "NoSchedule"
+      containers:
+        - name: k8s-pod-visualizer
+          image: ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3000
+              name: http
+              protocol: TCP
+          env:
+            # Porta do servidor HTTP
+            - name: PORT
+              value: "3000"
+            # Ambiente de execução
+            - name: NODE_ENV
+              value: "production"
+            # URL da API do Kubernetes (padrão para in-cluster)
+            - name: K8S_API_URL
+              value: "https://kubernetes.default.svc"
+            # Usa o token do ServiceAccount automaticamente
+            - name: USE_SERVICE_ACCOUNT
+              value: "true"
+            # DESATIVA o SQLite — sem persistência de dados
+            - name: DISABLE_DB
+              value: "true"
+            # Nome do cluster exibido no header (personalize)
+            - name: CLUSTER_NAME
+              value: "meu-cluster"
+            # Intervalo de polling em ms (padrão: 5000ms = 5s)
+            # - name: POLL_INTERVAL
+            #   value: "5000"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /api/pods
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          # Sem volumeMounts — nenhum volume necessário
+      restartPolicy: Always
+      # Sem volumes — nenhum PVC necessário
+      terminationGracePeriodSeconds: 30
+
+---
+# 6. Service — expõe o visualizador via NodePort
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  selector:
+    app: k8s-pod-visualizer
+  ports:
+    - name: http
+      port: 80
+      targetPort: 3000
+      protocol: TCP
+      nodePort: 30080
+  type: NodePort
+
+---
+# 7. Ingress (OPCIONAL) — acesso via hostname com Ingress Controller
+# Descomente e ajuste se tiver nginx-ingress, traefik, etc.
+#
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: k8s-pod-visualizer
+#   namespace: k8s-pod-visualizer
+#   annotations:
+#     nginx.ingress.kubernetes.io/rewrite-target: /
+#     # Para HTTPS com cert-manager:
+#     # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+# spec:
+#   ingressClassName: nginx
+#   # tls:
+#   #   - hosts:
+#   #       - k8s-visualizer.seu-dominio.com
+#   #     secretName: k8s-pod-visualizer-tls
+#   rules:
+#     - host: k8s-visualizer.seu-dominio.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: k8s-pod-visualizer
+#                 port:
+#                   number: 80

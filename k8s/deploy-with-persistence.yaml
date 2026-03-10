@@ -37,7 +37,7 @@ metadata:
   name: k8s-pod-visualizer
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
-    app.kubernetes.io/version: "3.0.0"
+    app.kubernetes.io/version: "3.0.2"
     app.kubernetes.io/managed-by: kubectl
 
 ---
@@ -161,7 +161,7 @@ metadata:
   namespace: k8s-pod-visualizer
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
-    app.kubernetes.io/version: "3.0.0"
+    app.kubernetes.io/version: "3.0.2"
   annotations:
     deployment.kubernetes.io/revision: "1"
 spec:
@@ -178,7 +178,7 @@ spec:
       labels:
         app: k8s-pod-visualizer
         app.kubernetes.io/name: k8s-pod-visualizer
-        app.kubernetes.io/version: "3.0.0"
+        app.kubernetes.io/version: "3.0.2"
     spec:
       serviceAccountName: k8s-pod-visualizer
       securityContext:
@@ -188,7 +188,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: k8s-pod-visualizer
-          image: ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0
+          image: ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.2
           imagePullPolicy: Always
           ports:
             - containerPort: 3000

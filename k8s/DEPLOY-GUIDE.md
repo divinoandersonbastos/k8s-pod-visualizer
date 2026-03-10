@@ -1,8 +1,10 @@
-# Guia de Instalação — K8s Pod Visualizer v2.0
+# Guia de Instalação — K8s Pod Visualizer v3.0
 
-Este documento detalha todas as opções de instalação, configuração e operação do K8s Pod Visualizer em ambientes Kubernetes.
+Este documento detalha todas as opções de instalação, configuração e operação do **K8s Pod Visualizer v3.0** em ambientes Kubernetes.
 
 > Para o guia de instalação da versão anterior (v1.x), consulte [DEPLOY-GUIDE-v1.md](DEPLOY-GUIDE-v1.md).
+
+**Novidades da v3.0:** Autenticação JWT com perfis SRE e Squad, editor de recursos YAML, integração de Trace (Jaeger/Tempo) e gestão de usuários.
 
 ---
 
@@ -15,11 +17,12 @@ Este documento detalha todas as opções de instalação, configuração e opera
 5. [Scripts interativos](#scripts-interativos)
 6. [Permissões RBAC](#permissões-rbac)
 7. [Variáveis de ambiente](#variáveis-de-ambiente)
-8. [Acesso ao painel](#acesso-ao-painel)
-9. [Atualização de versão](#atualização-de-versão)
-10. [Desinstalação](#desinstalação)
-11. [Solução de problemas](#solução-de-problemas)
-12. [StorageClass por provedor](#storageclass-por-provedor)
+8. [**Autenticação e Perfis de Acesso (v3.0)**](#autenticação-e-perfis-de-acesso)
+9. [Acesso ao painel](#acesso-ao-painel)
+10. [Atualização de versão](#atualização-de-versão)
+11. [Desinstalação](#desinstalação)
+12. [Solução de problemas](#solução-de-problemas)
+13. [StorageClass por provedor](#storageclass-por-provedor)
 
 ---
 
@@ -237,6 +240,8 @@ rules:
 | `DISABLE_DB` | `false` | Desativa SQLite quando `true` |
 | `DATA_DIR` | `/app/data` | Diretório do banco SQLite |
 | `CLUSTER_NAME` | `kubernetes` | Nome exibido no header |
+| `JWT_SECRET` | — | Chave secreta para assinar tokens JWT (**obrigatório** na v3.0) |
+| `JWT_EXPIRES_IN` | `8h` | Tempo de expiração do token JWT (ex: `4h`, `1d`, `7d`) |
 
 Para desativar explicitamente o SQLite sem remover o volume:
 
@@ -245,6 +250,74 @@ env:
   - name: DISABLE_DB
     value: "true"
 ```
+
+---
+
+## Autenticação e Perfis de Acesso
+
+> **Novo na v3.0** — O K8s Pod Visualizer agora possui sistema de autenticação JWT com dois perfis de acesso.
+
+### Primeiro acesso
+
+1. Abra o painel no navegador
+2. Clique em **"Novo usuário"** para criar o usuário **SRE master** com senha
+3. Após login como SRE, acesse **Usuários** no header para criar usuários Squad
+
+### Perfil SRE
+
+Acesso total ao cluster. Pode visualizar todos os namespaces, editar recursos YAML (Deployments, ConfigMaps, HPA), fazer restart/scale de workloads, gerenciar usuários Squad e acessar todos os paineis (Deploy Monitor, Capacity Planning, Node Monitor, Trace).
+
+### Perfil Squad
+
+Acesso restrito por namespace. O Squad vê apenas os pods, deployments e eventos dos namespaces autorizados pelo SRE. Tem acesso ao painel de Trace (Jaeger/Tempo) para seus namespaces.
+
+### Gestão de usuários Squad
+
+O SRE cria usuários Squad no painel **Usuários** (icône de pessoas no header):
+
+| Campo | Descrição |
+|---|---|
+| Nome de usuário | Login do Squad |
+| Senha | Senha inicial (deve ser trocada no primeiro acesso) |
+| Namespaces | Lista de namespaces autorizados (separados por vírgula) |
+
+### Configuração do JWT_SECRET
+
+O `JWT_SECRET` é lido de um `Secret` Kubernetes. Os scripts de instalação geram automaticamente um secret seguro (64 chars hex via `openssl rand -hex 32`).
+
+**Geração manual:**
+
+```bash
+# Gerar secret seguro
+JWT_SECRET=$(openssl rand -hex 32)
+echo $JWT_SECRET
+
+# Criar o Secret no cluster
+kubectl create secret generic k8s-pod-visualizer-secrets \
+  --from-literal=jwt-secret="$JWT_SECRET" \
+  -n k8s-pod-visualizer
+```
+
+**Rotacionar o JWT_SECRET (invalida todas as sessões ativas):**
+
+```bash
+NOVO_SECRET=$(openssl rand -hex 32)
+kubectl patch secret k8s-pod-visualizer-secrets \
+  -n k8s-pod-visualizer \
+  --type=json \
+  -p='[{"op":"replace","path":"/stringData/jwt-secret","value":"'"$NOVO_SECRET"'"}]'
+kubectl rollout restart deployment/k8s-pod-visualizer -n k8s-pod-visualizer
+```
+
+### Configuração do Trace (Jaeger/Tempo)
+
+No painel **Trace**, o SRE pode configurar a URL do Jaeger/Tempo por namespace. Exemplo:
+
+| Campo | Valor |
+|---|---|
+| URL do Jaeger | `http://jaeger-query.observability:16686` |
+| URL do Tempo | `http://tempo.observability:3100` |
+| Namespace | `minha-app` |
 
 ---
 
@@ -301,7 +374,7 @@ spec:
 ```bash
 # Atualizar a imagem
 kubectl set image deployment/k8s-pod-visualizer \
-  k8s-pod-visualizer=ghcr.io/divinoandersonbastos/k8s-pod-visualizer:2.1.0 \
+  k8s-pod-visualizer=ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0 \
   -n k8s-pod-visualizer
 
 # Acompanhar o rollout
@@ -412,5 +485,5 @@ kubectl get storageclass
 
 ---
 
-*K8s Pod Visualizer v2.0 — CentralDevOps*
+*K8s Pod Visualizer v3.0 — CentralDevOps*
 *Suporte: https://wa.me/5561999529713*

@@ -6,6 +6,37 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e o 
 
 ---
 
+## [3.0.1] — 2026-03-09
+
+### Corrigido
+- Erro `Unexpected end of JSON input` em todos os 7 hooks de API quando o backend não está disponível (modo demo/Vite). Cada `fetch` agora verifica `res.ok` e o header `content-type: application/json` antes de chamar `.json()`.
+- `AuthContext` detecta graciosamente quando o backend não está disponível e pula a tela de login.
+
+---
+
+## [3.0.0] — 2026-03-09
+
+### Adicionado
+- **Autenticação JWT** com dois perfis de acesso: **SRE** (acesso total) e **Squad** (restrito por namespace).
+- **Tela de Login** com design premium dark e fluxo de setup inicial para criar o usuário SRE master.
+- **Gestão de usuários Squad** — painel dedicado para SRE criar, editar e revogar usuários Squad com associação de namespaces.
+- **Editor de Recursos YAML** para SRE — editação inline de Deployments, ConfigMaps e HPA com validação, confirmação e suporte a `scale` e `restart`.
+- **Painel de Trace** — integração com Jaeger e Grafana Tempo por namespace, configurável pelo SRE.
+- Badge de perfil do usuário logado no header (escudo azul = SRE, ícone verde = Squad) com botão de logout.
+- Botões condicionais por perfil no header: Usuários (SRE), Editor de Recursos (SRE), Trace (todos).
+- Migração v4 automática do SQLite com tabela `users` (hash bcrypt, namespaces, perfil, audit log).
+- Endpoints de autenticação: `/api/auth/setup-status`, `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`.
+- Endpoints de gestão de usuários: `/api/users` (CRUD, somente SRE).
+- Endpoints de edição de recursos: `/api/resources/apply`, `/api/resources/scale`, `/api/resources/restart`.
+- Middleware JWT com verificação de perfil em todas as rotas protegidas.
+
+### Alterado
+- Manifests de instalação (`deploy-no-persistence.yaml` e `deploy-with-persistence.yaml`) atualizados para v3.0 com `Secret` Kubernetes para `JWT_SECRET`.
+- Scripts de instalação geram automaticamente `JWT_SECRET` seguro via `openssl rand -hex 32`.
+- `DEPLOY-GUIDE.md` atualizado com seção completa de autenticação, gestão de usuários e configuração de Trace.
+
+---
+
 ## [2.1.0] — 2026-03-09
 
 ### Adicionado

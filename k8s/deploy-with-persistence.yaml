@@ -1,9 +1,14 @@
 # =============================================================================
-# K8s Pod Visualizer v2.0 — Manifesto de Deploy COM Persistência de Dados
+# K8s Pod Visualizer v3.0 — Manifesto de Deploy COM Persistência de Dados
 # =============================================================================
 #
 # Instalação rápida (uma linha):
 #   kubectl apply -f deploy-with-persistence.yaml
+#
+# ⚠️  ANTES DE APLICAR: gere um JWT_SECRET seguro e atualize o Secret abaixo:
+#   kubectl create secret generic k8s-pod-visualizer-secrets \
+#     --from-literal=jwt-secret="$(openssl rand -hex 32)" \
+#     -n k8s-pod-visualizer --dry-run=client -o yaml | kubectl apply -f -
 #
 # Acesso via NodePort:
 #   http://<IP-DO-NODE>:30080
@@ -13,6 +18,7 @@
 #   http://localhost:8080
 #
 # Funcionalidades EXTRAS com persistência ativada:
+#   ✓ Autenticação JWT (perfis SRE e Squad) com usuários persistidos no SQLite
 #   ✓ Histórico de eventos de pods (últimas 24h no SQLite)
 #   ✓ Histórico de eventos de deployments
 #   ✓ Gráfico de tendência 24h de Capacity Planning
@@ -31,11 +37,36 @@ metadata:
   name: k8s-pod-visualizer
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
-    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/version: "3.0.0"
     app.kubernetes.io/managed-by: kubectl
 
 ---
-# 2. ServiceAccount — identidade do pod dentro do cluster
+# 2. Secret — JWT_SECRET para autenticação (ALTERE o valor antes de aplicar!)
+#
+# Gere um valor seguro com:
+#   openssl rand -hex 32
+#
+# Para atualizar após o deploy:
+#   kubectl patch secret k8s-pod-visualizer-secrets \
+#     -n k8s-pod-visualizer \
+#     --type=json \
+#     -p='[{"op":"replace","path":"/stringData/jwt-secret","value":"NOVO_SECRET"}]'
+#   kubectl rollout restart deployment/k8s-pod-visualizer -n k8s-pod-visualizer
+#
+apiVersion: v1
+kind: Secret
+metadata:
+  name: k8s-pod-visualizer-secrets
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+type: Opaque
+stringData:
+  # ⚠️  SUBSTITUA pelo valor gerado com: openssl rand -hex 32
+  jwt-secret: "SUBSTITUA_POR_UM_SECRET_SEGURO_openssl_rand_hex_32"
+
+---
+# 3. ServiceAccount — identidade do pod dentro do cluster
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -46,7 +77,7 @@ metadata:
 automountServiceAccountToken: true
 
 ---
-# 3. ClusterRole — permissões de somente leitura
+# 4. ClusterRole — permissões de leitura + escrita limitada para Editor de Recursos (SRE)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -54,21 +85,33 @@ metadata:
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
 rules:
+  # Recursos core: pods, nodes, namespaces, eventos e logs
   - apiGroups: [""]
     resources: ["pods", "nodes", "namespaces", "events", "configmaps"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list"]
+  # Restart de pods (delete recria via ReplicaSet)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+  # Recursos apps: deployments e replicasets (Deploy Monitor + Editor SRE)
   - apiGroups: ["apps"]
     resources: ["deployments", "replicasets", "daemonsets", "statefulsets"]
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # HPA (Horizontal Pod Autoscaler) — scale via Editor SRE
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "patch", "update"]
+  # Métricas de CPU e memória (requer metrics-server instalado)
+  # Se o metrics-server não estiver disponível, o modo DEMO será ativado automaticamente
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods", "nodes"]
     verbs: ["get", "list"]
 
 ---
-# 4. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole
+# 5. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -85,7 +128,7 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 
 ---
-# 5. PersistentVolumeClaim — armazenamento para o banco SQLite
+# 6. PersistentVolumeClaim — armazenamento para o banco SQLite
 #    Ajuste storageClassName conforme o seu cluster:
 #      GKE:        standard-rwo  ou  premium-rwo
 #      EKS:        gp2           ou  gp3
@@ -110,7 +153,7 @@ spec:
   # storageClassName: standard-rwo
 
 ---
-# 6. Deployment — com volume SQLite montado
+# 7. Deployment — com volume SQLite montado
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -118,7 +161,7 @@ metadata:
   namespace: k8s-pod-visualizer
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
-    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/version: "3.0.0"
   annotations:
     deployment.kubernetes.io/revision: "1"
 spec:
@@ -135,7 +178,7 @@ spec:
       labels:
         app: k8s-pod-visualizer
         app.kubernetes.io/name: k8s-pod-visualizer
-        app.kubernetes.io/version: "2.0.0"
+        app.kubernetes.io/version: "3.0.0"
     spec:
       serviceAccountName: k8s-pod-visualizer
       securityContext:
@@ -145,7 +188,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: k8s-pod-visualizer
-          image: ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest
+          image: ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0
           imagePullPolicy: Always
           ports:
             - containerPort: 3000
@@ -172,6 +215,17 @@ spec:
             # Retenção de eventos em dias (padrão: 1 dia para pods, 60 para deployments)
             # - name: EVENT_RETENTION_DAYS
             #   value: "1"
+            # ── Autenticação JWT (v3.0) ──────────────────────────────────────
+            # Chave secreta para assinar tokens JWT — lida do Secret K8s
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: k8s-pod-visualizer-secrets
+                  key: jwt-secret
+            # Expiração dos tokens JWT (padrão: 8h)
+            # Formatos aceitos: "8h", "24h", "7d", "30d"
+            - name: JWT_EXPIRES_IN
+              value: "8h"
           resources:
             requests:
               cpu: "50m"
@@ -192,7 +246,7 @@ spec:
             failureThreshold: 3
           readinessProbe:
             httpGet:
-              path: /api/pods
+              path: /api/auth/setup-status
               port: 3000
             initialDelaySeconds: 5
             periodSeconds: 10
@@ -211,7 +265,7 @@ spec:
       terminationGracePeriodSeconds: 30
 
 ---
-# 7. Service — expõe o visualizador via NodePort
+# 8. Service — expõe o visualizador via NodePort
 apiVersion: v1
 kind: Service
 metadata:
@@ -231,7 +285,7 @@ spec:
   type: NodePort
 
 ---
-# 8. Ingress (OPCIONAL) — acesso via hostname com Ingress Controller
+# 9. Ingress (OPCIONAL) — acesso via hostname com Ingress Controller
 # Descomente e ajuste se tiver nginx-ingress, traefik, etc.
 #
 # apiVersion: networking.k8s.io/v1

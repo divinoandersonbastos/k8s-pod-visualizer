@@ -833,6 +833,13 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
+  // ── /healthz e /api/health — probe público (sem auth) ───────────────────────
+  if (url.pathname === "/healthz" || url.pathname === "/api/health") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ status: "ok", ts: Date.now() }));
+    return;
+  }
+
   // ── /api/pods ──────────────────────────────────────────────────────────────
   if (url.pathname === "/api/pods") {
     return requireAuth(req, res, async () => {

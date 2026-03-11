@@ -118,7 +118,7 @@ namespace:
 # -----------------------------------------------------------------------------
 livenessProbe:
   httpGet:
-    path: /api/health
+    path: /healthz
     port: 8080
   initialDelaySeconds: 15
   periodSeconds: 20
@@ -126,7 +126,7 @@ livenessProbe:
 
 readinessProbe:
   httpGet:
-    path: /api/health
+    path: /healthz
     port: 8080
   initialDelaySeconds: 5
   periodSeconds: 10

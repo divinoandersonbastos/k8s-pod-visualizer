@@ -5,7 +5,7 @@
 
 import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
-import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server, Search, GitBranch, X } from "lucide-react";
+import { Activity, Cpu, MemoryStick, Box, ChevronDown, ChevronRight, Layers, Server, Search, GitBranch, X, Shield, ShieldAlert, ShieldX, ShieldCheck } from "lucide-react";
 import type { ClusterStats, PodMetrics } from "@/hooks/usePodData";
 import type { ViewMode, LayoutMode } from "./BubbleCanvas";
 import { TopPodsTooltip } from "./TopPodsTooltip";
@@ -31,6 +31,8 @@ interface ClusterSidebarProps {
   onDeploymentChange?: (deployment: string) => void;
   displayMode?: "canvas" | "app";
   onDisplayModeChange?: (mode: "canvas" | "app") => void;
+  onShowSecurity?: () => void;
+  securitySeverity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null;
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -92,6 +94,8 @@ export function ClusterSidebar({
   onDeploymentChange,
   displayMode = "canvas",
   onDisplayModeChange,
+  onShowSecurity,
+  securitySeverity,
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded]     = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
@@ -251,6 +255,34 @@ export function ClusterSidebar({
             </div>
           </div>
         )}
+
+        {/* Botão Segurança */}
+        {onShowSecurity && (() => {
+          const sevColors: Record<string, { bg: string; border: string; text: string; icon: React.ReactNode }> = {
+            CRITICAL: { bg: "oklch(0.70 0.22 25 / 0.15)", border: "oklch(0.70 0.22 25 / 0.5)", text: "oklch(0.75 0.22 25)", icon: <ShieldX size={13} /> },
+            HIGH:     { bg: "oklch(0.70 0.20 45 / 0.15)", border: "oklch(0.70 0.20 45 / 0.5)", text: "oklch(0.75 0.20 45)", icon: <ShieldAlert size={13} /> },
+            MEDIUM:   { bg: "oklch(0.75 0.18 80 / 0.12)", border: "oklch(0.75 0.18 80 / 0.4)",  text: "oklch(0.78 0.18 80)",  icon: <ShieldAlert size={13} /> },
+            LOW:      { bg: "oklch(0.65 0.12 200 / 0.10)", border: "oklch(0.65 0.12 200 / 0.35)", text: "oklch(0.65 0.12 200)", icon: <Shield size={13} /> },
+            OK:       { bg: "oklch(0.65 0.18 142 / 0.10)", border: "oklch(0.65 0.18 142 / 0.35)", text: "oklch(0.65 0.18 142)", icon: <ShieldCheck size={13} /> },
+          };
+          const sev = securitySeverity || "OK";
+          const sc2 = sevColors[sev] || sevColors.OK;
+          return (
+            <button
+              onClick={onShowSecurity}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-xs font-semibold transition-all hover:brightness-110"
+              style={{ background: sc2.bg, border: `1px solid ${sc2.border}`, color: sc2.text }}
+            >
+              {sc2.icon}
+              Segurança
+              {securitySeverity && securitySeverity !== "OK" && (
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: sc2.border, color: sc2.text }}>
+                  {securitySeverity}
+                </span>
+              )}
+            </button>
+          );
+        })()}
 
         {/* Modo de layout */}
         <div className="space-y-2">

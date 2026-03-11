@@ -29,14 +29,28 @@ RUN pnpm build
 # ─────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
-LABEL version="1.3.7" \
+LABEL version="3.2.0" \
       maintainer="CentralDevOps <contato@centraldevops.com>" \
       description="K8s Pod Visualizer — real-time Kubernetes pod visualization"
 
 WORKDIR /app
 
-# Dependências nativas necessárias para better-sqlite3 em runtime
-RUN apk add --no-cache libstdc++
+# Dependências nativas necessárias para better-sqlite3 em runtime + Trivy
+RUN apk add --no-cache libstdc++ curl wget ca-certificates
+
+# Instala Trivy (scanner de vulnerabilidades de containers)
+RUN TRIVY_VERSION=$(wget -qO- https://api.github.com/repos/aquasecurity/trivy/releases/latest \
+      | grep '"tag_name"' | sed 's/.*"v\([^"]*\)".*/\1/') && \
+    wget -qO /tmp/trivy.tar.gz \
+      "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" && \
+    tar -xzf /tmp/trivy.tar.gz -C /usr/local/bin trivy && \
+    rm /tmp/trivy.tar.gz && \
+    chmod +x /usr/local/bin/trivy && \
+    # Pré-download do banco de vulnerabilidades (cache no build)
+    trivy image --download-db-only --no-progress 2>/dev/null || true
+
+# Diretório de cache do Trivy
+RUN mkdir -p /root/.cache/trivy && chmod 777 /root/.cache/trivy
 
 # Copia o build estático do frontend
 COPY --from=builder /app/dist/public ./public

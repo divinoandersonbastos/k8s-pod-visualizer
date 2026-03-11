@@ -32,6 +32,7 @@ import { CustomizerPanel } from "@/components/CustomizerPanel";
 import UserManagementPanel from "@/components/UserManagementPanel";
 import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
+import { SecurityPanel } from "@/components/SecurityPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
@@ -57,6 +58,8 @@ export default function Home() {
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showResourceEditor, setShowResourceEditor] = useState(false);
   const [showTrace, setShowTrace] = useState(false);
+  const [showSecurity, setShowSecurity] = useState(false);
+  const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const { user, isSRE, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
@@ -128,6 +131,24 @@ export default function Home() {
     const interval = setInterval(update, 5000);
     return () => clearInterval(interval);
   }, [getAllEvents]);
+
+  // Carregar security summary periodicamente para colorir o botão na sidebar
+  useEffect(() => {
+    if (!inCluster && !apiUrl) return;
+    const fetchSummary = async () => {
+      try {
+        const base = apiUrl || "";
+        const r = await fetch(`${base}/api/security/summary`, { credentials: "include" });
+        if (r.ok) {
+          const data = await r.json();
+          setSecuritySeverity(data.severity || "OK");
+        }
+      } catch { /* silencioso */ }
+    };
+    fetchSummary();
+    const interval = setInterval(fetchSummary, 120_000); // a cada 2 min
+    return () => clearInterval(interval);
+  }, [inCluster, apiUrl]);
 
   // ── Filtragem de pods ──────────────────────────────────────────────────────
   const filteredPods = useMemo(() => {
@@ -296,6 +317,8 @@ export default function Home() {
           allPods={pods}
           displayMode={displayMode}
           onDisplayModeChange={setDisplayMode}
+          onShowSecurity={() => setShowSecurity(true)}
+          securitySeverity={securitySeverity}
         />
 
         {/* Canvas principal */}
@@ -636,6 +659,15 @@ export default function Home() {
           </tbody>
         </table>
       </div>
+
+      {/* Painel de Segurança */}
+      {showSecurity && (
+        <SecurityPanel
+          onClose={() => setShowSecurity(false)}
+          apiUrl={apiUrl}
+          isSRE={isSRE}
+        />
+      )}
 
       {/* Modal de configuração */}
       <ConfigModal

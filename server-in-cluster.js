@@ -947,6 +947,188 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/incident-timeline/:namespace — timeline de incidentes (Squad) ────────
+  const timelineMatch = url.pathname.match(/^\/api\/incident-timeline\/([^/]+)$/);
+  if (timelineMatch) {
+    const [, namespace] = timelineMatch;
+    const authResult = requireAuth(req);
+    if (!authResult.ok) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Unauthorized" })); return; }
+    if (!authResult.user.isSRE && authResult.user.namespaces && !authResult.user.namespaces.includes(namespace)) {
+      res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
+    }
+    try {
+      const limit = parseInt(url.searchParams.get("limit") || "300");
+      const hours = parseInt(url.searchParams.get("hours") || "24");
+      const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+      const allDeployEvts = getAllDeploymentEvents(limit).filter(e => e.namespace === namespace && e.recorded_at >= cutoff);
+      const allPodEvts = getAllPodStatusEvents(limit, null, namespace).filter(e => e.recorded_at >= cutoff);
+      const deployItems = allDeployEvts.map(e => ({
+        id: `d-${e.id}`,
+        kind: "deploy",
+        type: e.event_type,
+        name: e.deploy_name,
+        namespace: e.namespace,
+        fromRevision: e.from_revision,
+        toRevision: e.to_revision,
+        fromImage: e.from_image,
+        toImage: e.to_image,
+        message: e.message || "",
+        reason: e.reason || "",
+        ts: e.recorded_at,
+        severity: ["RolloutFailed","Degraded"].includes(e.event_type) ? "critical" :
+                  ["RolloutStarted","Progressing"].includes(e.event_type) ? "warning" : "info",
+      }));
+      const podItems = allPodEvts.map(e => ({
+        id: `p-${e.id}`,
+        kind: "pod",
+        type: e.to_status,
+        name: e.pod_name,
+        namespace: e.namespace,
+        fromStatus: e.from_status,
+        toStatus: e.to_status,
+        message: `${e.from_status} → ${e.to_status}`,
+        ts: e.recorded_at,
+        severity: e.to_status === "critical" ? "critical" : e.to_status === "warning" ? "warning" : "info",
+      }));
+      const items = [...deployItems, ...podItems].sort((a, b) => b.ts.localeCompare(a.ts));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ items, namespace, hours, timestamp: Date.now() }));
+    } catch (err) {
+      console.error("[error] /api/incident-timeline:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+
+  // ── /api/app-health/:namespace — saúde das aplicações por deployment (Squad) ─
+  const appHealthMatch = url.pathname.match(/^\/api\/app-health\/([^/]+)$/);
+  if (appHealthMatch) {
+    const [, namespace] = appHealthMatch;
+    const authResult = requireAuth(req);
+    if (!authResult.ok) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Unauthorized" })); return; }
+    if (!authResult.user.isSRE && authResult.user.namespaces && !authResult.user.namespaces.includes(namespace)) {
+      res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
+    }
+    try {
+      // Busca pods do namespace via K8s API
+      const podsRes = await k8sRequest(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods`);
+      const pods = (podsRes.body?.items || []);
+
+      // Busca deployments do namespace
+      const deploysRes = await k8sRequest(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments`);
+      const deployments = (deploysRes.body?.items || []);
+
+      // Busca eventos de pod do banco (últimas 24h) para calcular error rate
+      const podEvts = getAllPodStatusEvents(500, null, namespace);
+      const now = Date.now();
+      const cutoff24h = new Date(now - 24 * 3600 * 1000).toISOString();
+      const recentEvts = podEvts.filter(e => e.recorded_at >= cutoff24h);
+
+      // Busca eventos de deploy do banco (últimas 24h)
+      const deployEvts = getAllDeploymentEvents(200).filter(e => e.namespace === namespace && e.recorded_at >= cutoff24h);
+
+      // Agrupa pods por deployment
+      const deployMap = {};
+      for (const p of pods) {
+        const ownerRefs = p.metadata?.ownerReferences || [];
+        const rsOwner = ownerRefs.find(r => r.kind === "ReplicaSet");
+        let deployName = "";
+        if (rsOwner) {
+          const parts = rsOwner.name.split("-");
+          deployName = parts.length > 1 ? parts.slice(0, -1).join("-") : rsOwner.name;
+        }
+        if (!deployName) continue;
+        if (!deployMap[deployName]) deployMap[deployName] = { pods: [], events: [], deployEvents: [] };
+        deployMap[deployName].pods.push(p);
+      }
+
+      // Associa eventos de pod aos deployments
+      for (const evt of recentEvts) {
+        // Tenta associar pelo nome do pod ao deployment
+        for (const [dName, data] of Object.entries(deployMap)) {
+          if (data.pods.some(p => p.metadata.name === evt.pod_name)) {
+            data.events.push(evt);
+            break;
+          }
+        }
+      }
+
+      // Associa eventos de deploy
+      for (const evt of deployEvts) {
+        if (deployMap[evt.deploy_name]) {
+          deployMap[evt.deploy_name].deployEvents.push(evt);
+        }
+      }
+
+      // Calcula métricas por deployment
+      const apps = deployments.map(d => {
+        const dName = d.metadata.name;
+        const status = d.status || {};
+        const desired = status.replicas || d.spec?.replicas || 0;
+        const ready = status.readyReplicas || 0;
+        const available = status.availableReplicas || 0;
+        const unavailable = status.unavailableReplicas || 0;
+        const data = deployMap[dName] || { pods: [], events: [], deployEvents: [] };
+
+        // Availability = readyReplicas / desiredReplicas * 100
+        const availability = desired > 0 ? Math.round((ready / desired) * 100) : (ready > 0 ? 100 : 0);
+
+        // Restarts totais dos pods do deployment
+        let totalRestarts = 0;
+        for (const p of data.pods) {
+          const cs = p.status?.containerStatuses || [];
+          totalRestarts += cs.reduce((acc, c) => acc + (c.restartCount || 0), 0);
+        }
+
+        // Error rate: % de transições para critical nas últimas 24h
+        const criticalEvts = data.events.filter(e => e.to_status === "critical").length;
+        const totalEvts = data.events.length;
+        const errorRate = totalEvts > 0 ? Math.round((criticalEvts / totalEvts) * 100) : 0;
+
+        // Status geral
+        let health = "healthy";
+        if (availability < 50 || unavailable > 0) health = "critical";
+        else if (availability < 100 || totalRestarts > 5 || errorRate > 20) health = "warning";
+
+        // Último deploy
+        const lastDeploy = data.deployEvents.sort((a, b) => b.recorded_at.localeCompare(a.recorded_at))[0];
+
+        // Imagem atual (primeiro pod)
+        const firstPod = data.pods[0];
+        const mainImage = firstPod?.spec?.containers?.[0]?.image || "";
+
+        return {
+          name: dName,
+          namespace,
+          health,
+          availability,
+          errorRate,
+          totalRestarts,
+          replicas: { desired, ready, available, unavailable },
+          podCount: data.pods.length,
+          mainImage,
+          lastDeploy: lastDeploy ? {
+            type: lastDeploy.event_type,
+            ts: lastDeploy.recorded_at,
+            toImage: lastDeploy.to_image,
+            toRevision: lastDeploy.to_revision,
+          } : null,
+          recentCriticalEvents: criticalEvts,
+        };
+      });
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ apps, namespace, timestamp: Date.now() }));
+    } catch (err) {
+      console.error("[error] /api/app-health:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
   if (logsMatch) {

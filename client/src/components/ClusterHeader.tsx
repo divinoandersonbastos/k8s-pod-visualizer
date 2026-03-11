@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Zap, BookOpen } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Zap, BookOpen, Clock } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -36,6 +36,9 @@ interface ClusterHeaderProps {
   onShowNamespaceEvents?: () => void;
   namespaceEventWarningCount?: number;
   onShowDevQuickInfo?: () => void;
+  onShowIncidentTimeline?: () => void;
+  incidentCriticalCount?: number;
+  onShowAppHealth?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
   currentUser?: { displayName?: string; username: string; role: string };
@@ -67,6 +70,9 @@ export function ClusterHeader({
   onShowNamespaceEvents,
   namespaceEventWarningCount = 0,
   onShowDevQuickInfo,
+  onShowIncidentTimeline,
+  incidentCriticalCount = 0,
+  onShowAppHealth,
   onLogout,
   isSRE,
   currentUser,
@@ -465,6 +471,40 @@ export function ClusterHeader({
             style={{ color: "oklch(0.65 0.18 200)" }}
           >
             <BookOpen size={14} />
+          </button>
+        )}
+
+        {onShowIncidentTimeline && (
+          <button
+            onClick={onShowIncidentTimeline}
+            className="relative p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Timeline de Incidentes"
+            style={{ color: incidentCriticalCount > 0 ? "oklch(0.78 0.22 25)" : "oklch(0.65 0.18 50)" }}
+          >
+            <Clock size={14} />
+            {incidentCriticalCount > 0 && (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-mono font-bold flex items-center justify-center animate-pulse"
+                style={{
+                  background: "oklch(0.62 0.22 25)",
+                  color: "oklch(0.98 0 0)",
+                  boxShadow: "0 0 6px oklch(0.62 0.22 25 / 0.70)",
+                }}
+              >
+                {incidentCriticalCount > 99 ? "99+" : incidentCriticalCount}
+              </span>
+            )}
+          </button>
+        )}
+
+        {onShowAppHealth && (
+          <button
+            onClick={onShowAppHealth}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="App Health — Availability, Error Rate, Restarts"
+            style={{ color: "oklch(0.65 0.22 142)" }}
+          >
+            <Activity size={14} />
           </button>
         )}
 

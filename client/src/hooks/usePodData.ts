@@ -47,6 +47,25 @@ export interface PodAlert {
   timestamp: Date;
 }
 
+export interface ContainerProbe {
+  type: "httpGet" | "tcpSocket" | "exec" | "unknown";
+  path: string;
+  port: string | number;
+  initialDelaySeconds: number;
+  periodSeconds: number;
+}
+
+export interface ContainerDetail {
+  name: string;
+  image: string;
+  ready: boolean;
+  restarts: number;
+  state: string;
+  stateReason: string;
+  readinessProbe: ContainerProbe | null;
+  livenessProbe: ContainerProbe | null;
+}
+
 export interface PodMetrics {
   id: string;
   name: string;
@@ -63,11 +82,15 @@ export interface PodMetrics {
   age: string;
   containers: number;
   containerNames: string[];
+  containersDetail?: ContainerDetail[];
   ready: number;
   labels: Record<string, string>;
   deploymentName: string;
   resources: PodResources;
   alerts: PodAlert[];
+  mainImage?: string;
+  startTime?: string | null;
+  podIP?: string;
   x?: number;
   y?: number;
   vx?: number;
@@ -185,14 +208,18 @@ function apiPodToMetrics(raw: Record<string, unknown>, idx: number): PodMetrics 
     memoryUsage,
     memoryLimit,
     memoryPercent,
-    restarts:        0,
+    restarts:        typeof raw.restarts === "number" ? raw.restarts : 0,
     age:             "—",
     containers:      Array.isArray(raw.containerNames) ? (raw.containerNames as string[]).length : 1,
     containerNames:  Array.isArray(raw.containerNames) ? (raw.containerNames as string[]) : [String(raw.name ?? "app")],
+    containersDetail: Array.isArray(raw.containersDetail) ? (raw.containersDetail as ContainerDetail[]) : undefined,
     ready:           1,
     labels:          (raw.labels as Record<string, string>) || {},
     deploymentName:  String(raw.deploymentName ?? ""),
     resources,
+    mainImage:       typeof raw.mainImage === "string" ? raw.mainImage : undefined,
+    startTime:       typeof raw.startTime === "string" ? raw.startTime : null,
+    podIP:           typeof raw.podIP === "string" ? raw.podIP : undefined,
   };
 
   return { ...podBase, alerts: computePodAlerts(podBase) };

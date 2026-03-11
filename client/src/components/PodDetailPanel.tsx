@@ -12,6 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
+  Copy, Check, Network, Container, ShieldCheck, ShieldAlert,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
@@ -67,9 +68,31 @@ function countEventsForPod(podId: string, getEventsForPod?: (id: string) => unkn
   return getEventsForPod(podId).length;
 }
 
+function formatAge(startTime: string | null | undefined): string {
+  if (!startTime) return "—";
+  const diff = Date.now() - new Date(startTime).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ${m % 60}m`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${h % 24}h`;
+}
+
 export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [eventCount, setEventCount] = useState(0);
+  const [copied, setCopied] = useState(false);
+
+  function copyPodName() {
+    if (!pod) return;
+    navigator.clipboard.writeText(pod.name).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
 
   // Reset tab ao trocar de pod
   const [lastPodId, setLastPodId] = useState<string | null>(null);
@@ -382,21 +405,99 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                   {/* Informações gerais */}
                   <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
                   <div className="space-y-3">
-                    <div className="text-[10px] text-slate-500 uppercase tracking-widest">Informações</div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-[10px] text-slate-500 uppercase tracking-widest">Informações</div>
+                      <button
+                        onClick={copyPodName}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono transition-all"
+                        style={{
+                          background: copied ? "oklch(0.72 0.18 142 / 0.15)" : "oklch(0.18 0.025 250)",
+                          border: `1px solid ${copied ? "oklch(0.72 0.18 142 / 0.4)" : "oklch(0.28 0.04 250)"}`,
+                          color: copied ? "oklch(0.72 0.18 142)" : "oklch(0.55 0.012 250)",
+                        }}
+                      >
+                        {copied ? <Check size={10} /> : <Copy size={10} />}
+                        {copied ? "Copiado!" : "Copiar nome"}
+                      </button>
+                    </div>
                     {[
                       { icon: <Box size={13} />,      label: "Namespace",  value: pod.namespace },
                       { icon: <Server size={13} />,   label: "Node",       value: pod.node },
-                      { icon: <RefreshCw size={13} />,label: "Restarts",   value: String(pod.restarts) },
-                      { icon: <Clock size={13} />,    label: "Idade",      value: pod.age },
+                      { icon: <RefreshCw size={13} />,label: "Restarts",   value: String(pod.restarts), color: pod.restarts > 5 ? "oklch(0.62 0.22 25)" : pod.restarts > 0 ? "oklch(0.72 0.18 50)" : undefined },
+                      { icon: <Clock size={13} />,    label: "Idade",      value: pod.startTime ? formatAge(pod.startTime) : pod.age },
+                      { icon: <Network size={13} />,  label: "Pod IP",     value: pod.podIP || "—" },
                       { icon: <Box size={13} />,      label: "Containers", value: `${pod.ready}/${pod.containers} prontos` },
-                    ].map(({ icon, label, value }) => (
+                    ].map(({ icon, label, value, color }) => (
                       <div key={label} className="flex items-center gap-3">
                         <span className="text-slate-600 shrink-0">{icon}</span>
                         <span className="text-slate-500 text-xs w-24 shrink-0">{label}</span>
-                        <span className="font-mono text-xs text-slate-200 truncate">{value}</span>
+                        <span className="font-mono text-xs truncate" style={{ color: color || "oklch(0.80 0.012 250)" }}>{value}</span>
                       </div>
                     ))}
                   </div>
+
+                  {/* Imagem do container principal */}
+                  {pod.mainImage && (
+                    <div className="space-y-1.5">
+                      <div className="flex items-center gap-2 text-[10px] text-slate-500 uppercase tracking-widest">
+                        <Container size={11} />Imagem
+                      </div>
+                      <div
+                        className="font-mono text-[10px] px-2 py-1.5 rounded break-all"
+                        style={{ background: "oklch(0.14 0.018 250)", border: "1px solid oklch(0.22 0.03 250)", color: "oklch(0.65 0.15 200)" }}
+                      >
+                        {pod.mainImage}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Containers com probes */}
+                  {pod.containersDetail && pod.containersDetail.length > 0 && (
+                    <>
+                      <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+                      <div className="space-y-2">
+                        <div className="text-[10px] text-slate-500 uppercase tracking-widest">Containers</div>
+                        {pod.containersDetail.map((c) => (
+                          <div key={c.name} className="rounded-lg p-2.5 space-y-2" style={{ background: "oklch(0.14 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                            <div className="flex items-center justify-between">
+                              <span className="font-mono text-xs font-semibold" style={{ color: "oklch(0.80 0.012 250)" }}>{c.name}</span>
+                              <div className="flex items-center gap-1.5">
+                                {c.ready ? (
+                                  <span className="flex items-center gap-1 text-[9px]" style={{ color: "oklch(0.72 0.18 142)" }}>
+                                    <ShieldCheck size={9} />Ready
+                                  </span>
+                                ) : (
+                                  <span className="flex items-center gap-1 text-[9px]" style={{ color: "oklch(0.62 0.22 25)" }}>
+                                    <ShieldAlert size={9} />{c.stateReason || "Not Ready"}
+                                  </span>
+                                )}
+                                {c.restarts > 0 && (
+                                  <span className="text-[9px] font-mono px-1 rounded" style={{ background: c.restarts > 5 ? "oklch(0.62 0.22 25 / 0.2)" : "oklch(0.72 0.18 50 / 0.15)", color: c.restarts > 5 ? "oklch(0.62 0.22 25)" : "oklch(0.72 0.18 50)" }}>
+                                    {c.restarts}↺
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="font-mono text-[9px] truncate" style={{ color: "oklch(0.50 0.12 200)" }}>{c.image}</div>
+                            {(c.readinessProbe || c.livenessProbe) && (
+                              <div className="flex flex-col gap-1">
+                                {c.readinessProbe && (
+                                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.50 0.01 250)" }}>
+                                    <span style={{ color: "oklch(0.60 0.15 142)" }}>readiness</span> {c.readinessProbe.type}{c.readinessProbe.path ? `:${c.readinessProbe.path}` : c.readinessProbe.port ? `:${c.readinessProbe.port}` : ""} every {c.readinessProbe.periodSeconds}s
+                                  </div>
+                                )}
+                                {c.livenessProbe && (
+                                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.50 0.01 250)" }}>
+                                    <span style={{ color: "oklch(0.60 0.15 50)" }}>liveness</span> {c.livenessProbe.type}{c.livenessProbe.path ? `:${c.livenessProbe.path}` : c.livenessProbe.port ? `:${c.livenessProbe.port}` : ""} every {c.livenessProbe.periodSeconds}s
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
 
                   {/* Labels */}
                   {Object.keys(pod.labels).length > 0 && (

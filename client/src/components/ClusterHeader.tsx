@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Zap, BookOpen, Clock } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Zap, BookOpen, Clock, FolderOpen, ChevronDown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -45,6 +45,9 @@ interface ClusterHeaderProps {
   clusterName?: string;
   statusFilter: StatusFilter;
   onStatusFilterChange: (f: StatusFilter) => void;
+  activeNamespace?: string;
+  availableNamespaces?: string[];
+  onNamespaceChange?: (ns: string) => void;
 }
 
 export function ClusterHeader({
@@ -79,8 +82,12 @@ export function ClusterHeader({
   clusterName,
   statusFilter,
   onStatusFilterChange,
+  activeNamespace,
+  availableNamespaces = [],
+  onNamespaceChange,
 }: ClusterHeaderProps) {
   const [showInfo, setShowInfo] = useState(false);
+  const [showNsDropdown, setShowNsDropdown] = useState(false);
 
   const criticalCount = stats?.criticalPods ?? 0;
   const warningCount  = stats?.warningPods  ?? 0;
@@ -251,6 +258,72 @@ export function ClusterHeader({
             <span className="text-xs font-mono font-semibold" style={{ color: "oklch(0.72 0.18 200)" }}>
               {clusterName}
             </span>
+          </div>
+        </>
+      )}
+
+      {/* Indicador de namespace ativo */}
+      {activeNamespace && (
+        <>
+          <div className="hidden md:block w-px h-5 shrink-0" style={{ background: "oklch(0.28 0.04 250)" }} />
+          <div className="relative hidden md:flex items-center shrink-0">
+            <button
+              onClick={() => availableNamespaces.length > 1 && setShowNsDropdown((v) => !v)}
+              className="flex items-center gap-1.5 px-2 py-1 rounded-lg transition-all"
+              style={{
+                background: "oklch(0.55 0.22 260 / 0.10)",
+                border: "1px solid oklch(0.55 0.22 260 / 0.28)",
+                cursor: availableNamespaces.length > 1 ? "pointer" : "default",
+              }}
+              title={availableNamespaces.length > 1 ? "Trocar namespace" : `Namespace: ${activeNamespace}`}
+            >
+              <FolderOpen size={11} style={{ color: "oklch(0.65 0.18 260)" }} />
+              <span className="text-[10px] font-mono font-semibold" style={{ color: "oklch(0.72 0.18 260)" }}>
+                {activeNamespace}
+              </span>
+              {availableNamespaces.length > 1 && (
+                <ChevronDown size={10} style={{ color: "oklch(0.50 0.12 260)" }} />
+              )}
+            </button>
+
+            {/* Dropdown de namespaces */}
+            <AnimatePresence>
+              {showNsDropdown && availableNamespaces.length > 1 && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4, scale: 0.95 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -4, scale: 0.95 }}
+                  transition={{ duration: 0.12 }}
+                  className="absolute top-full mt-1 left-0 z-50 rounded-lg py-1 shadow-2xl min-w-[160px]"
+                  style={{
+                    background: "oklch(0.14 0.02 250 / 0.97)",
+                    border: "1px solid oklch(0.28 0.04 250)",
+                    backdropFilter: "blur(12px)",
+                  }}
+                >
+                  {availableNamespaces.map((ns) => (
+                    <button
+                      key={ns}
+                      onClick={() => {
+                        onNamespaceChange?.(ns);
+                        setShowNsDropdown(false);
+                      }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-mono transition-all hover:bg-white/5"
+                      style={{
+                        color: ns === activeNamespace ? "oklch(0.72 0.18 260)" : "oklch(0.60 0.01 250)",
+                        background: ns === activeNamespace ? "oklch(0.55 0.22 260 / 0.12)" : "transparent",
+                      }}
+                    >
+                      <FolderOpen size={10} />
+                      {ns}
+                      {ns === activeNamespace && (
+                        <span className="ml-auto text-[9px]" style={{ color: "oklch(0.55 0.18 260)" }}>ativo</span>
+                      )}
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </>
       )}

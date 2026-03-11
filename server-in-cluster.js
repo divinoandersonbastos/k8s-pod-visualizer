@@ -216,6 +216,36 @@ async function getPodsWithMetrics() {
         const directOwner = ownerRefs[0];
         if (directOwner) deploymentName = `[${directOwner.kind}] ${directOwner.name}`;
       }
+      // Campos enriquecidos para o Squad
+      const containerStatuses = p.status?.containerStatuses || [];
+      const totalRestarts = containerStatuses.reduce((acc, c) => acc + (c.restartCount || 0), 0);
+      const mainImage = allContainers[0]?.image || "";
+      // Monta lista de containers com imagem, restarts e probe status
+      const containersDetail = allContainers.map((c) => {
+        const cs = containerStatuses.find((s) => s.name === c.name) || {};
+        return {
+          name:    c.name,
+          image:   c.image || "",
+          ready:   cs.ready || false,
+          restarts: cs.restartCount || 0,
+          state:   cs.state ? Object.keys(cs.state)[0] : "unknown",
+          stateReason: cs.state?.waiting?.reason || cs.state?.terminated?.reason || "",
+          readinessProbe: c.readinessProbe ? {
+            type: c.readinessProbe.httpGet ? "httpGet" : c.readinessProbe.tcpSocket ? "tcpSocket" : c.readinessProbe.exec ? "exec" : "unknown",
+            path: c.readinessProbe.httpGet?.path || "",
+            port: c.readinessProbe.httpGet?.port || c.readinessProbe.tcpSocket?.port || "",
+            initialDelaySeconds: c.readinessProbe.initialDelaySeconds || 0,
+            periodSeconds: c.readinessProbe.periodSeconds || 10,
+          } : null,
+          livenessProbe: c.livenessProbe ? {
+            type: c.livenessProbe.httpGet ? "httpGet" : c.livenessProbe.tcpSocket ? "tcpSocket" : c.livenessProbe.exec ? "exec" : "unknown",
+            path: c.livenessProbe.httpGet?.path || "",
+            port: c.livenessProbe.httpGet?.port || c.livenessProbe.tcpSocket?.port || "",
+            initialDelaySeconds: c.livenessProbe.initialDelaySeconds || 0,
+            periodSeconds: c.livenessProbe.periodSeconds || 10,
+          } : null,
+        };
+      });
       return {
         name:           p.metadata.name,
         namespace:      p.metadata.namespace,
@@ -224,8 +254,13 @@ async function getPodsWithMetrics() {
         cpuUsage:       usage.cpu,
         memoryUsage:    usage.mem,
         containerNames,
+        containersDetail,
         deploymentName,
         labels:         p.metadata?.labels || {},
+        restarts:       totalRestarts,
+        mainImage,
+        startTime:      p.status?.startTime || null,
+        podIP:          p.status?.podIP || "",
         resources: {
           requests: {
             cpu:    totalCpuReq,

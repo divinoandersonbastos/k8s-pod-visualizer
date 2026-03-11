@@ -278,6 +278,13 @@ export default function Home() {
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
+        activeNamespace={!isSRE && user?.namespaces && user.namespaces.length > 0
+          ? (selectedNamespace || user.namespaces[0])
+          : selectedNamespace || undefined}
+        availableNamespaces={!isSRE && user?.namespaces && user.namespaces.length > 0
+          ? user.namespaces
+          : Object.keys(nsCounts).sort()}
+        onNamespaceChange={setSelectedNamespace}
       />
 
       {/* Body */}

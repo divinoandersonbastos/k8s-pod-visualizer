@@ -1497,80 +1497,78 @@ const server = http.createServer(async (req, res) => {
 
   // ── /api/security/summary ─────────────────────────────────────────────────
   if (url.pathname === "/api/security/summary") {
-    const authed = await requireAuth(req, res);
-    if (!authed) return;
-    try {
-      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
-      const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
-      const pods = podsData.items || [];
-      let rootCount = 0, privCount = 0;
-      for (const pod of pods) {
-        const podSec = pod.spec?.securityContext || {};
-        for (const c of (pod.spec?.containers || [])) {
-          const cSec = c.securityContext || {};
-          if (cSec.privileged) privCount++;
-          const runAsUser = cSec.runAsUser ?? podSec.runAsUser;
-          const runAsNonRoot = cSec.runAsNonRoot ?? podSec.runAsNonRoot;
-          if (runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined)) rootCount++;
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+        const pods = podsData.items || [];
+        let rootCount = 0, privCount = 0;
+        for (const pod of pods) {
+          const podSec = pod.spec?.securityContext || {};
+          for (const c of (pod.spec?.containers || [])) {
+            const cSec = c.securityContext || {};
+            if (cSec.privileged) privCount++;
+            const runAsUser = cSec.runAsUser ?? podSec.runAsUser;
+            const runAsNonRoot = cSec.runAsNonRoot ?? podSec.runAsNonRoot;
+            if (runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined)) rootCount++;
+          }
         }
+        const npData = await k8sGet(`/apis/networking.k8s.io/v1/networkpolicies${nsFilter}`).catch(() => ({ items: [] }));
+        const policies = npData.items || [];
+        const nsSet = new Set(pods.map(p => p.metadata?.namespace).filter(Boolean));
+        const policyNs = new Set(policies.map(p => p.metadata?.namespace));
+        const nsWithoutPolicy = [...nsSet].filter(ns => !policyNs.has(ns)).length;
+        const totalIssues = rootCount + privCount + nsWithoutPolicy;
+        const severity = privCount > 0 ? "CRITICAL" : rootCount > 5 ? "HIGH" : totalIssues > 0 ? "MEDIUM" : "OK";
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ severity, totalIssues, rootContainers: rootCount, privilegedContainers: privCount, nsWithoutNetworkPolicy: nsWithoutPolicy, checkedAt: new Date().toISOString() }));
+      } catch (err) {
+        if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
       }
-      const npData = await k8sGet(`/apis/networking.k8s.io/v1/networkpolicies${nsFilter}`).catch(() => ({ items: [] }));
-      const policies = npData.items || [];
-      const nsSet = new Set(pods.map(p => p.metadata?.namespace).filter(Boolean));
-      const policyNs = new Set(policies.map(p => p.metadata?.namespace));
-      const nsWithoutPolicy = [...nsSet].filter(ns => !policyNs.has(ns)).length;
-      const totalIssues = rootCount + privCount + nsWithoutPolicy;
-      const severity = privCount > 0 ? "CRITICAL" : rootCount > 5 ? "HIGH" : totalIssues > 0 ? "MEDIUM" : "OK";
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ severity, totalIssues, rootContainers: rootCount, privilegedContainers: privCount, nsWithoutNetworkPolicy: nsWithoutPolicy, checkedAt: new Date().toISOString() }));
-    } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    });
     return;
   }
 
   // ── /api/security/root-containers ─────────────────────────────────────────
   if (url.pathname === "/api/security/root-containers") {
-    const authed = await requireAuth(req, res);
-    if (!authed) return;
-    try {
-      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
-      const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
-      const pods = podsData.items || [];
-      const rootContainers = [];
-      for (const pod of pods) {
-        const podSec = pod.spec?.securityContext || {};
-        const podRunAsNonRoot = podSec.runAsNonRoot === true;
-        const podRunAsUser = podSec.runAsUser;
-        for (const c of (pod.spec?.containers || [])) {
-          const cSec = c.securityContext || {};
-          const runAsUser = cSec.runAsUser ?? podRunAsUser;
-          const runAsNonRoot = cSec.runAsNonRoot ?? podRunAsNonRoot;
-          const privileged = cSec.privileged === true;
-          const allowPrivEsc = cSec.allowPrivilegeEscalation !== false;
-          const readOnlyRoot = cSec.readOnlyRootFilesystem === true;
-          const isRoot = runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined);
-          const risk = privileged ? "CRITICAL" : isRoot ? "HIGH" : allowPrivEsc ? "MEDIUM" : "LOW";
-          if (isRoot || privileged || allowPrivEsc) {
-            rootContainers.push({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, container: c.name, image: c.image, runAsUser, runAsNonRoot, privileged, allowPrivilegeEscalation: allowPrivEsc, readOnlyRootFilesystem: readOnlyRoot, risk, reason: privileged ? "Container privilegiado" : isRoot ? "Rodando como root (uid 0)" : "Permite escalação de privilégio" });
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+        const pods = podsData.items || [];
+        const rootContainers = [];
+        for (const pod of pods) {
+          const podSec = pod.spec?.securityContext || {};
+          const podRunAsNonRoot = podSec.runAsNonRoot === true;
+          const podRunAsUser = podSec.runAsUser;
+          for (const c of (pod.spec?.containers || [])) {
+            const cSec = c.securityContext || {};
+            const runAsUser = cSec.runAsUser ?? podRunAsUser;
+            const runAsNonRoot = cSec.runAsNonRoot ?? podRunAsNonRoot;
+            const privileged = cSec.privileged === true;
+            const allowPrivEsc = cSec.allowPrivilegeEscalation !== false;
+            const readOnlyRoot = cSec.readOnlyRootFilesystem === true;
+            const isRoot = runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined);
+            const risk = privileged ? "CRITICAL" : isRoot ? "HIGH" : allowPrivEsc ? "MEDIUM" : "LOW";
+            if (isRoot || privileged || allowPrivEsc) {
+              rootContainers.push({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, container: c.name, image: c.image, runAsUser, runAsNonRoot, privileged, allowPrivilegeEscalation: allowPrivEsc, readOnlyRootFilesystem: readOnlyRoot, risk, reason: privileged ? "Container privilegiado" : isRoot ? "Rodando como root (uid 0)" : "Permite escalação de privilégio" });
+            }
           }
         }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ containers: rootContainers, total: rootContainers.length, checkedAt: new Date().toISOString() }));
+      } catch (err) {
+        if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
       }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ containers: rootContainers, total: rootContainers.length, checkedAt: new Date().toISOString() }));
-    } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    });
     return;
   }
 
   // ── /api/security/rbac (SRE only) ────────────────────────────────────────
   if (url.pathname === "/api/security/rbac") {
-    const authed = await requireAuth(req, res);
-    if (!authed) return;
-    if (authed.role !== "sre") { res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Apenas SRE" })); return; }
+    requireSRE(req, res, async () => {
     try {
       const [crbData, rbData, crData] = await Promise.all([
         k8sGet("/apis/rbac.authorization.k8s.io/v1/clusterrolebindings"),
@@ -1604,107 +1602,107 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ findings, total: findings.length, checkedAt: new Date().toISOString() }));
     } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
+      if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
     }
+    });
     return;
   }
 
   // ── /api/security/secrets ─────────────────────────────────────────────────
   if (url.pathname === "/api/security/secrets") {
-    const authed = await requireAuth(req, res);
-    if (!authed) return;
-    try {
-      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
-      const [podsData, secretsData] = await Promise.all([
-        k8sGet(`/api/v1/pods${nsFilter}`),
-        k8sGet(`/api/v1/secrets${nsFilter}`).catch(() => ({ items: [] })),
-      ]);
-      const pods = podsData.items || []; const secrets = secretsData.items || [];
-      const findings = [];
-      for (const pod of pods) {
-        for (const c of (pod.spec?.containers || [])) {
-          const envSecrets = [];
-          for (const env of (c.env || [])) { if (env.valueFrom?.secretKeyRef) envSecrets.push({ type: "env", secretName: env.valueFrom.secretKeyRef.name, key: env.valueFrom.secretKeyRef.key, envVar: env.name }); }
-          for (const envFrom of (c.envFrom || [])) { if (envFrom.secretRef) envSecrets.push({ type: "envFrom", secretName: envFrom.secretRef.name, key: "(todos os keys)", envVar: "(todas as vars)" }); }
-          if (envSecrets.length > 0) findings.push({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, container: c.name, secrets: envSecrets, risk: "MEDIUM", reason: "Secret exposto como variável de ambiente" });
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const [podsData, secretsData] = await Promise.all([
+          k8sGet(`/api/v1/pods${nsFilter}`),
+          k8sGet(`/api/v1/secrets${nsFilter}`).catch(() => ({ items: [] })),
+        ]);
+        const pods = podsData.items || []; const secrets = secretsData.items || [];
+        const findings = [];
+        for (const pod of pods) {
+          for (const c of (pod.spec?.containers || [])) {
+            const envSecrets = [];
+            for (const env of (c.env || [])) { if (env.valueFrom?.secretKeyRef) envSecrets.push({ type: "env", secretName: env.valueFrom.secretKeyRef.name, key: env.valueFrom.secretKeyRef.key, envVar: env.name }); }
+            for (const envFrom of (c.envFrom || [])) { if (envFrom.secretRef) envSecrets.push({ type: "envFrom", secretName: envFrom.secretRef.name, key: "(todos os keys)", envVar: "(todas as vars)" }); }
+            if (envSecrets.length > 0) findings.push({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, container: c.name, secrets: envSecrets, risk: "MEDIUM", reason: "Secret exposto como variável de ambiente" });
+          }
         }
+        const riskySecrets = [];
+        for (const secret of secrets) {
+          const type = secret.type || "Opaque";
+          const dataKeys = Object.keys(secret.data || {});
+          const sensitiveKeys = dataKeys.filter(k => /password|passwd|secret|token|key|credential|api.key|private/i.test(k));
+          if (sensitiveKeys.length > 0) riskySecrets.push({ namespace: secret.metadata?.namespace, name: secret.metadata?.name, type, sensitiveKeys, risk: type === "kubernetes.io/service-account-token" ? "HIGH" : "MEDIUM" });
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ envExposures: findings, riskySecrets, checkedAt: new Date().toISOString() }));
+      } catch (err) {
+        if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
       }
-      const riskySecrets = [];
-      for (const secret of secrets) {
-        const type = secret.type || "Opaque";
-        const dataKeys = Object.keys(secret.data || {});
-        const sensitiveKeys = dataKeys.filter(k => /password|passwd|secret|token|key|credential|api.key|private/i.test(k));
-        if (sensitiveKeys.length > 0) riskySecrets.push({ namespace: secret.metadata?.namespace, name: secret.metadata?.name, type, sensitiveKeys, risk: type === "kubernetes.io/service-account-token" ? "HIGH" : "MEDIUM" });
-      }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ envExposures: findings, riskySecrets, checkedAt: new Date().toISOString() }));
-    } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    });
     return;
   }
 
   // ── /api/security/network-policies ────────────────────────────────────────
   if (url.pathname === "/api/security/network-policies") {
-    const authed = await requireAuth(req, res);
-    if (!authed) return;
-    try {
-      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
-      const [podsData, npData] = await Promise.all([
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const [podsData, npData] = await Promise.all([
         k8sGet(`/api/v1/pods${nsFilter}`),
         k8sGet(`/apis/networking.k8s.io/v1/networkpolicies${nsFilter}`).catch(() => ({ items: [] })),
-      ]);
-      const pods = podsData.items || []; const policies = npData.items || [];
-      const policyByNs = {};
-      for (const np of policies) { const ns = np.metadata?.namespace; if (!policyByNs[ns]) policyByNs[ns] = []; policyByNs[ns].push(np); }
-      const nsSet = new Set(pods.map(p => p.metadata?.namespace).filter(Boolean));
-      const nsWithoutPolicy = [...nsSet].filter(ns => !policyByNs[ns] || policyByNs[ns].length === 0);
-      const permissivePolicies = [];
-      for (const np of policies) {
+        ]);
+        const pods = podsData.items || []; const policies = npData.items || [];
+        const policyByNs = {};
+        for (const np of policies) { const ns = np.metadata?.namespace; if (!policyByNs[ns]) policyByNs[ns] = []; policyByNs[ns].push(np); }
+        const nsSet = new Set(pods.map(p => p.metadata?.namespace).filter(Boolean));
+        const nsWithoutPolicy = [...nsSet].filter(ns => !policyByNs[ns] || policyByNs[ns].length === 0);
+        const permissivePolicies = [];
+        for (const np of policies) {
         const hasOpenIngress = (np.spec?.ingress || []).some(r => Object.keys(r).length === 0);
         const hasOpenEgress = (np.spec?.egress || []).some(r => Object.keys(r).length === 0);
         if (hasOpenIngress || hasOpenEgress) permissivePolicies.push({ namespace: np.metadata?.namespace, name: np.metadata?.name, openIngress: hasOpenIngress, openEgress: hasOpenEgress, risk: "HIGH", reason: `Política permissiva: ${[hasOpenIngress && "ingress aberto", hasOpenEgress && "egress aberto"].filter(Boolean).join(", ")}` });
-      }
-      const podsWithoutPolicy = pods.filter(pod => {
+        }
+        const podsWithoutPolicy = pods.filter(pod => {
         const ns = pod.metadata?.namespace; const podLabels = pod.metadata?.labels || {};
         const nsPolicies = policyByNs[ns] || [];
         if (nsPolicies.length === 0) return true;
         return !nsPolicies.some(np => { const sel = np.spec?.podSelector?.matchLabels || {}; if (Object.keys(sel).length === 0) return true; return Object.entries(sel).every(([k, v]) => podLabels[k] === v); });
-      }).map(pod => ({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, labels: pod.metadata?.labels || {}, risk: "MEDIUM", reason: "Pod sem NetworkPolicy cobrindo seus labels" }));
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ policies: policies.map(np => ({ namespace: np.metadata?.namespace, name: np.metadata?.name, podSelector: np.spec?.podSelector, ingressRules: (np.spec?.ingress || []).length, egressRules: (np.spec?.egress || []).length, policyTypes: np.spec?.policyTypes || [] })), nsWithoutPolicy, permissivePolicies, podsWithoutPolicy: podsWithoutPolicy.slice(0, 50), summary: { totalPolicies: policies.length, nsWithoutPolicy: nsWithoutPolicy.length, permissivePolicies: permissivePolicies.length, podsWithoutPolicy: podsWithoutPolicy.length }, checkedAt: new Date().toISOString() }));
-    } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+        }).map(pod => ({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, labels: pod.metadata?.labels || {}, risk: "MEDIUM", reason: "Pod sem NetworkPolicy cobrindo seus labels" }));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ policies: policies.map(np => ({ namespace: np.metadata?.namespace, name: np.metadata?.name, podSelector: np.spec?.podSelector, ingressRules: (np.spec?.ingress || []).length, egressRules: (np.spec?.egress || []).length, policyTypes: np.spec?.policyTypes || [] })), nsWithoutPolicy, permissivePolicies, podsWithoutPolicy: podsWithoutPolicy.slice(0, 50), summary: { totalPolicies: policies.length, nsWithoutPolicy: nsWithoutPolicy.length, permissivePolicies: permissivePolicies.length, podsWithoutPolicy: podsWithoutPolicy.length }, checkedAt: new Date().toISOString() }));
+      } catch (err) {
+        if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+      }
+    });
     return;
   }
 
   // ── /api/security/image-scan ───────────────────────────────────────────────
   if (url.pathname === "/api/security/image-scan") {
-    const authed = await requireAuth(req, res);
-    if (!authed) return;
-    try {
-      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
-      const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
-      const pods = podsData.items || [];
-      const imageSet = new Set();
-      for (const pod of pods) {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+        const pods = podsData.items || [];
+        const imageSet = new Set();
+        for (const pod of pods) {
         for (const c of (pod.spec?.containers || [])) { if (c.image) imageSet.add(c.image); }
         for (const c of (pod.spec?.initContainers || [])) { if (c.image) imageSet.add(c.image); }
-      }
-      const images = [...imageSet].slice(0, 30);
-      // Verifica se Trivy está disponível
-      let trivyAvailable = false;
-      try {
+        }
+        const images = [...imageSet].slice(0, 30);
+        // Verifica se Trivy está disponível
+        let trivyAvailable = false;
+        try {
         const { execSync } = await import('child_process');
         execSync('which trivy', { stdio: 'ignore' });
         trivyAvailable = true;
-      } catch { trivyAvailable = false; }
-      const results = [];
-      if (trivyAvailable) {
+        } catch { trivyAvailable = false; }
+        const results = [];
+        if (trivyAvailable) {
         const { exec } = await import('child_process');
         const { promisify } = await import('util');
         const execAsync = promisify(exec);
@@ -1725,15 +1723,15 @@ const server = http.createServer(async (req, res) => {
             results.push({ image, vulns: [], counts: {}, scanned: false, error: err.message });
           }
         }
-      } else {
+        } else {
         for (const image of images) results.push({ image, vulns: [], counts: {}, scanned: false, trivyMissing: true });
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ images: results, trivyAvailable, scannedAt: new Date().toISOString() }));
+      } catch (err) {
+        if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
       }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ images: results, trivyAvailable, scannedAt: new Date().toISOString() }));
-    } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    });
     return;
   }
 
@@ -1751,8 +1749,8 @@ const server = http.createServer(async (req, res) => {
     let body = "";
     req.on("data", (c) => { body += c; });
     req.on("end", async () => {
-      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      await handleSetup(req, res);
+        try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+        await handleSetup(req, res);
     });
     return;
   }
@@ -1760,8 +1758,8 @@ const server = http.createServer(async (req, res) => {
     let body = "";
     req.on("data", (c) => { body += c; });
     req.on("end", async () => {
-      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      await handleLogin(req, res);
+        try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+        await handleLogin(req, res);
     });
     return;
   }

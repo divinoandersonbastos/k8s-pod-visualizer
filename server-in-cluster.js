@@ -905,58 +905,56 @@ const server = http.createServer(async (req, res) => {
   const nsEventsMatch = url.pathname.match(/^\/api\/namespace-events\/([^/]+)$/);
   if (nsEventsMatch) {
     const [, namespace] = nsEventsMatch;
-    const authed = requireAuth(req, res);
-    if (!authed) return;
-    // Squad só pode ver eventos do próprio namespace
-    if (authed.role !== "sre" && !authed.namespaces.includes(namespace)) {
-      res.writeHead(403, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Acesso negado a este namespace" }));
-      return;
-    }
-    try {
-      const limit = parseInt(url.searchParams.get("limit") || "100");
-      const result = await k8sRequest(
-        `/api/v1/namespaces/${encodeURIComponent(namespace)}/events?limit=${limit}`
-      );
-      const raw = result.body?.items || [];
-      const items = raw.map((ev) => ({
-        uid:       ev.metadata?.uid,
-        name:      ev.metadata?.name,
-        namespace: ev.metadata?.namespace,
-        reason:    ev.reason,
-        message:   ev.message,
-        type:      ev.type,
-        count:     ev.count || 1,
-        firstTime: ev.firstTimestamp || ev.eventTime,
-        lastTime:  ev.lastTimestamp  || ev.eventTime,
-        involvedObject: {
-          kind:      ev.involvedObject?.kind,
-          name:      ev.involvedObject?.name,
-          namespace: ev.involvedObject?.namespace,
-        },
-        source: ev.source?.component,
-      }));
-      items.sort((a, b) => new Date(b.lastTime || 0) - new Date(a.lastTime || 0));
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ items, namespace, timestamp: Date.now() }));
-    } catch (err) {
-      console.error("[error] /api/namespace-events:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-    return;
+    return requireAuth(req, res, async () => {
+      // Squad só pode ver eventos do próprio namespace
+      if (req.user.role !== "sre" && !(req.user.namespaces || []).includes(namespace)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Acesso negado a este namespace" }));
+        return;
+      }
+      try {
+        const limit = parseInt(url.searchParams.get("limit") || "100");
+        const result = await k8sRequest(
+          `/api/v1/namespaces/${encodeURIComponent(namespace)}/events?limit=${limit}`
+        );
+        const raw = result.body?.items || [];
+        const items = raw.map((ev) => ({
+          uid:       ev.metadata?.uid,
+          name:      ev.metadata?.name,
+          namespace: ev.metadata?.namespace,
+          reason:    ev.reason,
+          message:   ev.message,
+          type:      ev.type,
+          count:     ev.count || 1,
+          firstTime: ev.firstTimestamp || ev.eventTime,
+          lastTime:  ev.lastTimestamp  || ev.eventTime,
+          involvedObject: {
+            kind:      ev.involvedObject?.kind,
+            name:      ev.involvedObject?.name,
+            namespace: ev.involvedObject?.namespace,
+          },
+          source: ev.source?.component,
+        }));
+        items.sort((a, b) => new Date(b.lastTime || 0) - new Date(a.lastTime || 0));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ items, namespace, timestamp: Date.now() }));
+      } catch (err) {
+        console.error("[error] /api/namespace-events:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
   }
 
   // ── /api/incident-timeline/:namespace — timeline de incidentes (Squad) ────────
   const timelineMatch = url.pathname.match(/^\/api\/incident-timeline\/([^/]+)$/);
   if (timelineMatch) {
     const [, namespace] = timelineMatch;
-    const authResult = requireAuth(req);
-    if (!authResult.ok) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Unauthorized" })); return; }
-    if (!authResult.user.isSRE && authResult.user.namespaces && !authResult.user.namespaces.includes(namespace)) {
-      res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
-    }
-    try {
+    return requireAuth(req, res, async () => {
+      if (req.user.role !== "sre" && !(req.user.namespaces || []).includes(namespace)) {
+        res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
+      }
+      try {
       const limit = parseInt(url.searchParams.get("limit") || "300");
       const hours = parseInt(url.searchParams.get("hours") || "24");
       const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
@@ -993,12 +991,12 @@ const server = http.createServer(async (req, res) => {
       const items = [...deployItems, ...podItems].sort((a, b) => b.ts.localeCompare(a.ts));
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ items, namespace, hours, timestamp: Date.now() }));
-    } catch (err) {
-      console.error("[error] /api/incident-timeline:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-    return;
+      } catch (err) {
+        console.error("[error] /api/incident-timeline:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
   }
 
 
@@ -1006,12 +1004,11 @@ const server = http.createServer(async (req, res) => {
   const appHealthMatch = url.pathname.match(/^\/api\/app-health\/([^/]+)$/);
   if (appHealthMatch) {
     const [, namespace] = appHealthMatch;
-    const authResult = requireAuth(req);
-    if (!authResult.ok) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Unauthorized" })); return; }
-    if (!authResult.user.isSRE && authResult.user.namespaces && !authResult.user.namespaces.includes(namespace)) {
-      res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
-    }
-    try {
+    return requireAuth(req, res, async () => {
+      if (req.user.role !== "sre" && !(req.user.namespaces || []).includes(namespace)) {
+        res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
+      }
+      try {
       // Busca pods do namespace via K8s API
       const podsRes = await k8sRequest(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods`);
       const pods = (podsRes.body?.items || []);
@@ -1121,12 +1118,12 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ apps, namespace, timestamp: Date.now() }));
-    } catch (err) {
-      console.error("[error] /api/app-health:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-    return;
+      } catch (err) {
+        console.error("[error] /api/app-health:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
   }
 
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────

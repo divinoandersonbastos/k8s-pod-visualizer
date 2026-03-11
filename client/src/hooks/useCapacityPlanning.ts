@@ -323,17 +323,29 @@ export function useCapacityPlanning({
         signal: AbortSignal.timeout(10_000),
         headers: _cpAuthHeaders(),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        // Tentar ler o corpo do erro para mensagem mais descritiva
+        let errMsg = `HTTP ${res.status}`;
+        try { const body = await res.json(); errMsg = body?.error || errMsg; } catch (_) {}
+        throw new Error(errMsg);
+      }
       const ct = res.headers.get("content-type") ?? "";
-      if (!ct.includes("application/json")) throw new Error("not-in-cluster");
-      if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) throw new Error(`HTTP ${res.status}`);
+      if (!ct.includes("application/json")) throw new Error("Resposta inesperada do servidor (não é JSON)");
       const json: CapacityData = await res.json();
       setData(json);
       setLastUpdated(new Date());
-    } catch {
-      // Fora do cluster: usa dados mock
-      setData(buildMockCapacity());
-      setLastUpdated(new Date());
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      // Só usa dados mock se for erro de rede (fora do cluster sem servidor)
+      // Para erros de auth/server, mostra o erro real
+      if (msg === "Failed to fetch" || msg === "network error" || msg.includes("ECONNREFUSED")) {
+        setData(buildMockCapacity());
+        setLastUpdated(new Date());
+      } else {
+        setError(msg);
+        // Mantém dados anteriores se existirem, senão usa mock como fallback
+        if (!data) setData(buildMockCapacity());
+      }
     } finally {
       setLoading(false);
     }

@@ -59,6 +59,7 @@ COPY --from=builder /app/dist/public ./public
 COPY --from=builder /app/server-in-cluster.js ./
 COPY --from=builder /app/k8s-metrics-proxy.js ./
 COPY --from=builder /app/db.js ./
+COPY --from=builder /app/auth.js ./
 
 # Copia o node_modules (necessário para better-sqlite3 e suas dependências nativas)
 COPY --from=builder /app/node_modules ./node_modules

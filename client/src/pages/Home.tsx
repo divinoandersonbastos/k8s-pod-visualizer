@@ -242,12 +242,12 @@ export default function Home() {
         onRefresh={refresh}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        onShowConfig={() => setShowConfig(true)}
+        onShowConfig={isSRE ? () => setShowConfig(true) : undefined}
         onShowAlerts={() => setShowAlerts(true)}
-        onShowEvents={() => setShowEvents(true)}
-        totalEvents={totalEvents}
-        onShowNodeMonitor={() => setShowNodeMonitor(true)}
-        nodeAlertCount={nodeMonitor.criticalCount + nodeMonitor.warningCount}
+        onShowEvents={isSRE ? () => setShowEvents(true) : undefined}
+        totalEvents={isSRE ? totalEvents : 0}
+        onShowNodeMonitor={isSRE ? () => setShowNodeMonitor(true) : undefined}
+        nodeAlertCount={isSRE ? nodeMonitor.criticalCount + nodeMonitor.warningCount : 0}
         onShowDeployMonitor={() => setShowDeployMonitor(true)}
         deployAlertCount={deployMonitor.alertCount}
         onShowCapacity={() => setShowCapacity(true)}
@@ -486,6 +486,7 @@ export default function Home() {
                 }}
                 apiUrl={apiUrl}
                 initialDeployment={deployMonitorTarget}
+                allowedNamespaces={!isSRE && user?.namespaces ? user.namespaces : undefined}
               />
             )}
           </AnimatePresence>

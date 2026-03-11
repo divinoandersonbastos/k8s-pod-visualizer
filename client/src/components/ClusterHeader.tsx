@@ -19,7 +19,7 @@ interface ClusterHeaderProps {
   onRefresh: () => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
-  onShowConfig: () => void;
+  onShowConfig?: () => void;
   onShowAlerts?: () => void;
   onShowEvents?: () => void;
   totalEvents?: number;
@@ -461,14 +461,16 @@ export function ClusterHeader({
           </button>
         )}
 
-        <button
-          onClick={onShowConfig}
-          className="p-2 rounded-lg transition-all hover:bg-white/5"
-          title="Configurações"
-          style={{ color: "oklch(0.55 0.015 250)" }}
-        >
-          <Settings size={14} />
-        </button>
+        {onShowConfig && (
+          <button
+            onClick={onShowConfig}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Configurações"
+            style={{ color: "oklch(0.55 0.015 250)" }}
+          >
+            <Settings size={14} />
+          </button>
+        )}
 
         {/* Badge de usuário + logout */}
         {currentUser && (

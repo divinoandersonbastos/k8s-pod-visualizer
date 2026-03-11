@@ -508,6 +508,8 @@ interface DeploymentMonitorPanelProps {
   apiUrl?: string;
   /** Nome do deployment a ser selecionado automaticamente ao abrir o painel */
   initialDeployment?: string;
+  /** Namespaces permitidos para o usuário Squad. Se vazio/undefined, exibe todos (SRE). */
+  allowedNamespaces?: string[];
 }
 
 const STATUS_FILTERS: { value: DeploymentRolloutStatus | ""; label: string }[] = [
@@ -519,7 +521,7 @@ const STATUS_FILTERS: { value: DeploymentRolloutStatus | ""; label: string }[] =
   { value: "Paused",      label: "Pausados" },
 ];
 
-export function DeploymentMonitorPanel({ onClose, apiUrl = "", initialDeployment = "" }: DeploymentMonitorPanelProps) {
+export function DeploymentMonitorPanel({ onClose, apiUrl = "", initialDeployment = "", allowedNamespaces }: DeploymentMonitorPanelProps) {
   const [search, setSearch]               = useState("");
   const [nsFilter, setNsFilter]           = useState("");
   const [statusFilter, setStatusFilter]   = useState<DeploymentRolloutStatus | "">("");
@@ -543,11 +545,15 @@ export function DeploymentMonitorPanel({ onClose, apiUrl = "", initialDeployment
     }
   }, [deployments, initialDeployment]);
 
-  // Namespaces únicos
-  const namespaces = Array.from(new Set(deployments.map((d) => d.namespace))).sort();
+  // Namespaces únicos (filtrados pelos permitidos para Squad)
+  const namespaces = Array.from(new Set(deployments.map((d) => d.namespace)))
+    .filter((ns) => !allowedNamespaces || allowedNamespaces.length === 0 || allowedNamespaces.includes(ns))
+    .sort();
 
   // Filtragem
   const filtered = deployments.filter((d) => {
+    // Restringe ao namespace do Squad se aplicável
+    if (allowedNamespaces && allowedNamespaces.length > 0 && !allowedNamespaces.includes(d.namespace)) return false;
     if (nsFilter     && d.namespace     !== nsFilter)     return false;
     if (statusFilter && d.rolloutStatus !== statusFilter) return false;
     if (search) {

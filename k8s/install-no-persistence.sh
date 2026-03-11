@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# K8s Pod Visualizer v2.0 — Script de Instalação SEM Persistência
+# K8s Pod Visualizer v3.0 — Script de Instalação SEM Persistência
 # =============================================================================
 # Uso:
 #   chmod +x install-no-persistence.sh
@@ -22,8 +22,10 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 CLUSTER_NAME="kubernetes"
 NODEPORT="30080"
-IMAGE="ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest"
+IMAGE="ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0"
 NAMESPACE="k8s-pod-visualizer"
+JWT_SECRET=""
+JWT_EXPIRES_IN="8h"
 DRY_RUN=false
 UNINSTALL=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -35,6 +37,8 @@ while [[ $# -gt 0 ]]; do
     --nodeport)      NODEPORT="$2";      shift 2 ;;
     --image)         IMAGE="$2";         shift 2 ;;
     --namespace)     NAMESPACE="$2";     shift 2 ;;
+    --jwt-secret)    JWT_SECRET="$2";    shift 2 ;;
+    --jwt-expires)   JWT_EXPIRES_IN="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=true;       shift   ;;
     --uninstall)     UNINSTALL=true;     shift   ;;
     --help|-h)
@@ -60,7 +64,8 @@ echo "  ██╔═██╗ ██╔══██╗╚════██║  
 echo "  ██║  ██╗╚█████╔╝███████║    ██║     ╚██████╔╝██████╔╝"
 echo "  ╚═╝  ╚═╝ ╚════╝ ╚══════╝    ╚═╝      ╚═════╝ ╚═════╝ "
 echo -e "${NC}"
-echo -e "${BOLD}  K8s Pod Visualizer v2.0 — Instalação SEM Persistência${NC}"
+echo -e "${BOLD}  K8s Pod Visualizer v3.0 — Instalação SEM Persistência${NC}
+  ${YELLOW}Autenticação JWT | Perfis SRE + Squad | Editor de Recursos${NC}"
 echo -e "  ${BLUE}https://github.com/divinoandersonbastos/k8s-pod-visualizer${NC}"
 echo ""
 
@@ -71,6 +76,18 @@ if [[ "$UNINSTALL" == "true" ]]; then
   kubectl delete clusterrolebinding k8s-pod-visualizer --ignore-not-found=true
   echo -e "${GREEN}✓ Desinstalação concluída.${NC}"
   exit 0
+fi
+
+# ── Geração automática do JWT_SECRET ──────────────────────────────────────────
+if [[ -z "$JWT_SECRET" ]]; then
+  if command -v openssl &>/dev/null; then
+    JWT_SECRET=$(openssl rand -hex 32)
+  elif command -v python3 &>/dev/null; then
+    JWT_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+  else
+    echo -e "${RED}✗ Não foi possível gerar JWT_SECRET. Instale openssl ou python3, ou use --jwt-secret.${NC}"
+    exit 1
+  fi
 fi
 
 echo -e "${BOLD}[1/5] Verificando pré-requisitos...${NC}"
@@ -101,16 +118,20 @@ echo -e "  ${CYAN}Namespace:${NC}     ${NAMESPACE}"
 echo -e "  ${CYAN}Imagem:${NC}        ${IMAGE}"
 echo -e "  ${CYAN}Cluster Name:${NC}  ${CLUSTER_NAME}"
 echo -e "  ${CYAN}NodePort:${NC}      ${NODEPORT}"
-echo -e "  ${CYAN}Persistência:${NC}  ${RED}DESATIVADA (DISABLE_DB=true)${NC}"
+echo -e "  ${CYAN}Persistência:${NC}  ${RED}DESATIVADA (DISABLE_DB=true)${NC}
+  ${CYAN}JWT Secret:${NC}    [gerado — ${#JWT_SECRET} chars]
+  ${CYAN}JWT Expiração:${NC} ${JWT_EXPIRES_IN}"
 
 if [[ "$DRY_RUN" == "true" ]]; then
   echo ""
   echo -e "${YELLOW}${BOLD}[DRY-RUN] Manifests que seriam aplicados:${NC}"
   echo "────────────────────────────────────────────────────────────────"
   sed \
-    -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest|${IMAGE}|g" \
+    -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0|${IMAGE}|g" \
     -e "s|value: \"meu-cluster\"|value: \"${CLUSTER_NAME}\"|g" \
     -e "s|nodePort: 30080|nodePort: ${NODEPORT}|g" \
+    -e "s|SUBSTITUA_POR_UM_SECRET_SEGURO_openssl_rand_hex_32|${JWT_SECRET}|g" \
+    -e "s|value: \"8h\"|value: \"${JWT_EXPIRES_IN}\"|g" \
     "$MANIFEST"
   echo "────────────────────────────────────────────────────────────────"
   echo -e "${YELLOW}Dry-run concluído. Nenhum recurso foi criado.${NC}"
@@ -127,9 +148,11 @@ echo -e "${BOLD}[4/5] Aplicando manifests...${NC}"
 TMP_MANIFEST=$(mktemp /tmp/k8s-pod-visualizer-XXXXXX.yaml)
 trap "rm -f ${TMP_MANIFEST}" EXIT
 sed \
-  -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest|${IMAGE}|g" \
+  -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0|${IMAGE}|g" \
   -e "s|value: \"meu-cluster\"|value: \"${CLUSTER_NAME}\"|g" \
   -e "s|nodePort: 30080|nodePort: ${NODEPORT}|g" \
+  -e "s|SUBSTITUA_POR_UM_SECRET_SEGURO_openssl_rand_hex_32|${JWT_SECRET}|g" \
+  -e "s|value: \"8h\"|value: \"${JWT_EXPIRES_IN}\"|g" \
   "$MANIFEST" > "$TMP_MANIFEST"
 kubectl apply -f "$TMP_MANIFEST"
 
@@ -144,7 +167,7 @@ fi
 
 echo ""
 echo -e "${GREEN}${BOLD}════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  ✓ K8s Pod Visualizer v2.0 instalado sem persistência!${NC}"
+echo -e "${GREEN}${BOLD}  ✓ K8s Pod Visualizer v3.0 instalado sem persistência!${NC}"
 echo -e "${GREEN}${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -154,5 +177,16 @@ if [[ -z "$NODE_IP" ]]; then
 fi
 echo -e "  ${BOLD}Acesso via NodePort:${NC}  ${CYAN}http://${NODE_IP}:${NODEPORT}${NC}"
 echo -e "  ${BOLD}Port-forward:${NC}         ${CYAN}kubectl port-forward svc/k8s-pod-visualizer 8080:80 -n ${NAMESPACE}${NC}"
+echo ""
+echo -e "  ${BOLD}Primeiro acesso:${NC}"
+echo -e "  1. Abra o painel no navegador"
+echo -e "  2. Clique em ${CYAN}\"Novo usuário\"${NC} para criar o usuário SRE master"
+echo -e "  3. Após login como SRE, crie usuários Squad em ${CYAN}Usuários → Novo usuário Squad${NC}"
+echo ""
+echo -e "  ${BOLD}Segurança — rotacionar JWT Secret:${NC}"
+echo -e "  ${CYAN}kubectl patch secret k8s-pod-visualizer-secrets -n ${NAMESPACE} \\"
+echo -e "    --type=json -p='[{\"op\":\"replace\",\"path\":\"/stringData/jwt-secret\",\"value\":\"NOVO_SECRET\"}]'${NC}"
+echo -e "  ${CYAN}kubectl rollout restart deployment/k8s-pod-visualizer -n ${NAMESPACE}${NC}"
+echo ""
 echo -e "  ${BOLD}Desinstalar:${NC}          ${CYAN}./install-no-persistence.sh --uninstall${NC}"
 echo ""

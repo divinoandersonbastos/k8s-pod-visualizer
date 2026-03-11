@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# K8s Pod Visualizer v2.0 — Script de Instalação COM Persistência (SQLite)
+# K8s Pod Visualizer v3.0 — Script de Instalação COM Persistência (SQLite)
 # =============================================================================
 # Uso:
 #   chmod +x install-with-persistence.sh
@@ -25,8 +25,10 @@ BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
 
 CLUSTER_NAME="kubernetes"
 NODEPORT="30080"
-IMAGE="ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest"
+IMAGE="ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0"
 NAMESPACE="k8s-pod-visualizer"
+JWT_SECRET=""
+JWT_EXPIRES_IN="8h"
 STORAGE_CLASS=""
 STORAGE_SIZE="1Gi"
 DRY_RUN=false
@@ -43,6 +45,8 @@ while [[ $# -gt 0 ]]; do
     --namespace)      NAMESPACE="$2";      shift 2 ;;
     --storage-class)  STORAGE_CLASS="$2";  shift 2 ;;
     --storage-size)   STORAGE_SIZE="$2";   shift 2 ;;
+    --jwt-secret)     JWT_SECRET="$2";     shift 2 ;;
+    --jwt-expires)    JWT_EXPIRES_IN="$2"; shift 2 ;;
     --dry-run)        DRY_RUN=true;        shift   ;;
     --uninstall)      UNINSTALL=true;      shift   ;;
     --uninstall-all)  UNINSTALL_ALL=true;  shift   ;;
@@ -73,7 +77,8 @@ echo "  ██╔═██╗ ██╔══██╗╚════██║  
 echo "  ██║  ██╗╚█████╔╝███████║    ██║     ╚██████╔╝██████╔╝"
 echo "  ╚═╝  ╚═╝ ╚════╝ ╚══════╝    ╚═╝      ╚═════╝ ╚═════╝ "
 echo -e "${NC}"
-echo -e "${BOLD}  K8s Pod Visualizer v2.0 — Instalação COM Persistência (SQLite)${NC}"
+echo -e "${BOLD}  K8s Pod Visualizer v3.0 — Instalação COM Persistência (SQLite)${NC}
+  ${YELLOW}Autenticação JWT | Perfis SRE + Squad | Histórico SQLite${NC}"
 echo -e "  ${BLUE}https://github.com/divinoandersonbastos/k8s-pod-visualizer${NC}"
 echo ""
 
@@ -103,7 +108,19 @@ if [[ "$UNINSTALL" == "true" ]]; then
   exit 0
 fi
 
-# ── Verificações de pré-requisitos ────────────────────────────────────────────
+# ── Geração automática do JWT_SECRET ──────────────────────────────────────────
+if [[ -z "$JWT_SECRET" ]]; then
+  if command -v openssl &>/dev/null; then
+    JWT_SECRET=$(openssl rand -hex 32)
+  elif command -v python3 &>/dev/null; then
+    JWT_SECRET=$(python3 -c "import secrets; print(secrets.token_hex(32))")
+  else
+    echo -e "${RED}✗ Não foi possível gerar JWT_SECRET. Instale openssl ou python3, ou use --jwt-secret.${NC}"
+    exit 1
+  fi
+fi
+
+# ── Verificações de pré-requisitos ───────────────────────────────────────────
 echo -e "${BOLD}[1/6] Verificando pré-requisitos...${NC}"
 
 if ! command -v kubectl &>/dev/null; then
@@ -169,6 +186,8 @@ echo -e "  ${CYAN}NodePort:${NC}        ${NODEPORT}"
 echo -e "  ${CYAN}StorageClass:${NC}    ${STORAGE_CLASS:-<padrão do cluster>}"
 echo -e "  ${CYAN}Tamanho PVC:${NC}     ${STORAGE_SIZE}"
 echo -e "  ${CYAN}Persistência:${NC}    ${GREEN}ATIVADA (SQLite em /app/data)${NC}"
+echo -e "  ${CYAN}JWT Secret:${NC}      [gerado — ${#JWT_SECRET} chars]"
+echo -e "  ${CYAN}JWT Expiração:${NC}   ${JWT_EXPIRES_IN}"
 echo -e "  ${CYAN}Funcionalidades:${NC} Histórico de eventos + Gráfico de tendência 24h"
 
 if [[ "$DRY_RUN" == "true" ]]; then
@@ -176,10 +195,12 @@ if [[ "$DRY_RUN" == "true" ]]; then
   echo -e "${YELLOW}${BOLD}[DRY-RUN] Manifests que seriam aplicados:${NC}"
   echo "────────────────────────────────────────────────────────────────"
   sed \
-    -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest|${IMAGE}|g" \
+    -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0|${IMAGE}|g" \
     -e "s|value: \"meu-cluster\"|value: \"${CLUSTER_NAME}\"|g" \
     -e "s|nodePort: 30080|nodePort: ${NODEPORT}|g" \
     -e "s|storage: 1Gi|storage: ${STORAGE_SIZE}|g" \
+    -e "s|SUBSTITUA_POR_UM_SECRET_SEGURO_openssl_rand_hex_32|${JWT_SECRET}|g" \
+    -e "s|value: \"8h\"|value: \"${JWT_EXPIRES_IN}\"|g" \
     -e "${STORAGE_CLASS:+s|# storageClassName: standard-rwo|storageClassName: ${STORAGE_CLASS}|g}" \
     "$MANIFEST"
   echo "────────────────────────────────────────────────────────────────"
@@ -205,10 +226,12 @@ if [[ -n "$STORAGE_CLASS" ]]; then
 fi
 
 sed \
-  -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:latest|${IMAGE}|g" \
+  -e "s|ghcr.io/divinoandersonbastos/k8s-pod-visualizer:3.0.0|${IMAGE}|g" \
   -e "s|value: \"meu-cluster\"|value: \"${CLUSTER_NAME}\"|g" \
   -e "s|nodePort: 30080|nodePort: ${NODEPORT}|g" \
   -e "s|storage: 1Gi|storage: ${STORAGE_SIZE}|g" \
+  -e "s|SUBSTITUA_POR_UM_SECRET_SEGURO_openssl_rand_hex_32|${JWT_SECRET}|g" \
+  -e "s|value: \"8h\"|value: \"${JWT_EXPIRES_IN}\"|g" \
   ${SC_REPLACE:+-e "$SC_REPLACE"} \
   "$MANIFEST" > "$TMP_MANIFEST"
 
@@ -231,7 +254,7 @@ fi
 # ── Informações de acesso ─────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}${BOLD}════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}${BOLD}  ✓ K8s Pod Visualizer v2.0 instalado com persistência!${NC}"
+echo -e "${GREEN}${BOLD}  ✓ K8s Pod Visualizer v3.0 instalado com persistência!${NC}"
 echo -e "${GREEN}${BOLD}════════════════════════════════════════════════════════════${NC}"
 echo ""
 
@@ -258,4 +281,14 @@ echo -e "  ${CYAN}./install-with-persistence.sh --uninstall${NC}"
 echo ""
 echo -e "  ${BOLD}Desinstalar (remove tudo + dados):${NC}"
 echo -e "  ${CYAN}./install-with-persistence.sh --uninstall-all${NC}"
+echo ""
+echo -e "  ${BOLD}Primeiro acesso:${NC}"
+echo -e "  1. Abra o painel no navegador"
+echo -e "  2. Clique em ${CYAN}\"Novo usuário\"${NC} para criar o usuário SRE master"
+echo -e "  3. Após login como SRE, crie usuários Squad em ${CYAN}Usuários → Novo usuário Squad${NC}"
+echo ""
+echo -e "  ${BOLD}Segurança — rotacionar JWT Secret:${NC}"
+echo -e "  ${CYAN}kubectl patch secret k8s-pod-visualizer-secrets -n ${NAMESPACE} \\"
+echo -e "    --type=json -p='[{\"op\":\"replace\",\"path\":\"/stringData/jwt-secret\",\"value\":\"NOVO_SECRET\"}]'${NC}"
+echo -e "  ${CYAN}kubectl rollout restart deployment/k8s-pod-visualizer -n ${NAMESPACE}${NC}"
 echo ""

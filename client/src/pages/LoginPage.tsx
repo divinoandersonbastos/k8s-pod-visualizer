@@ -2,13 +2,20 @@
  * LoginPage.tsx — Tela de login e setup inicial para K8s Pod Visualizer v3.0
  * Design: terminal dark com gradiente ciano/verde, tipografia Space Grotesk
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
 import { Shield, Terminal, Eye, EyeOff, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 
 export default function LoginPage() {
-  const { login, setup, setupDone } = useAuth();
+  const { login, setup, setupDone, user } = useAuth();
+  const [, setLocation] = useLocation();
+
+  // Se já autenticado, redireciona para home
+  useEffect(() => {
+    if (user) setLocation("/");
+  }, [user, setLocation]);
   const [mode, setMode] = useState<"login" | "setup">(setupDone ? "login" : "setup");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -32,8 +39,10 @@ export default function LoginPage() {
       if (mode === "setup") {
         await setup(username, password, displayName || username);
         setSuccess("Conta SRE criada com sucesso! Redirecionando...");
+        setTimeout(() => setLocation("/"), 800);
       } else {
         await login(username, password);
+        setLocation("/");
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Erro desconhecido");

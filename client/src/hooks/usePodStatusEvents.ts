@@ -13,6 +13,12 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+
+const _PSE_TOKEN_KEY = "k8s-viz-token";
+function _pseAuthHeaders(): Record<string, string> {
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem(_PSE_TOKEN_KEY) : null;
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
 import type { PodMetrics } from "./usePodData";
 
 export type PodStatus = "healthy" | "warning" | "critical";
@@ -92,7 +98,7 @@ function eventToDbPayload(e: StatusEvent) {
 
 async function fetchEventsFromBackend(limit = 500): Promise<StatusEvent[]> {
   try {
-    const res = await fetch(`/api/events/pods?limit=${limit}`);
+    const res = await fetch(`/api/events/pods?limit=${limit}`, { headers: _pseAuthHeaders() });
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     const rows: Record<string, unknown>[] = await res.json();
     return rows.map(dbRowToEvent);
@@ -107,7 +113,7 @@ async function fetchEventsForPodFromBackend(
   limit = 50
 ): Promise<{ events: StatusEvent[]; count: number }> {
   try {
-    const res = await fetch(`/api/events/pods/${namespace}/${podName}?limit=${limit}`);
+    const res = await fetch(`/api/events/pods/${namespace}/${podName}?limit=${limit}`, { headers: _pseAuthHeaders() });
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return { events: [], count: 0 };
     const data = await res.json();
     return {
@@ -124,7 +130,7 @@ async function postEventsToBackend(events: StatusEvent[]): Promise<void> {
   try {
     await fetch("/api/events/pods", {
       method:  "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ..._pseAuthHeaders() },
       body:    JSON.stringify(events.map(eventToDbPayload)),
     });
   } catch {
@@ -137,7 +143,7 @@ async function deleteEventsForPodFromBackend(
   namespace: string
 ): Promise<void> {
   try {
-    await fetch(`/api/events/pods/${namespace}/${podName}`, { method: "DELETE" });
+    await fetch(`/api/events/pods/${namespace}/${podName}`, { method: "DELETE", headers: _pseAuthHeaders() });
   } catch { /* silenciar */ }
 }
 

@@ -176,6 +176,39 @@ function DeploymentCard({
           {deploy.mainImage}
         </div>
       )}
+      {/* Linha 5: commit / branch / autor (via annotations) */}
+      {(() => {
+        const ann = deploy.annotations || {};
+        const changeCause = ann["kubernetes.io/change-cause"];
+        const commit = ann["git-commit"] || ann["app.kubernetes.io/commit"] || ann["commit-sha"];
+        const branch = ann["git-branch"] || ann["app.kubernetes.io/branch"];
+        const author = ann["deploy-author"] || ann["app.kubernetes.io/managed-by-user"];
+        if (!changeCause && !commit && !branch && !author) return null;
+        return (
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
+            {branch && (
+              <span className="text-[9px] font-mono flex items-center gap-0.5" style={{ color: "oklch(0.60 0.18 260)" }}>
+                <GitBranch size={8} />{branch}
+              </span>
+            )}
+            {commit && (
+              <span className="text-[9px] font-mono flex items-center gap-0.5" style={{ color: "oklch(0.55 0.15 142)" }}>
+                <span style={{ fontSize: "8px" }}>●</span>{commit.slice(0, 8)}
+              </span>
+            )}
+            {author && (
+              <span className="text-[9px] font-mono flex items-center gap-0.5" style={{ color: "oklch(0.55 0.015 250)" }}>
+                <span style={{ fontSize: "8px" }}>👤</span>{author}
+              </span>
+            )}
+            {changeCause && !commit && !branch && (
+              <span className="text-[9px] font-mono truncate" style={{ color: "oklch(0.50 0.015 250)" }}>
+                {changeCause.slice(0, 60)}{changeCause.length > 60 ? "…" : ""}
+              </span>
+            )}
+          </div>
+        );
+      })()}
     </motion.div>
   );
 }
@@ -508,6 +541,8 @@ interface DeploymentMonitorPanelProps {
   apiUrl?: string;
   /** Nome do deployment a ser selecionado automaticamente ao abrir o painel */
   initialDeployment?: string;
+  /** Namespaces permitidos para o usuário Squad. Se vazio/undefined, exibe todos (SRE). */
+  allowedNamespaces?: string[];
 }
 
 const STATUS_FILTERS: { value: DeploymentRolloutStatus | ""; label: string }[] = [
@@ -519,7 +554,7 @@ const STATUS_FILTERS: { value: DeploymentRolloutStatus | ""; label: string }[] =
   { value: "Paused",      label: "Pausados" },
 ];
 
-export function DeploymentMonitorPanel({ onClose, apiUrl = "", initialDeployment = "" }: DeploymentMonitorPanelProps) {
+export function DeploymentMonitorPanel({ onClose, apiUrl = "", initialDeployment = "", allowedNamespaces }: DeploymentMonitorPanelProps) {
   const [search, setSearch]               = useState("");
   const [nsFilter, setNsFilter]           = useState("");
   const [statusFilter, setStatusFilter]   = useState<DeploymentRolloutStatus | "">("");
@@ -543,11 +578,15 @@ export function DeploymentMonitorPanel({ onClose, apiUrl = "", initialDeployment
     }
   }, [deployments, initialDeployment]);
 
-  // Namespaces únicos
-  const namespaces = Array.from(new Set(deployments.map((d) => d.namespace))).sort();
+  // Namespaces únicos (filtrados pelos permitidos para Squad)
+  const namespaces = Array.from(new Set(deployments.map((d) => d.namespace)))
+    .filter((ns) => !allowedNamespaces || allowedNamespaces.length === 0 || allowedNamespaces.includes(ns))
+    .sort();
 
   // Filtragem
   const filtered = deployments.filter((d) => {
+    // Restringe ao namespace do Squad se aplicável
+    if (allowedNamespaces && allowedNamespaces.length > 0 && !allowedNamespaces.includes(d.namespace)) return false;
     if (nsFilter     && d.namespace     !== nsFilter)     return false;
     if (statusFilter && d.rolloutStatus !== statusFilter) return false;
     if (search) {

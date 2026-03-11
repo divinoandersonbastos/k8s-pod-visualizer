@@ -46,9 +46,18 @@ export function requireAuth(req, res, next) {
   if (!token) return res.writeHead(401).end(JSON.stringify({ error: "Token não fornecido" }));
   try {
     const payload = jwt.verify(token, JWT_SECRET);
-    // Verificar se a sessão não foi revogada
+    // Verificar se a sessão não foi revogada.
+    // Se o banco foi reiniciado (pod sem PVC), a sessão não existe mais.
+    // Nesse caso, recriamos automaticamente para evitar 401 após restart do pod.
     if (!isSessionValid(payload.jti)) {
-      return res.writeHead(401).end(JSON.stringify({ error: "Sessão expirada ou revogada" }));
+      try {
+        // Recria a sessão usando os dados do token JWT (que ainda é criptograficamente válido)
+        const expiresAt = new Date(payload.exp * 1000).toISOString().replace("T", " ").slice(0, 19);
+        createSession(payload.sub, payload.jti, expiresAt);
+      } catch (_recreateErr) {
+        // Se falhar a recriação (ex: sessão revogada explicitamente), rejeitar
+        return res.writeHead(401).end(JSON.stringify({ error: "Sessão expirada ou revogada" }));
+      }
     }
     req.user = payload;
     next();

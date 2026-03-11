@@ -12,6 +12,12 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 
+const _TOKEN_KEY = "k8s-viz-token";
+function _authHeaders(): Record<string, string> {
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem(_TOKEN_KEY) : null;
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
 export interface DeploymentCondition {
@@ -165,7 +171,7 @@ export function useDeploymentMonitor({
     try {
       await fetch(`${base}/api/events/deployments`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ..._authHeaders() },
         body: JSON.stringify(events),
       });
     } catch {
@@ -177,7 +183,7 @@ export function useDeploymentMonitor({
   const fetchDeployments = useCallback(async () => {
     try {
       const qs = namespace ? `?namespace=${encodeURIComponent(namespace)}` : "";
-      const res = await fetch(`${base}/api/deployments${qs}`);
+      const res = await fetch(`${base}/api/deployments${qs}`, { headers: _authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data: Deployment[] = await res.json();
 
@@ -287,19 +293,19 @@ export function useDeploymentMonitor({
 
   // ── Funções auxiliares ───────────────────────────────────────────────────────
   const fetchRolloutHistory = useCallback(async (ns: string, name: string): Promise<ReplicaSetRevision[]> => {
-    const res = await fetch(`${base}/api/deployments/${ns}/${name}/rollout`);
+    const res = await fetch(`${base}/api/deployments/${ns}/${name}/rollout`, { headers: _authHeaders() });
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     return res.json();
   }, [base]);
 
   const fetchK8sEvents = useCallback(async (ns: string, name: string): Promise<K8sDeploymentEvent[]> => {
-    const res = await fetch(`${base}/api/deployments/${ns}/${name}/events`);
+    const res = await fetch(`${base}/api/deployments/${ns}/${name}/events`, { headers: _authHeaders() });
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     return res.json();
   }, [base]);
 
   const fetchDbHistory = useCallback(async (ns: string, name: string): Promise<DeploymentEvent[]> => {
-    const res = await fetch(`${base}/api/events/deployments/${ns}/${name}`);
+    const res = await fetch(`${base}/api/events/deployments/${ns}/${name}`, { headers: _authHeaders() });
     if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) return [];
     return res.json();
   }, [base]);

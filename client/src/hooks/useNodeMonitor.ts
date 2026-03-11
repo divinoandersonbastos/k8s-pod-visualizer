@@ -11,6 +11,12 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+const _NM_TOKEN_KEY = "k8s-viz-token";
+function _nmAuthHeaders(): Record<string, string> {
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem(_NM_TOKEN_KEY) : null;
+  return t ? { Authorization: `Bearer ${t}` } : {};
+}
+
 // ── Tipos ──────────────────────────────────────────────────────────────────────
 
 export type NodeHealth = "healthy" | "warning" | "critical";
@@ -197,8 +203,8 @@ export function useNodeMonitor(inCluster: boolean | null) {
 
     try {
       const [healthRes, eventsRes] = await Promise.allSettled([
-        fetch("/api/nodes/health", { signal: AbortSignal.timeout(10_000) }).then((r) => r.ok && (r.headers.get("content-type")??"").includes("json") ? r.json() : Promise.reject("not-json")),
-        fetch("/api/nodes/events", { signal: AbortSignal.timeout(10_000) }).then((r) => r.ok && (r.headers.get("content-type")??"").includes("json") ? r.json() : Promise.reject("not-json")),
+        fetch("/api/nodes/health", { signal: AbortSignal.timeout(10_000), headers: _nmAuthHeaders() }).then((r) => r.ok && (r.headers.get("content-type")??"").includes("json") ? r.json() : Promise.reject("not-json")),
+        fetch("/api/nodes/events", { signal: AbortSignal.timeout(10_000), headers: _nmAuthHeaders() }).then((r) => r.ok && (r.headers.get("content-type")??"").includes("json") ? r.json() : Promise.reject("not-json")),
       ]);
 
       const nodes: NodeHealthInfo[] =

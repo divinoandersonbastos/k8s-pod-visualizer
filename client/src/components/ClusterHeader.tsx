@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Zap, BookOpen } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -33,6 +33,9 @@ interface ClusterHeaderProps {
   onShowUserManagement?: () => void;
   onShowResourceEditor?: () => void;
   onShowTrace?: () => void;
+  onShowNamespaceEvents?: () => void;
+  namespaceEventWarningCount?: number;
+  onShowDevQuickInfo?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
   currentUser?: { displayName?: string; username: string; role: string };
@@ -61,6 +64,9 @@ export function ClusterHeader({
   onShowUserManagement,
   onShowResourceEditor,
   onShowTrace,
+  onShowNamespaceEvents,
+  namespaceEventWarningCount = 0,
+  onShowDevQuickInfo,
   onLogout,
   isSRE,
   currentUser,
@@ -425,6 +431,40 @@ export function ClusterHeader({
             style={{ color: "var(--theme-accent, oklch(0.72 0.22 142))" }}
           >
             <Paintbrush size={14} />
+          </button>
+        )}
+
+        {onShowNamespaceEvents && (
+          <button
+            onClick={onShowNamespaceEvents}
+            className="relative p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Eventos do Namespace"
+            style={{ color: namespaceEventWarningCount > 0 ? "oklch(0.78 0.18 50)" : "oklch(0.55 0.015 250)" }}
+          >
+            <Zap size={14} />
+            {namespaceEventWarningCount > 0 && (
+              <span
+                className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[9px] font-mono font-bold flex items-center justify-center animate-pulse"
+                style={{
+                  background: "oklch(0.62 0.22 50)",
+                  color: "oklch(0.98 0 0)",
+                  boxShadow: "0 0 6px oklch(0.62 0.22 50 / 0.70)",
+                }}
+              >
+                {namespaceEventWarningCount > 99 ? "99+" : namespaceEventWarningCount}
+              </span>
+            )}
+          </button>
+        )}
+
+        {onShowDevQuickInfo && (
+          <button
+            onClick={onShowDevQuickInfo}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Dev Quick Info — Links, Swagger, kubectl"
+            style={{ color: "oklch(0.65 0.18 200)" }}
+          >
+            <BookOpen size={14} />
           </button>
         )}
 

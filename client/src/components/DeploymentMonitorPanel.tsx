@@ -176,6 +176,39 @@ function DeploymentCard({
           {deploy.mainImage}
         </div>
       )}
+      {/* Linha 5: commit / branch / autor (via annotations) */}
+      {(() => {
+        const ann = deploy.annotations || {};
+        const changeCause = ann["kubernetes.io/change-cause"];
+        const commit = ann["git-commit"] || ann["app.kubernetes.io/commit"] || ann["commit-sha"];
+        const branch = ann["git-branch"] || ann["app.kubernetes.io/branch"];
+        const author = ann["deploy-author"] || ann["app.kubernetes.io/managed-by-user"];
+        if (!changeCause && !commit && !branch && !author) return null;
+        return (
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5">
+            {branch && (
+              <span className="text-[9px] font-mono flex items-center gap-0.5" style={{ color: "oklch(0.60 0.18 260)" }}>
+                <GitBranch size={8} />{branch}
+              </span>
+            )}
+            {commit && (
+              <span className="text-[9px] font-mono flex items-center gap-0.5" style={{ color: "oklch(0.55 0.15 142)" }}>
+                <span style={{ fontSize: "8px" }}>●</span>{commit.slice(0, 8)}
+              </span>
+            )}
+            {author && (
+              <span className="text-[9px] font-mono flex items-center gap-0.5" style={{ color: "oklch(0.55 0.015 250)" }}>
+                <span style={{ fontSize: "8px" }}>👤</span>{author}
+              </span>
+            )}
+            {changeCause && !commit && !branch && (
+              <span className="text-[9px] font-mono truncate" style={{ color: "oklch(0.50 0.015 250)" }}>
+                {changeCause.slice(0, 60)}{changeCause.length > 60 ? "…" : ""}
+              </span>
+            )}
+          </div>
+        );
+      })()}
     </motion.div>
   );
 }

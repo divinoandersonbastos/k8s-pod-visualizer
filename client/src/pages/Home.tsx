@@ -31,6 +31,8 @@ import { CustomizerPanel } from "@/components/CustomizerPanel";
 import UserManagementPanel from "@/components/UserManagementPanel";
 import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
+import { NamespaceEventsDrawer } from "@/components/NamespaceEventsDrawer";
+import { DevQuickInfoPanel } from "@/components/DevQuickInfoPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
@@ -55,6 +57,9 @@ export default function Home() {
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showResourceEditor, setShowResourceEditor] = useState(false);
   const [showTrace, setShowTrace] = useState(false);
+  const [showNamespaceEvents, setShowNamespaceEvents] = useState(false);
+  const [showDevQuickInfo, setShowDevQuickInfo] = useState(false);
+  const [namespaceEventWarningCount, setNamespaceEventWarningCount] = useState(0);
   const { user, isSRE, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
@@ -256,6 +261,9 @@ export default function Home() {
         onShowUserManagement={() => setShowUserManagement(true)}
         onShowResourceEditor={() => setShowResourceEditor(true)}
         onShowTrace={() => setShowTrace(true)}
+        onShowNamespaceEvents={!isSRE ? () => setShowNamespaceEvents(true) : undefined}
+        namespaceEventWarningCount={!isSRE ? namespaceEventWarningCount : 0}
+        onShowDevQuickInfo={!isSRE ? () => setShowDevQuickInfo(true) : undefined}
         onLogout={logout}
         isSRE={isSRE}
         currentUser={user ? { displayName: user.displayName, username: user.username, role: user.role } : undefined}
@@ -537,6 +545,30 @@ export default function Home() {
             )}
           </AnimatePresence>
         </main>
+
+      {/* Eventos do Namespace (Squad) */}
+      {!isSRE && user?.namespaces && user.namespaces.length > 0 && (
+        <NamespaceEventsDrawer
+          open={showNamespaceEvents}
+          onClose={() => setShowNamespaceEvents(false)}
+          namespace={selectedNamespace || user.namespaces[0]}
+          onSelectPod={(podName, ns) => {
+            setShowNamespaceEvents(false);
+            // Seleciona o pod no painel principal
+            const found = pods.find((p) => p.name === podName && p.namespace === ns);
+            if (found) setSelectedPod(found);
+          }}
+        />
+      )}
+
+      {/* Dev Quick Info (Squad) */}
+      {!isSRE && user?.namespaces && user.namespaces.length > 0 && (
+        <DevQuickInfoPanel
+          open={showDevQuickInfo}
+          onClose={() => setShowDevQuickInfo(false)}
+          namespace={selectedNamespace || user.namespaces[0]}
+        />
+      )}
       </div>
 
       {/* Tabela de pods (bottom bar) */}

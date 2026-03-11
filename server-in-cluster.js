@@ -901,6 +901,52 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/namespace-events/:namespace — eventos K8s de um namespace (Squad) ────
+  const nsEventsMatch = url.pathname.match(/^\/api\/namespace-events\/([^/]+)$/);
+  if (nsEventsMatch) {
+    const [, namespace] = nsEventsMatch;
+    const authed = requireAuth(req, res);
+    if (!authed) return;
+    // Squad só pode ver eventos do próprio namespace
+    if (authed.role !== "sre" && !authed.namespaces.includes(namespace)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "Acesso negado a este namespace" }));
+      return;
+    }
+    try {
+      const limit = parseInt(url.searchParams.get("limit") || "100");
+      const result = await k8sRequest(
+        `/api/v1/namespaces/${encodeURIComponent(namespace)}/events?limit=${limit}`
+      );
+      const raw = result.body?.items || [];
+      const items = raw.map((ev) => ({
+        uid:       ev.metadata?.uid,
+        name:      ev.metadata?.name,
+        namespace: ev.metadata?.namespace,
+        reason:    ev.reason,
+        message:   ev.message,
+        type:      ev.type,
+        count:     ev.count || 1,
+        firstTime: ev.firstTimestamp || ev.eventTime,
+        lastTime:  ev.lastTimestamp  || ev.eventTime,
+        involvedObject: {
+          kind:      ev.involvedObject?.kind,
+          name:      ev.involvedObject?.name,
+          namespace: ev.involvedObject?.namespace,
+        },
+        source: ev.source?.component,
+      }));
+      items.sort((a, b) => new Date(b.lastTime || 0) - new Date(a.lastTime || 0));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ items, namespace, timestamp: Date.now() }));
+    } catch (err) {
+      console.error("[error] /api/namespace-events:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
   if (logsMatch) {

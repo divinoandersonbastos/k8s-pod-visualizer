@@ -248,36 +248,6 @@ async function getPodsWithMetrics() {
         const directOwner = ownerRefs[0];
         if (directOwner) deploymentName = `[${directOwner.kind}] ${directOwner.name}`;
       }
-      // Campos enriquecidos para o Squad
-      const containerStatuses = p.status?.containerStatuses || [];
-      const totalRestarts = containerStatuses.reduce((acc, c) => acc + (c.restartCount || 0), 0);
-      const mainImage = allContainers[0]?.image || "";
-      // Monta lista de containers com imagem, restarts e probe status
-      const containersDetail = allContainers.map((c) => {
-        const cs = containerStatuses.find((s) => s.name === c.name) || {};
-        return {
-          name:    c.name,
-          image:   c.image || "",
-          ready:   cs.ready || false,
-          restarts: cs.restartCount || 0,
-          state:   cs.state ? Object.keys(cs.state)[0] : "unknown",
-          stateReason: cs.state?.waiting?.reason || cs.state?.terminated?.reason || "",
-          readinessProbe: c.readinessProbe ? {
-            type: c.readinessProbe.httpGet ? "httpGet" : c.readinessProbe.tcpSocket ? "tcpSocket" : c.readinessProbe.exec ? "exec" : "unknown",
-            path: c.readinessProbe.httpGet?.path || "",
-            port: c.readinessProbe.httpGet?.port || c.readinessProbe.tcpSocket?.port || "",
-            initialDelaySeconds: c.readinessProbe.initialDelaySeconds || 0,
-            periodSeconds: c.readinessProbe.periodSeconds || 10,
-          } : null,
-          livenessProbe: c.livenessProbe ? {
-            type: c.livenessProbe.httpGet ? "httpGet" : c.livenessProbe.tcpSocket ? "tcpSocket" : c.livenessProbe.exec ? "exec" : "unknown",
-            path: c.livenessProbe.httpGet?.path || "",
-            port: c.livenessProbe.httpGet?.port || c.livenessProbe.tcpSocket?.port || "",
-            initialDelaySeconds: c.livenessProbe.initialDelaySeconds || 0,
-            periodSeconds: c.livenessProbe.periodSeconds || 10,
-          } : null,
-        };
-      });
       return {
         name:           p.metadata.name,
         namespace:      p.metadata.namespace,
@@ -286,13 +256,8 @@ async function getPodsWithMetrics() {
         cpuUsage:       usage.cpu,
         memoryUsage:    usage.mem,
         containerNames,
-        containersDetail,
         deploymentName,
         labels:         p.metadata?.labels || {},
-        restarts:       totalRestarts,
-        mainImage,
-        startTime:      p.status?.startTime || null,
-        podIP:          p.status?.podIP || "",
         resources: {
           requests: {
             cpu:    totalCpuReq,
@@ -900,30 +865,18 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
 
-  // ── /healthz e /api/health — probe público (sem auth) ───────────────────────
-  if (url.pathname === "/healthz" || url.pathname === "/api/health") {
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ status: "ok", ts: Date.now() }));
-    return;
-  }
-
   // ── /api/pods ──────────────────────────────────────────────────────────────
   if (url.pathname === "/api/pods") {
-    return requireAuth(req, res, async () => {
-      try {
-        const allPods = await getPodsWithMetrics();
-        // Usuários Squad vêem apenas os namespaces atribuídos a eles
-        const pods = req.user.role === "sre"
-          ? allPods
-          : allPods.filter((p) => (req.user.namespaces || []).includes(p.namespace));
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ items: pods, timestamp: Date.now() }));
-      } catch (err) {
-        console.error("[error] /api/pods:", err.message);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
+    try {
+      const pods = await getPodsWithMetrics();
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ items: pods, timestamp: Date.now() }));
+    } catch (err) {
+      console.error("[error] /api/pods:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
   }
 
   // ── /api/nodes ─────────────────────────────────────────────────────────────
@@ -966,231 +919,6 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify({ error: err.message }));
     }
     return;
-  }
-
-  // ── /api/namespace-events/:namespace — eventos K8s de um namespace (Squad) ────
-  const nsEventsMatch = url.pathname.match(/^\/api\/namespace-events\/([^/]+)$/);
-  if (nsEventsMatch) {
-    const [, namespace] = nsEventsMatch;
-    return requireAuth(req, res, async () => {
-      // Squad só pode ver eventos do próprio namespace
-      if (req.user.role !== "sre" && !(req.user.namespaces || []).includes(namespace)) {
-        res.writeHead(403, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Acesso negado a este namespace" }));
-        return;
-      }
-      try {
-        const limit = parseInt(url.searchParams.get("limit") || "100");
-        const result = await k8sRequest(
-          `/api/v1/namespaces/${encodeURIComponent(namespace)}/events?limit=${limit}`
-        );
-        const raw = result.body?.items || [];
-        const items = raw.map((ev) => ({
-          uid:       ev.metadata?.uid,
-          name:      ev.metadata?.name,
-          namespace: ev.metadata?.namespace,
-          reason:    ev.reason,
-          message:   ev.message,
-          type:      ev.type,
-          count:     ev.count || 1,
-          firstTime: ev.firstTimestamp || ev.eventTime,
-          lastTime:  ev.lastTimestamp  || ev.eventTime,
-          involvedObject: {
-            kind:      ev.involvedObject?.kind,
-            name:      ev.involvedObject?.name,
-            namespace: ev.involvedObject?.namespace,
-          },
-          source: ev.source?.component,
-        }));
-        items.sort((a, b) => new Date(b.lastTime || 0) - new Date(a.lastTime || 0));
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ items, namespace, timestamp: Date.now() }));
-      } catch (err) {
-        console.error("[error] /api/namespace-events:", err.message);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
-  }
-
-  // ── /api/incident-timeline/:namespace — timeline de incidentes (Squad) ────────
-  const timelineMatch = url.pathname.match(/^\/api\/incident-timeline\/([^/]+)$/);
-  if (timelineMatch) {
-    const [, namespace] = timelineMatch;
-    return requireAuth(req, res, async () => {
-      if (req.user.role !== "sre" && !(req.user.namespaces || []).includes(namespace)) {
-        res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
-      }
-      try {
-      const limit = parseInt(url.searchParams.get("limit") || "300");
-      const hours = parseInt(url.searchParams.get("hours") || "24");
-      const cutoff = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-      const allDeployEvts = getAllDeploymentEvents(limit).filter(e => e.namespace === namespace && e.recorded_at >= cutoff);
-      const allPodEvts = getAllPodStatusEvents(limit, null, namespace).filter(e => e.recorded_at >= cutoff);
-      const deployItems = allDeployEvts.map(e => ({
-        id: `d-${e.id}`,
-        kind: "deploy",
-        type: e.event_type,
-        name: e.deploy_name,
-        namespace: e.namespace,
-        fromRevision: e.from_revision,
-        toRevision: e.to_revision,
-        fromImage: e.from_image,
-        toImage: e.to_image,
-        message: e.message || "",
-        reason: e.reason || "",
-        ts: e.recorded_at,
-        severity: ["RolloutFailed","Degraded"].includes(e.event_type) ? "critical" :
-                  ["RolloutStarted","Progressing"].includes(e.event_type) ? "warning" : "info",
-      }));
-      const podItems = allPodEvts.map(e => ({
-        id: `p-${e.id}`,
-        kind: "pod",
-        type: e.to_status,
-        name: e.pod_name,
-        namespace: e.namespace,
-        fromStatus: e.from_status,
-        toStatus: e.to_status,
-        message: `${e.from_status} → ${e.to_status}`,
-        ts: e.recorded_at,
-        severity: e.to_status === "critical" ? "critical" : e.to_status === "warning" ? "warning" : "info",
-      }));
-      const items = [...deployItems, ...podItems].sort((a, b) => b.ts.localeCompare(a.ts));
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ items, namespace, hours, timestamp: Date.now() }));
-      } catch (err) {
-        console.error("[error] /api/incident-timeline:", err.message);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
-  }
-
-
-  // ── /api/app-health/:namespace — saúde das aplicações por deployment (Squad) ─
-  const appHealthMatch = url.pathname.match(/^\/api\/app-health\/([^/]+)$/);
-  if (appHealthMatch) {
-    const [, namespace] = appHealthMatch;
-    return requireAuth(req, res, async () => {
-      if (req.user.role !== "sre" && !(req.user.namespaces || []).includes(namespace)) {
-        res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Forbidden" })); return;
-      }
-      try {
-      // Busca pods do namespace via K8s API
-      const podsRes = await k8sRequest(`/api/v1/namespaces/${encodeURIComponent(namespace)}/pods`);
-      const pods = (podsRes.body?.items || []);
-
-      // Busca deployments do namespace
-      const deploysRes = await k8sRequest(`/apis/apps/v1/namespaces/${encodeURIComponent(namespace)}/deployments`);
-      const deployments = (deploysRes.body?.items || []);
-
-      // Busca eventos de pod do banco (últimas 24h) para calcular error rate
-      const podEvts = getAllPodStatusEvents(500, null, namespace);
-      const now = Date.now();
-      const cutoff24h = new Date(now - 24 * 3600 * 1000).toISOString();
-      const recentEvts = podEvts.filter(e => e.recorded_at >= cutoff24h);
-
-      // Busca eventos de deploy do banco (últimas 24h)
-      const deployEvts = getAllDeploymentEvents(200).filter(e => e.namespace === namespace && e.recorded_at >= cutoff24h);
-
-      // Agrupa pods por deployment
-      const deployMap = {};
-      for (const p of pods) {
-        const ownerRefs = p.metadata?.ownerReferences || [];
-        const rsOwner = ownerRefs.find(r => r.kind === "ReplicaSet");
-        let deployName = "";
-        if (rsOwner) {
-          const parts = rsOwner.name.split("-");
-          deployName = parts.length > 1 ? parts.slice(0, -1).join("-") : rsOwner.name;
-        }
-        if (!deployName) continue;
-        if (!deployMap[deployName]) deployMap[deployName] = { pods: [], events: [], deployEvents: [] };
-        deployMap[deployName].pods.push(p);
-      }
-
-      // Associa eventos de pod aos deployments
-      for (const evt of recentEvts) {
-        // Tenta associar pelo nome do pod ao deployment
-        for (const [dName, data] of Object.entries(deployMap)) {
-          if (data.pods.some(p => p.metadata.name === evt.pod_name)) {
-            data.events.push(evt);
-            break;
-          }
-        }
-      }
-
-      // Associa eventos de deploy
-      for (const evt of deployEvts) {
-        if (deployMap[evt.deploy_name]) {
-          deployMap[evt.deploy_name].deployEvents.push(evt);
-        }
-      }
-
-      // Calcula métricas por deployment
-      const apps = deployments.map(d => {
-        const dName = d.metadata.name;
-        const status = d.status || {};
-        const desired = status.replicas || d.spec?.replicas || 0;
-        const ready = status.readyReplicas || 0;
-        const available = status.availableReplicas || 0;
-        const unavailable = status.unavailableReplicas || 0;
-        const data = deployMap[dName] || { pods: [], events: [], deployEvents: [] };
-
-        // Availability = readyReplicas / desiredReplicas * 100
-        const availability = desired > 0 ? Math.round((ready / desired) * 100) : (ready > 0 ? 100 : 0);
-
-        // Restarts totais dos pods do deployment
-        let totalRestarts = 0;
-        for (const p of data.pods) {
-          const cs = p.status?.containerStatuses || [];
-          totalRestarts += cs.reduce((acc, c) => acc + (c.restartCount || 0), 0);
-        }
-
-        // Error rate: % de transições para critical nas últimas 24h
-        const criticalEvts = data.events.filter(e => e.to_status === "critical").length;
-        const totalEvts = data.events.length;
-        const errorRate = totalEvts > 0 ? Math.round((criticalEvts / totalEvts) * 100) : 0;
-
-        // Status geral
-        let health = "healthy";
-        if (availability < 50 || unavailable > 0) health = "critical";
-        else if (availability < 100 || totalRestarts > 5 || errorRate > 20) health = "warning";
-
-        // Último deploy
-        const lastDeploy = data.deployEvents.sort((a, b) => b.recorded_at.localeCompare(a.recorded_at))[0];
-
-        // Imagem atual (primeiro pod)
-        const firstPod = data.pods[0];
-        const mainImage = firstPod?.spec?.containers?.[0]?.image || "";
-
-        return {
-          name: dName,
-          namespace,
-          health,
-          availability,
-          errorRate,
-          totalRestarts,
-          replicas: { desired, ready, available, unavailable },
-          podCount: data.pods.length,
-          mainImage,
-          lastDeploy: lastDeploy ? {
-            type: lastDeploy.event_type,
-            ts: lastDeploy.recorded_at,
-            toImage: lastDeploy.to_image,
-            toRevision: lastDeploy.to_revision,
-          } : null,
-          recentCriticalEvents: criticalEvts,
-        };
-      });
-
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ apps, namespace, timestamp: Date.now() }));
-      } catch (err) {
-        console.error("[error] /api/app-health:", err.message);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
   }
 
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
@@ -1607,24 +1335,19 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // ── /api/deployments ──────────────────────────────────────────
+  // ── /api/deployments ──────────────────────────────────────────────────────
   if (url.pathname === "/api/deployments") {
-    return requireAuth(req, res, async () => {
-      try {
-        const nsParam = url.searchParams.get("namespace") || null;
-        const deploys = await getDeployments(nsParam);
-        // Usuários Squad vêem apenas deployments dos seus namespaces
-        const filtered = req.user.role === "sre"
-          ? deploys
-          : deploys.filter((d) => (req.user.namespaces || []).includes(d.namespace));
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(filtered));
-      } catch (err) {
-        console.error("[error] /api/deployments:", err.message);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
+    try {
+      const namespace = url.searchParams.get("namespace") || null;
+      const deploys   = await getDeployments(namespace);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(deploys));
+    } catch (err) {
+      console.error("[error] /api/deployments:", err.message);
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
   }
 
   // ── /api/deployments/:ns/:name/rollout ─────────────────────────────────────
@@ -1768,147 +1491,249 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── /api/auth/* — Autenticação JWT ────────────────────────────────────────
-  if (url.pathname === "/api/auth/setup-status" && req.method === "GET") {
-    return handleSetupStatus(req, res);
-  }
-  if (url.pathname === "/api/auth/setup" && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => { body += c; });
-    req.on("end", async () => {
-      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      await handleSetup(req, res);
-    });
-    return;
-  }
-  if (url.pathname === "/api/auth/login" && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => { body += c; });
-    req.on("end", async () => {
-      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      await handleLogin(req, res);
-    });
-    return;
-  }
-  if (url.pathname === "/api/auth/logout" && req.method === "POST") {
-    return handleLogout(req, res);
-  }
-  if (url.pathname === "/api/auth/me" && req.method === "GET") {
-    return handleMe(req, res, () => {});
-  }
-  // ── /api/users — Gestão de usuários Squad (SRE only) ─────────────────────────
-  if (url.pathname === "/api/users" && req.method === "GET") {
-    return requireSRE(req, res, () => handleListUsers(req, res));
-  }
-  if (url.pathname === "/api/users" && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => { body += c; });
-    req.on("end", async () => {
-      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      requireSRE(req, res, () => handleCreateUser(req, res));
-    });
-    return;
-  }
-  const userIdMatch = url.pathname.match(/^\/api\/users\/(\d+)$/);
-  if (userIdMatch) {
-    req.params = { id: userIdMatch[1] };
-    if (req.method === "PUT") {
-      let body = "";
-      req.on("data", (c) => { body += c; });
-      req.on("end", async () => {
-        try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-        requireSRE(req, res, () => handleUpdateUser(req, res));
-      });
-      return;
+  // ══════════════════════════════════════════════════════════════════════════
+  // SPRINT 4 — SEGURANÇA
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── /api/security/summary ─────────────────────────────────────────────────
+  if (url.pathname === "/api/security/summary") {
+    const authed = await requireAuth(req, res);
+    if (!authed) return;
+    try {
+      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
+      const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+      const pods = podsData.items || [];
+      let rootCount = 0, privCount = 0;
+      for (const pod of pods) {
+        const podSec = pod.spec?.securityContext || {};
+        for (const c of (pod.spec?.containers || [])) {
+          const cSec = c.securityContext || {};
+          if (cSec.privileged) privCount++;
+          const runAsUser = cSec.runAsUser ?? podSec.runAsUser;
+          const runAsNonRoot = cSec.runAsNonRoot ?? podSec.runAsNonRoot;
+          if (runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined)) rootCount++;
+        }
+      }
+      const npData = await k8sGet(`/apis/networking.k8s.io/v1/networkpolicies${nsFilter}`).catch(() => ({ items: [] }));
+      const policies = npData.items || [];
+      const nsSet = new Set(pods.map(p => p.metadata?.namespace).filter(Boolean));
+      const policyNs = new Set(policies.map(p => p.metadata?.namespace));
+      const nsWithoutPolicy = [...nsSet].filter(ns => !policyNs.has(ns)).length;
+      const totalIssues = rootCount + privCount + nsWithoutPolicy;
+      const severity = privCount > 0 ? "CRITICAL" : rootCount > 5 ? "HIGH" : totalIssues > 0 ? "MEDIUM" : "OK";
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ severity, totalIssues, rootContainers: rootCount, privilegedContainers: privCount, nsWithoutNetworkPolicy: nsWithoutPolicy, checkedAt: new Date().toISOString() }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
     }
-    if (req.method === "DELETE") {
-      return requireSRE(req, res, () => handleDeleteUser(req, res));
-    }
-  }
-  if (url.pathname === "/api/audit-log" && req.method === "GET") {
-    req.query = Object.fromEntries(url.searchParams);
-    return requireSRE(req, res, () => handleAuditLog(req, res));
+    return;
   }
 
-  // ── /api/resources/* — Resource Editor (SRE only) ─────────────────────────
-  // GET /api/resources/yaml?kind=deployment&namespace=ns&name=name
-  if (url.pathname === "/api/resources/yaml" && req.method === "GET") {
-    return requireSRE(req, res, async () => {
-      const kind      = url.searchParams.get("kind") || "deployment";
-      const namespace = url.searchParams.get("namespace");
-      const name      = url.searchParams.get("name");
-      if (!namespace || !name) {
-        res.writeHead(400, { "Content-Type": "application/json" });
-        return res.end(JSON.stringify({ error: "namespace e name são obrigatórios" }));
-      }
-      try {
-        let k8sPath;
-        if (kind === "deployment")  k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
-        else if (kind === "configmap") k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
-        else if (kind === "hpa")    k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
-        else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
-        const data = await k8sGet(k8sPath);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(data));
-      } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
-  }
-  // POST /api/resources/scale
-  if (url.pathname === "/api/resources/scale" && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => { body += c; });
-    req.on("end", () => {
-      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      requireSRE(req, res, async () => {
-        const { namespace, name, replicas } = req.body;
-        if (!namespace || !name || replicas === undefined) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          return res.end(JSON.stringify({ error: "namespace, name e replicas são obrigatórios" }));
+  // ── /api/security/root-containers ─────────────────────────────────────────
+  if (url.pathname === "/api/security/root-containers") {
+    const authed = await requireAuth(req, res);
+    if (!authed) return;
+    try {
+      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
+      const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+      const pods = podsData.items || [];
+      const rootContainers = [];
+      for (const pod of pods) {
+        const podSec = pod.spec?.securityContext || {};
+        const podRunAsNonRoot = podSec.runAsNonRoot === true;
+        const podRunAsUser = podSec.runAsUser;
+        for (const c of (pod.spec?.containers || [])) {
+          const cSec = c.securityContext || {};
+          const runAsUser = cSec.runAsUser ?? podRunAsUser;
+          const runAsNonRoot = cSec.runAsNonRoot ?? podRunAsNonRoot;
+          const privileged = cSec.privileged === true;
+          const allowPrivEsc = cSec.allowPrivilegeEscalation !== false;
+          const readOnlyRoot = cSec.readOnlyRootFilesystem === true;
+          const isRoot = runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined);
+          const risk = privileged ? "CRITICAL" : isRoot ? "HIGH" : allowPrivEsc ? "MEDIUM" : "LOW";
+          if (isRoot || privileged || allowPrivEsc) {
+            rootContainers.push({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, container: c.name, image: c.image, runAsUser, runAsNonRoot, privileged, allowPrivilegeEscalation: allowPrivEsc, readOnlyRootFilesystem: readOnlyRoot, risk, reason: privileged ? "Container privilegiado" : isRoot ? "Rodando como root (uid 0)" : "Permite escalação de privilégio" });
+          }
         }
-        try {
-          const result = await k8sPatch(
-            `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`,
-            { spec: { replicas: parseInt(replicas) } }
-          );
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true, replicas: result.spec?.replicas }));
-        } catch (err) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: err.message }));
-        }
-      });
-    });
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ containers: rootContainers, total: rootContainers.length, checkedAt: new Date().toISOString() }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
-  // POST /api/resources/restart
-  if (url.pathname === "/api/resources/restart" && req.method === "POST") {
-    let body = "";
-    req.on("data", (c) => { body += c; });
-    req.on("end", () => {
-      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      requireSRE(req, res, async () => {
-        const { namespace, name } = req.body;
-        if (!namespace || !name) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          return res.end(JSON.stringify({ error: "namespace e name são obrigatórios" }));
+
+  // ── /api/security/rbac (SRE only) ────────────────────────────────────────
+  if (url.pathname === "/api/security/rbac") {
+    const authed = await requireAuth(req, res);
+    if (!authed) return;
+    if (authed.role !== "sre") { res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Apenas SRE" })); return; }
+    try {
+      const [crbData, rbData, crData] = await Promise.all([
+        k8sGet("/apis/rbac.authorization.k8s.io/v1/clusterrolebindings"),
+        k8sGet("/apis/rbac.authorization.k8s.io/v1/rolebindings"),
+        k8sGet("/apis/rbac.authorization.k8s.io/v1/clusterroles"),
+      ]);
+      const dangerousVerbs = ["*", "create", "update", "patch", "delete", "deletecollection"];
+      const dangerousResources = ["*", "secrets", "pods/exec", "pods/portforward", "nodes"];
+      const clusterRoles = {};
+      for (const cr of (crData.items || [])) clusterRoles[cr.metadata.name] = cr.rules || [];
+      const findings = [];
+      const analyzeBinding = (binding, isCluster) => {
+        const roleName = binding.roleRef?.name;
+        const rules = clusterRoles[roleName] || [];
+        const issues = [];
+        for (const rule of rules) {
+          const verbs = rule.verbs || []; const resources = rule.resources || [];
+          const hasWildcardVerb = verbs.includes("*"); const hasWildcardResource = resources.includes("*");
+          const hasDangerousVerb = verbs.some(v => dangerousVerbs.includes(v));
+          const hasDangerousResource = resources.some(r => dangerousResources.includes(r));
+          if (hasWildcardVerb && hasWildcardResource) issues.push({ severity: "CRITICAL", message: "Permissão total (verbs: *, resources: *)" });
+          else if (hasWildcardVerb || hasWildcardResource) issues.push({ severity: "HIGH", message: `Wildcard em ${hasWildcardVerb ? "verbs" : "resources"}` });
+          else if (hasDangerousVerb && hasDangerousResource) issues.push({ severity: "HIGH", message: `Acesso perigoso: ${verbs.filter(v => dangerousVerbs.includes(v)).join(",")} em ${resources.filter(r => dangerousResources.includes(r)).join(",")}` });
+          else if (hasDangerousVerb || hasDangerousResource) issues.push({ severity: "MEDIUM", message: `Permissão elevada: ${verbs.join(",")} em ${resources.join(",")}` });
         }
-        try {
-          const now = new Date().toISOString();
-          await k8sPatch(
-            `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`,
-            { spec: { template: { metadata: { annotations: { "kubectl.kubernetes.io/restartedAt": now } } } } }
-          );
-          res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ ok: true, restartedAt: now }));
-        } catch (err) {
-          res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: err.message }));
+        if (issues.length > 0) findings.push({ type: isCluster ? "ClusterRoleBinding" : "RoleBinding", name: binding.metadata?.name, namespace: binding.metadata?.namespace || "(cluster-wide)", role: roleName, subjects: (binding.subjects || []).map(s => `${s.kind}/${s.name}`), issues, maxSeverity: issues.some(i => i.severity === "CRITICAL") ? "CRITICAL" : issues.some(i => i.severity === "HIGH") ? "HIGH" : issues.some(i => i.severity === "MEDIUM") ? "MEDIUM" : "LOW" });
+      };
+      for (const b of (crbData.items || [])) analyzeBinding(b, true);
+      for (const b of (rbData.items || [])) analyzeBinding(b, false);
+      findings.sort((a, b) => ({ CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }[a.maxSeverity] - ({ CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 }[b.maxSeverity])));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ findings, total: findings.length, checkedAt: new Date().toISOString() }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/security/secrets ─────────────────────────────────────────────────
+  if (url.pathname === "/api/security/secrets") {
+    const authed = await requireAuth(req, res);
+    if (!authed) return;
+    try {
+      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
+      const [podsData, secretsData] = await Promise.all([
+        k8sGet(`/api/v1/pods${nsFilter}`),
+        k8sGet(`/api/v1/secrets${nsFilter}`).catch(() => ({ items: [] })),
+      ]);
+      const pods = podsData.items || []; const secrets = secretsData.items || [];
+      const findings = [];
+      for (const pod of pods) {
+        for (const c of (pod.spec?.containers || [])) {
+          const envSecrets = [];
+          for (const env of (c.env || [])) { if (env.valueFrom?.secretKeyRef) envSecrets.push({ type: "env", secretName: env.valueFrom.secretKeyRef.name, key: env.valueFrom.secretKeyRef.key, envVar: env.name }); }
+          for (const envFrom of (c.envFrom || [])) { if (envFrom.secretRef) envSecrets.push({ type: "envFrom", secretName: envFrom.secretRef.name, key: "(todos os keys)", envVar: "(todas as vars)" }); }
+          if (envSecrets.length > 0) findings.push({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, container: c.name, secrets: envSecrets, risk: "MEDIUM", reason: "Secret exposto como variável de ambiente" });
         }
-      });
-    });
+      }
+      const riskySecrets = [];
+      for (const secret of secrets) {
+        const type = secret.type || "Opaque";
+        const dataKeys = Object.keys(secret.data || {});
+        const sensitiveKeys = dataKeys.filter(k => /password|passwd|secret|token|key|credential|api.key|private/i.test(k));
+        if (sensitiveKeys.length > 0) riskySecrets.push({ namespace: secret.metadata?.namespace, name: secret.metadata?.name, type, sensitiveKeys, risk: type === "kubernetes.io/service-account-token" ? "HIGH" : "MEDIUM" });
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ envExposures: findings, riskySecrets, checkedAt: new Date().toISOString() }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/security/network-policies ────────────────────────────────────────
+  if (url.pathname === "/api/security/network-policies") {
+    const authed = await requireAuth(req, res);
+    if (!authed) return;
+    try {
+      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
+      const [podsData, npData] = await Promise.all([
+        k8sGet(`/api/v1/pods${nsFilter}`),
+        k8sGet(`/apis/networking.k8s.io/v1/networkpolicies${nsFilter}`).catch(() => ({ items: [] })),
+      ]);
+      const pods = podsData.items || []; const policies = npData.items || [];
+      const policyByNs = {};
+      for (const np of policies) { const ns = np.metadata?.namespace; if (!policyByNs[ns]) policyByNs[ns] = []; policyByNs[ns].push(np); }
+      const nsSet = new Set(pods.map(p => p.metadata?.namespace).filter(Boolean));
+      const nsWithoutPolicy = [...nsSet].filter(ns => !policyByNs[ns] || policyByNs[ns].length === 0);
+      const permissivePolicies = [];
+      for (const np of policies) {
+        const hasOpenIngress = (np.spec?.ingress || []).some(r => Object.keys(r).length === 0);
+        const hasOpenEgress = (np.spec?.egress || []).some(r => Object.keys(r).length === 0);
+        if (hasOpenIngress || hasOpenEgress) permissivePolicies.push({ namespace: np.metadata?.namespace, name: np.metadata?.name, openIngress: hasOpenIngress, openEgress: hasOpenEgress, risk: "HIGH", reason: `Política permissiva: ${[hasOpenIngress && "ingress aberto", hasOpenEgress && "egress aberto"].filter(Boolean).join(", ")}` });
+      }
+      const podsWithoutPolicy = pods.filter(pod => {
+        const ns = pod.metadata?.namespace; const podLabels = pod.metadata?.labels || {};
+        const nsPolicies = policyByNs[ns] || [];
+        if (nsPolicies.length === 0) return true;
+        return !nsPolicies.some(np => { const sel = np.spec?.podSelector?.matchLabels || {}; if (Object.keys(sel).length === 0) return true; return Object.entries(sel).every(([k, v]) => podLabels[k] === v); });
+      }).map(pod => ({ namespace: pod.metadata?.namespace, pod: pod.metadata?.name, labels: pod.metadata?.labels || {}, risk: "MEDIUM", reason: "Pod sem NetworkPolicy cobrindo seus labels" }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ policies: policies.map(np => ({ namespace: np.metadata?.namespace, name: np.metadata?.name, podSelector: np.spec?.podSelector, ingressRules: (np.spec?.ingress || []).length, egressRules: (np.spec?.egress || []).length, policyTypes: np.spec?.policyTypes || [] })), nsWithoutPolicy, permissivePolicies, podsWithoutPolicy: podsWithoutPolicy.slice(0, 50), summary: { totalPolicies: policies.length, nsWithoutPolicy: nsWithoutPolicy.length, permissivePolicies: permissivePolicies.length, podsWithoutPolicy: podsWithoutPolicy.length }, checkedAt: new Date().toISOString() }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
+    return;
+  }
+
+  // ── /api/security/image-scan ───────────────────────────────────────────────
+  if (url.pathname === "/api/security/image-scan") {
+    const authed = await requireAuth(req, res);
+    if (!authed) return;
+    try {
+      const nsFilter = authed.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(authed.allowedNamespace || "")}`;
+      const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+      const pods = podsData.items || [];
+      const imageSet = new Set();
+      for (const pod of pods) {
+        for (const c of (pod.spec?.containers || [])) { if (c.image) imageSet.add(c.image); }
+        for (const c of (pod.spec?.initContainers || [])) { if (c.image) imageSet.add(c.image); }
+      }
+      const images = [...imageSet].slice(0, 30);
+      // Verifica se Trivy está disponível
+      let trivyAvailable = false;
+      try {
+        const { execSync } = await import('child_process');
+        execSync('which trivy', { stdio: 'ignore' });
+        trivyAvailable = true;
+      } catch { trivyAvailable = false; }
+      const results = [];
+      if (trivyAvailable) {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        const execAsync = promisify(exec);
+        for (const image of images) {
+          try {
+            const { stdout } = await execAsync(`trivy image --format json --quiet --timeout 60s --no-progress "${image}" 2>/dev/null`, { timeout: 90000 });
+            const data = JSON.parse(stdout);
+            const vulns = [];
+            for (const result of (data.Results || [])) {
+              for (const v of (result.Vulnerabilities || [])) {
+                vulns.push({ id: v.VulnerabilityID, severity: v.Severity, pkg: v.PkgName, installedVersion: v.InstalledVersion, fixedVersion: v.FixedVersion || null, title: v.Title || v.VulnerabilityID });
+              }
+            }
+            const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+            for (const v of vulns) counts[v.severity] = (counts[v.severity] || 0) + 1;
+            results.push({ image, vulns: vulns.slice(0, 100), counts, scanned: true });
+          } catch (err) {
+            results.push({ image, vulns: [], counts: {}, scanned: false, error: err.message });
+          }
+        }
+      } else {
+        for (const image of images) results.push({ image, vulns: [], counts: {}, scanned: false, trivyMissing: true });
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ images: results, trivyAvailable, scannedAt: new Date().toISOString() }));
+    } catch (err) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: err.message }));
+    }
     return;
   }
 

@@ -32,10 +32,7 @@ import { CustomizerPanel } from "@/components/CustomizerPanel";
 import UserManagementPanel from "@/components/UserManagementPanel";
 import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
-import { NamespaceEventsDrawer } from "@/components/NamespaceEventsDrawer";
-import { DevQuickInfoPanel } from "@/components/DevQuickInfoPanel";
-import { IncidentTimelinePanel } from "@/components/IncidentTimelinePanel";
-import { AppHealthPanel } from "@/components/AppHealthPanel";
+import { SecurityPanel } from "@/components/SecurityPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
@@ -61,12 +58,8 @@ export default function Home() {
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [showResourceEditor, setShowResourceEditor] = useState(false);
   const [showTrace, setShowTrace] = useState(false);
-  const [showNamespaceEvents, setShowNamespaceEvents] = useState(false);
-  const [showDevQuickInfo, setShowDevQuickInfo] = useState(false);
-  const [namespaceEventWarningCount, setNamespaceEventWarningCount] = useState(0);
-  const [showIncidentTimeline, setShowIncidentTimeline] = useState(false);
-  const [showAppHealth, setShowAppHealth] = useState(false);
-  const [incidentCriticalCount, setIncidentCriticalCount] = useState(0);
+  const [showSecurity, setShowSecurity] = useState(false);
+  const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const { user, isSRE, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
@@ -272,12 +265,12 @@ export default function Home() {
         onRefresh={refresh}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        onShowConfig={isSRE ? () => setShowConfig(true) : undefined}
+        onShowConfig={() => setShowConfig(true)}
         onShowAlerts={() => setShowAlerts(true)}
-        onShowEvents={isSRE ? () => setShowEvents(true) : undefined}
-        totalEvents={isSRE ? totalEvents : 0}
-        onShowNodeMonitor={isSRE ? () => setShowNodeMonitor(true) : undefined}
-        nodeAlertCount={isSRE ? nodeMonitor.criticalCount + nodeMonitor.warningCount : 0}
+        onShowEvents={() => setShowEvents(true)}
+        totalEvents={totalEvents}
+        onShowNodeMonitor={() => setShowNodeMonitor(true)}
+        nodeAlertCount={nodeMonitor.criticalCount + nodeMonitor.warningCount}
         onShowDeployMonitor={() => setShowDeployMonitor(true)}
         deployAlertCount={deployMonitor.alertCount}
         onShowCapacity={() => setShowCapacity(true)}
@@ -286,25 +279,12 @@ export default function Home() {
         onShowUserManagement={() => setShowUserManagement(true)}
         onShowResourceEditor={() => setShowResourceEditor(true)}
         onShowTrace={() => setShowTrace(true)}
-        onShowNamespaceEvents={!isSRE ? () => setShowNamespaceEvents(true) : undefined}
-        namespaceEventWarningCount={!isSRE ? namespaceEventWarningCount : 0}
-        onShowDevQuickInfo={!isSRE ? () => setShowDevQuickInfo(true) : undefined}
-        onShowIncidentTimeline={!isSRE ? () => setShowIncidentTimeline(true) : undefined}
-        incidentCriticalCount={!isSRE ? incidentCriticalCount : 0}
-        onShowAppHealth={!isSRE ? () => setShowAppHealth(true) : undefined}
         onLogout={logout}
         isSRE={isSRE}
         currentUser={user ? { displayName: user.displayName, username: user.username, role: user.role } : undefined}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
-        activeNamespace={!isSRE && user?.namespaces && user.namespaces.length > 0
-          ? (selectedNamespace || user.namespaces[0])
-          : selectedNamespace || undefined}
-        availableNamespaces={!isSRE && user?.namespaces && user.namespaces.length > 0
-          ? user.namespaces
-          : Object.keys(nsCounts).sort()}
-        onNamespaceChange={setSelectedNamespace}
       />
 
       {/* Body */}
@@ -541,7 +521,6 @@ export default function Home() {
                 }}
                 apiUrl={apiUrl}
                 initialDeployment={deployMonitorTarget}
-                allowedNamespaces={!isSRE && user?.namespaces ? user.namespaces : undefined}
               />
             )}
           </AnimatePresence>
@@ -592,47 +571,6 @@ export default function Home() {
             )}
           </AnimatePresence>
         </main>
-
-      {/* Eventos do Namespace (Squad) */}
-      {!isSRE && user?.namespaces && user.namespaces.length > 0 && (
-        <NamespaceEventsDrawer
-          open={showNamespaceEvents}
-          onClose={() => setShowNamespaceEvents(false)}
-          namespace={selectedNamespace || user.namespaces[0]}
-          onSelectPod={(podName, ns) => {
-            setShowNamespaceEvents(false);
-            // Seleciona o pod no painel principal
-            const found = pods.find((p) => p.name === podName && p.namespace === ns);
-            if (found) setSelectedPod(found);
-          }}
-        />
-      )}
-
-      {/* Dev Quick Info (Squad) */}
-      {!isSRE && user?.namespaces && user.namespaces.length > 0 && (
-        <DevQuickInfoPanel
-          open={showDevQuickInfo}
-          onClose={() => setShowDevQuickInfo(false)}
-          namespace={selectedNamespace || user.namespaces[0]}
-        />
-      )}
-      {/* Timeline de Incidentes (Squad) */}
-      {!isSRE && user?.namespaces && user.namespaces.length > 0 && (
-        <IncidentTimelinePanel
-          open={showIncidentTimeline}
-          onClose={() => setShowIncidentTimeline(false)}
-          namespace={selectedNamespace || user.namespaces[0]}
-          onCriticalCountChange={setIncidentCriticalCount}
-        />
-      )}
-      {/* App Health (Squad) */}
-      {!isSRE && user?.namespaces && user.namespaces.length > 0 && (
-        <AppHealthPanel
-          open={showAppHealth}
-          onClose={() => setShowAppHealth(false)}
-          namespace={selectedNamespace || user.namespaces[0]}
-        />
-      )}
       </div>
 
       {/* Tabela de pods (bottom bar) */}

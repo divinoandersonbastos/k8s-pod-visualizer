@@ -11,6 +11,12 @@
 
 import { useState, useEffect, useCallback } from "react";
 
+const _CP_TOKEN_KEY = "k8s-viz-token";
+function _cpAuthHeaders(): Record<string, string> {
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem(_CP_TOKEN_KEY) : null;
+  return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+}
+
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
 export type SizingStatus = "critical" | "underprovisioned" | "balanced" | "overprovisioned";
@@ -315,7 +321,7 @@ export function useCapacityPlanning({
       const base = apiUrl || "";
       const res  = await fetch(`${base}/api/capacity`, {
         signal: AbortSignal.timeout(10_000),
-        headers: { Accept: "application/json" },
+        headers: _cpAuthHeaders(),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const ct = res.headers.get("content-type") ?? "";

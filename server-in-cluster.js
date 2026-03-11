@@ -835,16 +835,21 @@ const server = http.createServer(async (req, res) => {
 
   // ── /api/pods ──────────────────────────────────────────────────────────────
   if (url.pathname === "/api/pods") {
-    try {
-      const pods = await getPodsWithMetrics();
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ items: pods, timestamp: Date.now() }));
-    } catch (err) {
-      console.error("[error] /api/pods:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-    return;
+    return requireAuth(req, res, async () => {
+      try {
+        const allPods = await getPodsWithMetrics();
+        // Usuários Squad vêem apenas os namespaces atribuídos a eles
+        const pods = req.user.role === "sre"
+          ? allPods
+          : allPods.filter((p) => (req.user.namespaces || []).includes(p.namespace));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ items: pods, timestamp: Date.now() }));
+      } catch (err) {
+        console.error("[error] /api/pods:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
   }
 
   // ── /api/nodes ─────────────────────────────────────────────────────────────
@@ -1181,19 +1186,24 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // ── /api/deployments ──────────────────────────────────────────────────────
+  // ── /api/deployments ──────────────────────────────────────────
   if (url.pathname === "/api/deployments") {
-    try {
-      const namespace = url.searchParams.get("namespace") || null;
-      const deploys   = await getDeployments(namespace);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(deploys));
-    } catch (err) {
-      console.error("[error] /api/deployments:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-    return;
+    return requireAuth(req, res, async () => {
+      try {
+        const nsParam = url.searchParams.get("namespace") || null;
+        const deploys = await getDeployments(nsParam);
+        // Usuários Squad vêem apenas deployments dos seus namespaces
+        const filtered = req.user.role === "sre"
+          ? deploys
+          : deploys.filter((d) => (req.user.namespaces || []).includes(d.namespace));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(filtered));
+      } catch (err) {
+        console.error("[error] /api/deployments:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
   }
 
   // ── /api/deployments/:ns/:name/rollout ─────────────────────────────────────

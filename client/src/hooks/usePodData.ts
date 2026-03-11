@@ -399,6 +399,12 @@ export interface UsePodDataOptions {
   apiUrl?: string;         // URL externa configurada manualmente (opcional)
 }
 
+const TOKEN_KEY = "k8s-viz-token";
+function getAuthHeaders(): Record<string, string> {
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+  return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+}
+
 export function usePodData(options: UsePodDataOptions = {}) {
   const { refreshInterval = 3000, namespace, apiUrl } = options;
 
@@ -420,7 +426,7 @@ export function usePodData(options: UsePodDataOptions = {}) {
     try {
       const res = await fetch(url, {
         signal: AbortSignal.timeout(5000),
-        headers: { Accept: "application/json" },
+        headers: getAuthHeaders(),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const ct = res.headers.get("content-type") ?? "";
@@ -465,7 +471,7 @@ export function usePodData(options: UsePodDataOptions = {}) {
         try {
           const res  = await fetch("/api/pods", {
             signal: AbortSignal.timeout(5000),
-            headers: { Accept: "application/json" },
+            headers: getAuthHeaders(),
           });
           const ct = res.headers.get("content-type") ?? "";
           if (!res.ok || !ct.includes("application/json")) throw new Error(`Resposta inválida: ${ct}`);
@@ -522,16 +528,15 @@ export function useClusterMeta() {
 
       // Busca info do cluster
       try {
-        const res  = await fetch("/api/cluster-info", { signal: AbortSignal.timeout(4000) });
+         const res  = await fetch("/api/cluster-info", { signal: AbortSignal.timeout(4000), headers: getAuthHeaders() });
         if (res.ok && (res.headers.get("content-type") ?? "").includes("json")) {
           const data = await res.json();
           setClusterInfo(data as ClusterInfo);
         }
       } catch { /* ignora */ }
-
       // Busca nodes
       try {
-        const res  = await fetch("/api/nodes", { signal: AbortSignal.timeout(4000) });
+        const res  = await fetch("/api/nodes", { signal: AbortSignal.timeout(4000), headers: getAuthHeaders() });
         if (res.ok && (res.headers.get("content-type") ?? "").includes("json")) {
           const data = await res.json();
           setNodes((data.items ?? []) as NodeInfo[]);

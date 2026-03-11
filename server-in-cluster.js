@@ -867,15 +867,27 @@ const server = http.createServer(async (req, res) => {
 
   // ── /api/pods ──────────────────────────────────────────────────────────────
   if (url.pathname === "/api/pods") {
-    try {
-      const pods = await getPodsWithMetrics();
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ items: pods, timestamp: Date.now() }));
-    } catch (err) {
-      console.error("[error] /api/pods:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        let pods = await getPodsWithMetrics();
+        // Filtrar por namespace para usuários Squad
+        if (user.role !== "sre") {
+          const allowedNs = Array.isArray(user.namespaces) ? user.namespaces : [];
+          if (allowedNs.length > 0) {
+            pods = pods.filter((p) => allowedNs.includes(p.namespace));
+          }
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ items: pods, timestamp: Date.now() }));
+      } catch (err) {
+        console.error("[error] /api/pods:", err.message);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      }
+    });
     return;
   }
 
@@ -1500,9 +1512,13 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
-        const pods = podsData.items || [];
+        let pods = podsData.items || [];
+        if (allowedNs && allowedNs.length > 1) {
+          pods = pods.filter(p => allowedNs.includes(p.metadata?.namespace));
+        }
         let rootCount = 0, privCount = 0;
         for (const pod of pods) {
           const podSec = pod.spec?.securityContext || {};
@@ -1535,9 +1551,13 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
-        const pods = podsData.items || [];
+        let pods = podsData.items || [];
+        if (allowedNs && allowedNs.length > 1) {
+          pods = pods.filter(p => allowedNs.includes(p.metadata?.namespace));
+        }
         const rootContainers = [];
         for (const pod of pods) {
           const podSec = pod.spec?.securityContext || {};
@@ -1613,7 +1633,8 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const [podsData, secretsData] = await Promise.all([
           k8sGet(`/api/v1/pods${nsFilter}`),
           k8sGet(`/api/v1/secrets${nsFilter}`).catch(() => ({ items: [] })),
@@ -1649,7 +1670,8 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const [podsData, npData] = await Promise.all([
         k8sGet(`/api/v1/pods${nsFilter}`),
         k8sGet(`/apis/networking.k8s.io/v1/networkpolicies${nsFilter}`).catch(() => ({ items: [] })),
@@ -1685,7 +1707,8 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const nsFilter = user.role === "sre" ? "" : `?fieldSelector=metadata.namespace%3D${encodeURIComponent(user.allowedNamespace || "")}`;
+        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
         const pods = podsData.items || [];
         const imageSet = new Set();

@@ -19,6 +19,13 @@ import {
   ExternalLink, Info, Eye, EyeOff,
 } from "lucide-react";
 
+// ── Auth helper ──────────────────────────────────────────────────────────────
+const TOKEN_KEY = "k8s-viz-token";
+function getAuthHeaders(): Record<string, string> {
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+  return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+}
+
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
 type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN" | "OK";
@@ -183,7 +190,7 @@ export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
   const fetchSummary = useCallback(async () => {
     setSummaryLoading(true);
     try {
-      const r = await fetch(`${apiUrl}/api/security/summary`, { credentials: "include" });
+      const r = await fetch(`${apiUrl}/api/security/summary`, { headers: getAuthHeaders() });
       if (r.ok) setSummary(await r.json());
     } catch { /* silencioso */ }
     setSummaryLoading(false);
@@ -204,7 +211,7 @@ export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
     setLoading(true);
     setError(null);
     try {
-      const r = await fetch(`${apiUrl}${endpoints[tab]}`, { credentials: "include" });
+      const r = await fetch(`${apiUrl}${endpoints[tab]}`, { headers: getAuthHeaders() });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setData(await r.json());
     } catch (err: unknown) {

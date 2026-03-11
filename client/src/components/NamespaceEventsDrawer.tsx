@@ -45,7 +45,7 @@ interface NamespaceEventsDrawerProps {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem("k8s_viz_token");
+  const token = localStorage.getItem("k8s-viz-token");
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 

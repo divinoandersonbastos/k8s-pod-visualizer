@@ -17,6 +17,7 @@ import { usePodStatusEvents } from "@/hooks/usePodStatusEvents";
 import { useNodeMonitor } from "@/hooks/useNodeMonitor";
 import { usePodOomRisk } from "@/hooks/usePodOomRisk";
 import { BubbleCanvas } from "@/components/BubbleCanvas";
+import { AppGroupView } from "@/components/AppGroupView";
 import { ClusterSidebar } from "@/components/ClusterSidebar";
 import { ClusterHeader } from "@/components/ClusterHeader";
 import type { StatusFilter } from "@/components/ClusterHeader";
@@ -42,6 +43,7 @@ import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>("cpu");
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("free");
+  const [displayMode, setDisplayMode] = useState<"canvas" | "app">("canvas");
   const [selectedNamespace, setSelectedNamespace] = useState("");
   const [selectedNode, setSelectedNode] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
@@ -292,6 +294,8 @@ export default function Home() {
           nodeCounts={nodeCounts}
           nodeMetrics={nodeMetrics}
           allPods={pods}
+          displayMode={displayMode}
+          onDisplayModeChange={setDisplayMode}
         />
 
         {/* Canvas principal */}
@@ -378,8 +382,16 @@ export default function Home() {
             </div>
           )}
 
-          {/* Bolhas */}
-          {filteredPods.length > 0 ? (
+          {/* Bolhas / App View */}
+          {displayMode === "app" ? (
+            <div className="absolute inset-0 overflow-y-auto p-4">
+              <AppGroupView
+                pods={filteredPods}
+                onSelectPod={setSelectedPod}
+                selectedPodId={selectedPod?.id}
+              />
+            </div>
+          ) : filteredPods.length > 0 ? (
             <BubbleCanvas
               pods={filteredPods}
               viewMode={viewMode}

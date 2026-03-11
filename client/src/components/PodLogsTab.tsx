@@ -18,6 +18,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   RefreshCw, Download, Search, X, ChevronDown,
   AlertTriangle, Info, Bug, Terminal, Loader2, WifiOff, Layers,
+  History, Radio,
 } from "lucide-react";
 
 interface PodLogsTabProps {
@@ -207,10 +208,77 @@ export function PodLogsTab({
 
   const isMultiContainer = containerNames.length > 1;
 
+  // ── Histórico de logs do SQLite ─────────────────────────────────────────────────
+  type LogsTab = "live" | "history";
+  const [logsTab, setLogsTab] = useState<LogsTab>("live");
+  const [historyLines, setHistoryLines] = useState<LogLine[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyLevel, setHistoryLevel] = useState<LogLevel | "all">("all");
+  const [historyFilter, setHistoryFilter] = useState("");
+
+  const fetchHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    setHistoryError(null);
+    try {
+      const base = apiUrl || "";
+      let url = `${base}/api/logs-history/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}?limit=500`;
+      if (historyLevel !== "all") url += `&level=${historyLevel.toUpperCase()}`;
+      const res = await fetch(url, { credentials: "include" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const parsed = (data.logs || []).map((row: { log_line: string; log_ts: string; log_level: string }, i: number) => ({
+        raw: `${row.log_ts} ${row.log_line}`,
+        timestamp: row.log_ts,
+        level: (row.log_level?.toLowerCase() || "plain") as LogLevel,
+        message: row.log_line,
+        index: i,
+      }));
+      setHistoryLines(parsed);
+    } catch (err: unknown) {
+      setHistoryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [podName, namespace, apiUrl, historyLevel]);
+
+  useEffect(() => {
+    if (logsTab === "history") fetchHistory();
+  }, [logsTab, fetchHistory]);
+
+  const filteredHistory = historyLines.filter((l) =>
+    !historyFilter || l.raw.toLowerCase().includes(historyFilter.toLowerCase())
+  );
+
   return (
     <div className="flex flex-col h-full" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
 
-      {/* ── Seletor de container (apenas para multi-container) ─────────────── */}
+      {/* ── Sub-tabs: Ao Vivo / Histórico ─────────────────────────────────────── */}
+      <div
+        className="flex shrink-0"
+        style={{ borderBottom: "1px solid oklch(0.22 0.03 250)", background: "oklch(0.10 0.015 250)" }}
+      >
+        {(["live", "history"] as LogsTab[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => setLogsTab(t)}
+            className="flex items-center gap-1.5 px-4 py-2 text-[11px] font-medium transition-all"
+            style={{
+              color: logsTab === t ? "oklch(0.72 0.18 200)" : "oklch(0.45 0.01 250)",
+              borderBottom: logsTab === t ? "2px solid oklch(0.72 0.18 200)" : "2px solid transparent",
+              background: logsTab === t ? "oklch(0.55 0.22 260 / 0.05)" : "transparent",
+            }}
+          >
+            {t === "live" ? <Radio size={11} /> : <History size={11} />}
+            {t === "live" ? "Ao Vivo" : "Histórico"}
+          </button>
+        ))}
+      </div>
+
+      {/* ── Conteúdo da aba Ao Vivo ─────────────────────────────────────────────────── */}
+      {logsTab === "live" && <>
+
+      {/* ── Seletor de container (apenas para multi-container) ───────────────────── */}
       {isMultiContainer && (
         <div
           className="flex items-center gap-2 px-3 py-1.5"
@@ -511,8 +579,8 @@ export function PodLogsTab({
         )}
       </div>
 
-      {/* ── Auto-scroll indicator ────────────────────────────────────────────── */}
-      {!autoScroll && lines.length > 0 && (
+      {/* ── Auto-scroll indicator ───────────────────────────────────────────────── */}
+      {!autoScroll && lines.length > 0 && logsTab === "live" && (
         <button
           onClick={() => {
             setAutoScroll(true);
@@ -528,6 +596,139 @@ export function PodLogsTab({
           <ChevronDown size={10} />
           Ir para o final
         </button>
+      )}
+
+      </> /* fim logsTab === live */}
+
+      {/* ── Aba Histórico ──────────────────────────────────────────────────────── */}
+      {logsTab === "history" && (
+        <div className="flex flex-col h-full" style={{ minHeight: 0 }}>
+          {/* Toolbar do histórico */}
+          <div
+            className="flex items-center gap-2 px-3 py-2 flex-wrap shrink-0"
+            style={{ borderBottom: "1px solid oklch(0.22 0.03 250)", background: "oklch(0.12 0.018 250)" }}
+          >
+            <div
+              className="flex items-center gap-1.5 flex-1 min-w-[120px] px-2 py-1 rounded-md"
+              style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.26 0.04 250)" }}
+            >
+              <Search size={11} style={{ color: "oklch(0.50 0.01 250)" }} />
+              <input
+                type="text"
+                value={historyFilter}
+                onChange={(e) => setHistoryFilter(e.target.value)}
+                placeholder="Filtrar histórico..."
+                className="bg-transparent outline-none text-[11px] w-full"
+                style={{ color: "oklch(0.80 0.008 250)" }}
+              />
+              {historyFilter && (
+                <button onClick={() => setHistoryFilter("")}>
+                  <X size={10} style={{ color: "oklch(0.50 0.01 250)" }} />
+                </button>
+              )}
+            </div>
+            {/* Filtro por nível */}
+            <div className="flex items-center gap-1">
+              {(["all", "error", "warn", "info", "debug"] as const).map((lvl) => (
+                <button
+                  key={lvl}
+                  onClick={() => setHistoryLevel(lvl)}
+                  className="px-2 py-0.5 rounded text-[10px] font-mono transition-all"
+                  style={{
+                    background: historyLevel === lvl
+                      ? (lvl === "all" ? "oklch(0.55 0.22 260 / 0.25)" : LEVEL_STYLES[lvl]?.bg || "oklch(0.55 0.22 260 / 0.25)")
+                      : "oklch(0.16 0.02 250)",
+                    border: `1px solid ${historyLevel === lvl
+                      ? (lvl === "all" ? "oklch(0.55 0.22 260 / 0.5)" : LEVEL_STYLES[lvl]?.color || "oklch(0.55 0.22 260 / 0.5)")
+                      : "oklch(0.26 0.04 250)"}`,
+                    color: lvl === "all" ? "oklch(0.72 0.18 200)" : LEVEL_STYLES[lvl]?.color || "oklch(0.70 0.008 250)",
+                  }}
+                >
+                  {lvl === "all" ? "TODOS" : lvl.toUpperCase()}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={fetchHistory}
+              disabled={historyLoading}
+              className="p-1 rounded-md transition-all"
+              style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.26 0.04 250)", color: "oklch(0.55 0.01 250)" }}
+              title="Atualizar histórico"
+            >
+              {historyLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            </button>
+          </div>
+          {/* Status do histórico */}
+          <div
+            className="flex items-center justify-between px-3 py-1 text-[10px] shrink-0"
+            style={{ background: "oklch(0.11 0.015 250)", borderBottom: "1px solid oklch(0.18 0.025 250)" }}
+          >
+            <span style={{ color: "oklch(0.45 0.01 250)" }}>
+              <History size={9} className="inline mr-1" />
+              {filteredHistory.length} entradas no banco • últimos 7 dias
+            </span>
+            <span className="text-[9px]" style={{ color: "oklch(0.35 0.01 250)" }}>
+              captura automática a cada 2min
+            </span>
+          </div>
+          {/* Linhas do histórico */}
+          <div
+            className="flex-1 overflow-y-auto overflow-x-auto"
+            style={{ background: "oklch(0.09 0.012 250)", minHeight: 0 }}
+          >
+            {historyError && (
+              <div
+                className="flex items-start gap-3 m-3 p-3 rounded-lg text-xs"
+                style={{ background: "oklch(0.70 0.22 25 / 0.08)", border: "1px solid oklch(0.70 0.22 25 / 0.25)", color: "oklch(0.70 0.22 25)" }}
+              >
+                <WifiOff size={14} className="shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-semibold mb-1">Erro ao buscar histórico</div>
+                  <div className="font-mono text-[10px] opacity-80">{historyError}</div>
+                </div>
+              </div>
+            )}
+            {historyLoading && historyLines.length === 0 && (
+              <div className="flex items-center justify-center h-32 gap-2" style={{ color: "oklch(0.45 0.01 250)" }}>
+                <Loader2 size={16} className="animate-spin" />
+                <span className="text-xs">Buscando histórico...</span>
+              </div>
+            )}
+            {!historyLoading && !historyError && historyLines.length === 0 && (
+              <div className="flex flex-col items-center justify-center h-32 gap-2" style={{ color: "oklch(0.40 0.01 250)" }}>
+                <History size={20} />
+                <span className="text-xs">Nenhum log no histórico</span>
+                <span className="text-[10px] opacity-60">Os logs são capturados automaticamente a cada 2 minutos</span>
+              </div>
+            )}
+            {filteredHistory.length > 0 && (
+              <div className="py-1">
+                {filteredHistory.map((line) => {
+                  const style = LEVEL_STYLES[line.level];
+                  return (
+                    <div
+                      key={line.index}
+                      className="flex items-start gap-2 px-3 py-0.5 hover:bg-white/[0.02] group"
+                      style={{ background: style.bg }}
+                    >
+                      {line.timestamp && (
+                        <span className="shrink-0 text-[10px] pt-px select-none" style={{ color: "oklch(0.38 0.01 250)", minWidth: "60px" }}>
+                          {formatTimestamp(line.timestamp)}
+                        </span>
+                      )}
+                      <span className="shrink-0 text-[9px] font-bold pt-px select-none" style={{ color: style.color, minWidth: "28px" }}>
+                        {style.label}
+                      </span>
+                      <span className="text-[11px] leading-relaxed break-all" style={{ color: style.color }}>
+                        {line.message}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

@@ -7,11 +7,12 @@
  *  - Logs: terminal com busca, filtro por nível, auto-scroll, download
  */
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
+  RotateCcw, Copy, Check, Network,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
@@ -61,6 +62,97 @@ function formatMem(mib: number): string {
 
 type Tab = "details" | "logs" | "events";
 
+// ── Modal de Confirmação de Restart ──────────────────────────────────────────
+function RestartConfirmModal({
+  podName,
+  namespace,
+  onConfirm,
+  onCancel,
+  loading,
+}: {
+  podName: string;
+  namespace: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "oklch(0.05 0.01 250 / 0.85)", backdropFilter: "blur(4px)" }}
+    >
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 400, damping: 25 }}
+        className="w-80 rounded-xl p-5 space-y-4"
+        style={{
+          background: "oklch(0.15 0.025 250)",
+          border: "1px solid oklch(0.62 0.22 25 / 0.5)",
+          boxShadow: "0 0 40px oklch(0.62 0.22 25 / 0.15)",
+        }}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "oklch(0.62 0.22 25 / 0.15)", border: "1px solid oklch(0.62 0.22 25 / 0.4)" }}
+          >
+            <RotateCcw size={16} style={{ color: "oklch(0.72 0.22 25)" }} />
+          </div>
+          <div>
+            <div className="text-sm font-semibold" style={{ color: "oklch(0.90 0.01 250)" }}>Reiniciar Pod</div>
+            <div className="text-[10px] font-mono" style={{ color: "oklch(0.50 0.015 250)" }}>{namespace}</div>
+          </div>
+        </div>
+
+        <div
+          className="rounded-lg p-3 font-mono text-xs break-all"
+          style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.22 0.03 250)", color: "oklch(0.72 0.22 25)" }}
+        >
+          {podName}
+        </div>
+
+        <p className="text-xs leading-relaxed" style={{ color: "oklch(0.60 0.012 250)" }}>
+          O pod será <strong style={{ color: "oklch(0.80 0.01 250)" }}>deletado imediatamente</strong>.
+          O Deployment criará um novo pod automaticamente. Logs e estado em memória serão perdidos.
+        </p>
+
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors"
+            style={{
+              background: "oklch(0.20 0.025 250)",
+              border: "1px solid oklch(0.28 0.04 250)",
+              color: "oklch(0.60 0.012 250)",
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
+            style={{
+              background: loading ? "oklch(0.62 0.22 25 / 0.3)" : "oklch(0.62 0.22 25 / 0.2)",
+              border: "1px solid oklch(0.62 0.22 25 / 0.6)",
+              color: "oklch(0.82 0.18 25)",
+            }}
+          >
+            {loading ? (
+              <><RefreshCw size={12} className="animate-spin" /> Reiniciando...</>
+            ) : (
+              <><RotateCcw size={12} /> Confirmar Restart</>
+            )}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // Conta eventos de um pod lendo diretamente do localStorage (sem re-render excessivo)
 function countEventsForPod(podId: string, getEventsForPod?: (id: string) => unknown[]): number {
   if (!getEventsForPod) return 0;
@@ -70,6 +162,41 @@ function countEventsForPod(podId: string, getEventsForPod?: (id: string) => unkn
 export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [eventCount, setEventCount] = useState(0);
+  const [showRestartModal, setShowRestartModal] = useState(false);
+  const [restartLoading, setRestartLoading] = useState(false);
+  const [restartResult, setRestartResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyName = useCallback(() => {
+    if (!pod) return;
+    navigator.clipboard.writeText(pod.name).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [pod]);
+
+  const handleRestartConfirm = useCallback(async () => {
+    if (!pod) return;
+    setRestartLoading(true);
+    try {
+      const base = apiUrl || "";
+      const resp = await fetch(`${base}/api/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/restart`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      setRestartResult({ ok: true, msg: `Pod reiniciado com sucesso às ${new Date().toLocaleTimeString()}` });
+    } catch (err: unknown) {
+      setRestartResult({ ok: false, msg: err instanceof Error ? err.message : "Erro desconhecido" });
+    } finally {
+      setRestartLoading(false);
+      setShowRestartModal(false);
+      setTimeout(() => setRestartResult(null), 5000);
+    }
+  }, [pod, apiUrl]);
 
   // Reset tab ao trocar de pod
   const [lastPodId, setLastPodId] = useState<string | null>(null);
@@ -127,14 +254,55 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                 </div>
               )}
             </div>
-            <button
-              onClick={onClose}
-              className="shrink-0 p-1.5 rounded-md transition-colors hover:bg-white/10"
-              style={{ color: "oklch(0.55 0.015 250)" }}
-            >
-              <X size={16} />
-            </button>
+            <div className="flex items-center gap-1 shrink-0">
+              {/* Copiar nome */}
+              <button
+                onClick={handleCopyName}
+                title="Copiar nome do pod"
+                className="p-1.5 rounded-md transition-colors hover:bg-white/10"
+                style={{ color: copied ? "oklch(0.72 0.18 142)" : "oklch(0.55 0.015 250)" }}
+              >
+                {copied ? <Check size={14} /> : <Copy size={14} />}
+              </button>
+              {/* Restart pod */}
+              <button
+                onClick={() => { setShowRestartModal(true); setRestartResult(null); }}
+                title="Reiniciar pod"
+                className="p-1.5 rounded-md transition-colors hover:bg-white/10"
+                style={{ color: "oklch(0.72 0.18 50)" }}
+              >
+                <RotateCcw size={14} />
+              </button>
+              {/* Fechar */}
+              <button
+                onClick={onClose}
+                className="p-1.5 rounded-md transition-colors hover:bg-white/10"
+                style={{ color: "oklch(0.55 0.015 250)" }}
+              >
+                <X size={16} />
+              </button>
+            </div>
           </div>
+
+          {/* ── Resultado de restart ─────────────────────────────────────── */}
+          <AnimatePresence>
+            {restartResult && (
+              <motion.div
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="shrink-0 px-4 py-2 text-xs font-mono flex items-center gap-2"
+                style={{
+                  background: restartResult.ok ? "oklch(0.72 0.18 142 / 0.1)" : "oklch(0.62 0.22 25 / 0.1)",
+                  borderBottom: `1px solid ${restartResult.ok ? "oklch(0.72 0.18 142 / 0.3)" : "oklch(0.62 0.22 25 / 0.3)"}`,
+                  color: restartResult.ok ? "oklch(0.72 0.18 142)" : "oklch(0.72 0.22 25)",
+                }}
+              >
+                {restartResult.ok ? <Check size={11} /> : <AlertCircle size={11} />}
+                {restartResult.msg}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* ── Tabs ────────────────────────────────────────────────────────── */}
           <div
@@ -187,6 +355,19 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               </button>
             ))}
           </div>
+
+          {/* ── Modal de Restart ─────────────────────────────────────────── */}
+          <AnimatePresence>
+            {showRestartModal && (
+              <RestartConfirmModal
+                podName={pod.name}
+                namespace={pod.namespace}
+                onConfirm={handleRestartConfirm}
+                onCancel={() => setShowRestartModal(false)}
+                loading={restartLoading}
+              />
+            )}
+          </AnimatePresence>
 
           {/* ── Conteúdo das tabs ────────────────────────────────────────────── */}
           <div className="flex-1 min-h-0 relative">
@@ -386,14 +567,19 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                     {[
                       { icon: <Box size={13} />,      label: "Namespace",  value: pod.namespace },
                       { icon: <Server size={13} />,   label: "Node",       value: pod.node },
-                      { icon: <RefreshCw size={13} />,label: "Restarts",   value: String(pod.restarts) },
+                      { icon: <Network size={13} />,  label: "Pod IP",     value: (pod as unknown as { podIP?: string }).podIP || "—" },
+                      { icon: <RefreshCw size={13} />,label: "Restarts",   value: String(pod.restarts ?? 0),
+                        valueColor: (pod.restarts ?? 0) === 0 ? "oklch(0.72 0.18 142)" : (pod.restarts ?? 0) > 5 ? "oklch(0.62 0.22 25)" : "oklch(0.72 0.18 50)" },
                       { icon: <Clock size={13} />,    label: "Idade",      value: pod.age },
                       { icon: <Box size={13} />,      label: "Containers", value: `${pod.ready}/${pod.containers} prontos` },
-                    ].map(({ icon, label, value }) => (
+                    ].map(({ icon, label, value, valueColor }) => (
                       <div key={label} className="flex items-center gap-3">
                         <span className="text-slate-600 shrink-0">{icon}</span>
                         <span className="text-slate-500 text-xs w-24 shrink-0">{label}</span>
-                        <span className="font-mono text-xs text-slate-200 truncate">{value}</span>
+                        <span
+                          className="font-mono text-xs truncate"
+                          style={{ color: valueColor || "oklch(0.80 0.01 250)" }}
+                        >{value}</span>
                       </div>
                     ))}
                   </div>

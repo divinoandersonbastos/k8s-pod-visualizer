@@ -27,6 +27,8 @@ import {
   saveDeploymentEventsBatch, getDeploymentEvents, getAllDeploymentEvents,
   insertCapacitySnapshot, getCapacityHistory,
   getDbStats, clearAllData,
+  savePodLogsBatch, getPodLogsHistory,
+  savePodRestartEvent, getPodRestartEvents,
 } from "./db.js";
 import {
   requireAuth, requireSRE,
@@ -89,6 +91,36 @@ function k8sRequest(urlPath) {
     });
     req.on("error", reject);
     req.setTimeout(8000, () => { req.destroy(new Error("timeout")); });
+    req.end();
+  });
+}
+
+// ── k8sRequestText — para endpoints que retornam texto (logs) ───────────────
+function k8sRequestText(urlPath) {
+  return new Promise((resolve, reject) => {
+    const token = getToken();
+    const ca    = getCA();
+    const apiHost = K8S_API.replace(/^https?:\/\//, "");
+    const isHttps = K8S_API.startsWith("https");
+    const options = {
+      hostname: apiHost,
+      port: isHttps ? 443 : 80,
+      path: urlPath,
+      method: "GET",
+      headers: {
+        Accept: "text/plain, */*",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      ...(ca ? { ca } : { rejectUnauthorized: false }),
+    };
+    const proto = isHttps ? https : http;
+    const req = proto.request(options, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => resolve({ status: res.statusCode, text: data }));
+    });
+    req.on("error", reject);
+    req.setTimeout(10000, () => { req.destroy(new Error("timeout")); });
     req.end();
   });
 }
@@ -971,6 +1003,128 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/pods/:namespace/:pod/restart — Restart de pod (SRE only) ────────────
+  const podRestartMatch = url.pathname.match(/^\/api\/pods\/([^/]+)\/([^/]+)\/restart$/);
+  if (podRestartMatch && req.method === "DELETE") {
+    const [, namespace, podName] = podRestartMatch;
+    requireAuth(req, res, async () => {
+      requireSRE(req, res, async () => {
+        try {
+          // Deleta o pod — o Deployment/DaemonSet cria um novo automaticamente
+          const token = getToken();
+          const ca    = getCA();
+          const apiHost = K8S_API.replace(/^https?:\/\//, "");
+          const isHttps = K8S_API.startsWith("https");
+          await new Promise((resolve, reject) => {
+            const options = {
+              hostname: apiHost,
+              port: isHttps ? 443 : 80,
+              path: `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}`,
+              method: "DELETE",
+              headers: {
+                "Content-Type": "application/json",
+                Accept: "application/json",
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+              },
+              ...(ca ? { ca } : { rejectUnauthorized: false }),
+            };
+            const proto = isHttps ? https : http;
+            const k8sReq = proto.request(options, (k8sRes) => {
+              let data = "";
+              k8sRes.on("data", (c) => (data += c));
+              k8sRes.on("end", () => {
+                if (k8sRes.statusCode >= 400) {
+                  try { reject(new Error(JSON.parse(data)?.message || `HTTP ${k8sRes.statusCode}`)); }
+                  catch { reject(new Error(`HTTP ${k8sRes.statusCode}`)); }
+                } else resolve(data);
+              });
+            });
+            k8sReq.on("error", reject);
+            k8sReq.setTimeout(10000, () => k8sReq.destroy(new Error("timeout")));
+            k8sReq.end();
+          });
+          // Registra no audit log e no histórico de restarts
+          const username = req.user?.username || "sre";
+          savePodRestartEvent({ podName, namespace, triggeredBy: username, result: "success" });
+          insertAuditLog({
+            userId: req.user?.id, username,
+            action: "restart", resourceType: "pod",
+            resourceName: podName, namespace,
+            payload: null, result: "success",
+          });
+          console.log(`[restart] Pod ${namespace}/${podName} deletado por ${username}`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, podName, namespace, restartedAt: new Date().toISOString() }));
+        } catch (err) {
+          const username = req.user?.username || "sre";
+          savePodRestartEvent({ podName, namespace, triggeredBy: username, result: "error", errorMsg: err.message });
+          console.error(`[error] restart pod ${namespace}/${podName}:`, err.message);
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
+
+  // ── /api/pods/:namespace/:pod/restart-history — Histórico de restarts ────────
+  const podRestartHistoryMatch = url.pathname.match(/^\/api\/pods\/([^/]+)\/([^/]+)\/restart-history$/);
+  if (podRestartHistoryMatch && req.method === "GET") {
+    const [, namespace, podName] = podRestartHistoryMatch;
+    requireAuth(req, res, () => {
+      try {
+        const limit = parseInt(url.searchParams.get("limit") || "20");
+        const events = getPodRestartEvents(podName, namespace, limit);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(events));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ── /api/logs-history/:namespace/:pod — Histórico de logs do SQLite ──────────
+  const logsHistoryMatch = url.pathname.match(/^\/api\/logs-history\/([^/]+)\/([^/]+)$/);
+  if (logsHistoryMatch && req.method === "GET") {
+    const [, namespace, podName] = logsHistoryMatch;
+    requireAuth(req, res, () => {
+      try {
+        const limit = parseInt(url.searchParams.get("limit") || "500");
+        const level = url.searchParams.get("level") || null;
+        const rows  = getPodLogsHistory(podName, namespace, limit, level);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ── /api/logs-history/:namespace/:pod — Salvar logs no SQLite (POST) ─────────
+  if (logsHistoryMatch && req.method === "POST") {
+    const [, namespace, podName] = logsHistoryMatch;
+    requireAuth(req, res, () => {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try {
+          const entries = JSON.parse(body || "[]");
+          const saved = savePodLogsBatch(entries);
+          res.writeHead(201, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ saved }));
+        } catch (err) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
+
   // ── /api/db/stats ────────────────────────────────────────────────────────────
   if (url.pathname === "/api/db/stats" && req.method === "GET") {
     try {
@@ -1382,6 +1536,51 @@ server.listen(PORT, () => {
   // Snapshots subsequentes a cada 5 minutos
   setInterval(runCapacitySnapshot, 5 * 60_000);
   console.log("[capacity] Job de snapshot iniciado (intervalo: 5min)");
+
+  // ── Job de captura automática de logs: a cada 2 minutos ─────────────────────
+  const captureLogsForAllPods = async () => {
+    try {
+      const token = getToken();
+      const ca    = getCA();
+      const ns    = getSANamespace();
+      // Lista todos os pods do namespace
+      const result = await k8sRequest(`/api/v1/namespaces/${ns}/pods`);
+      if (result.status !== 200 || !result.body?.items) return;
+      const pods = result.body.items.slice(0, 20); // Limita a 20 pods por ciclo
+      for (const pod of pods) {
+        const podName   = pod.metadata.name;
+        const namespace = pod.metadata.namespace;
+        const containers = (pod.spec?.containers || []).map(c => c.name);
+        for (const container of containers.slice(0, 2)) { // max 2 containers por pod
+          try {
+            const logPath = `/api/v1/namespaces/${namespace}/pods/${podName}/log?tailLines=50&timestamps=true&container=${encodeURIComponent(container)}`;
+            const logResult = await k8sRequestText(logPath);
+            if (logResult.status !== 200 || !logResult.text) continue;
+            const lines = logResult.text.split('\n').filter(Boolean);
+            const entries = lines.map(line => {
+              const tsMatch = line.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s+(.*)$/);
+              const logLine = tsMatch ? tsMatch[2] : line;
+              const logTs   = tsMatch ? tsMatch[1] : new Date().toISOString();
+              const upper   = logLine.toUpperCase();
+              const level   = upper.includes('ERROR') || upper.includes('FATAL') || upper.includes('CRITICAL') ? 'ERROR'
+                            : upper.includes('WARN')  ? 'WARN'
+                            : upper.includes('DEBUG') ? 'DEBUG'
+                            : 'INFO';
+              return { pod_name: podName, namespace, container, log_ts: logTs, log_line: logLine.slice(0, 2000), log_level: level };
+            });
+            if (entries.length > 0) savePodLogsBatch(entries);
+          } catch { /* silencioso por pod */ }
+        }
+      }
+    } catch (err) {
+      console.error('[logs-capture] Erro:', err.message);
+    }
+  };
+  // Primeira captura após 60s
+  setTimeout(captureLogsForAllPods, 60_000);
+  // Capturas subsequentes a cada 2 minutos
+  setInterval(captureLogsForAllPods, 2 * 60_000);
+  console.log('[logs-capture] Job de captura de logs iniciado (intervalo: 2min)');
 });
 
 // ── Rotas de Autenticação e Gestão de Usuários (adicionadas em v3.0) ──────────

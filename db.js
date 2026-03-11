@@ -183,6 +183,40 @@ const migrations = [
     `,
   },
 
+  // v5 — Histórico de logs de pods e eventos de restart
+  {
+    version: 5,
+    sql: `
+      -- Histórico de logs de pods (linhas capturadas periodicamente para consulta retroativa)
+      CREATE TABLE IF NOT EXISTS pod_logs_history (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        pod_name     TEXT NOT NULL,
+        namespace    TEXT NOT NULL,
+        container    TEXT NOT NULL DEFAULT '',
+        log_line     TEXT NOT NULL,
+        log_level    TEXT NOT NULL DEFAULT 'INFO', -- 'ERROR'|'WARN'|'INFO'|'DEBUG'
+        log_ts       TEXT NOT NULL,               -- timestamp extraído da linha de log
+        captured_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_plh_pod      ON pod_logs_history(pod_name, namespace, captured_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_plh_level    ON pod_logs_history(log_level, captured_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plh_dedup ON pod_logs_history(pod_name, namespace, container, log_ts, log_line);
+
+      -- Eventos de restart de pod (quem fez, quando, motivo)
+      CREATE TABLE IF NOT EXISTS pod_restart_events (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        pod_name     TEXT NOT NULL,
+        namespace    TEXT NOT NULL,
+        triggered_by TEXT NOT NULL,              -- username do SRE
+        reason       TEXT,                       -- motivo opcional
+        result       TEXT NOT NULL DEFAULT 'success', -- 'success'|'error'
+        error_msg    TEXT,
+        recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_pre_pod ON pod_restart_events(pod_name, namespace, recorded_at DESC);
+    `,
+  },
+
   // v4 — Usuários SRE/Squad e sessões de autenticação
   {
     version: 4,
@@ -814,6 +848,106 @@ export function getAuditLogByNamespace(namespace, limit = 50) {
   return auditStmts.getByNs.all({ namespace, limit });
 }
 
+// ── pod_logs_history ─────────────────────────────────────────────────────────────────────────────────────────
+
+const logHistStmts = {
+  insertBatch: db.prepare(`
+    INSERT OR IGNORE INTO pod_logs_history
+      (pod_name, namespace, container, log_line, log_level, log_ts)
+    VALUES
+      (@pod_name, @namespace, @container, @log_line, @log_level, @log_ts)
+  `),
+  getByPod: db.prepare(`
+    SELECT * FROM pod_logs_history
+    WHERE pod_name = @pod_name AND namespace = @namespace
+    ORDER BY log_ts DESC
+    LIMIT @limit
+  `),
+  getByPodLevel: db.prepare(`
+    SELECT * FROM pod_logs_history
+    WHERE pod_name = @pod_name AND namespace = @namespace AND log_level = @log_level
+    ORDER BY log_ts DESC
+    LIMIT @limit
+  `),
+  prune: db.prepare(`DELETE FROM pod_logs_history WHERE captured_at < datetime('now', @days)`),
+  pruneByPod: db.prepare(`
+    DELETE FROM pod_logs_history WHERE id IN (
+      SELECT id FROM pod_logs_history
+      WHERE pod_name = @pod_name AND namespace = @namespace
+      ORDER BY log_ts DESC
+      LIMIT -1 OFFSET @keep
+    )
+  `),
+};
+
+/** Salva linhas de log em lote (dedup automático via UNIQUE INDEX) */
+export const savePodLogsBatch = db.transaction((entries) => {
+  let saved = 0;
+  for (const e of entries) {
+    const r = logHistStmts.insertBatch.run({
+      pod_name:  e.podName,
+      namespace: e.namespace,
+      container: e.container || '',
+      log_line:  e.logLine,
+      log_level: e.logLevel || 'INFO',
+      log_ts:    e.logTs,
+    });
+    saved += r.changes;
+  }
+  return saved;
+});
+
+/** Retorna histórico de logs de um pod (mais recentes primeiro) */
+export function getPodLogsHistory(podName, namespace, limit = 500, level = null) {
+  if (level) return logHistStmts.getByPodLevel.all({ pod_name: podName, namespace, log_level: level, limit });
+  return logHistStmts.getByPod.all({ pod_name: podName, namespace, limit });
+}
+
+/** Remove logs mais antigos que N dias */
+export function pruneOldPodLogs(days = 7) {
+  const result = logHistStmts.prune.run({ days: `-${days} days` });
+  console.log(`[db] Pruned ${result.changes} old pod log lines (>${days} days)`);
+  return result.changes;
+}
+
+// ── pod_restart_events ───────────────────────────────────────────────────────────────────────────────────
+
+const restartEvtStmts = {
+  insert: db.prepare(`
+    INSERT INTO pod_restart_events (pod_name, namespace, triggered_by, reason, result, error_msg)
+    VALUES (@pod_name, @namespace, @triggered_by, @reason, @result, @error_msg)
+  `),
+  getByPod: db.prepare(`
+    SELECT * FROM pod_restart_events
+    WHERE pod_name = @pod_name AND namespace = @namespace
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  getAll: db.prepare(`SELECT * FROM pod_restart_events ORDER BY recorded_at DESC LIMIT @limit`),
+};
+
+/** Registra evento de restart de pod */
+export function savePodRestartEvent({ podName, namespace, triggeredBy, reason = null, result = 'success', errorMsg = null }) {
+  return restartEvtStmts.insert.run({
+    pod_name:     podName,
+    namespace,
+    triggered_by: triggeredBy,
+    reason:       reason || null,
+    result,
+    error_msg:    errorMsg || null,
+  });
+}
+
+/** Retorna histórico de restarts de um pod */
+export function getPodRestartEvents(podName, namespace, limit = 20) {
+  return restartEvtStmts.getByPod.all({ pod_name: podName, namespace, limit });
+}
+
+/** Retorna todos os eventos de restart */
+export function getAllPodRestartEvents(limit = 200) {
+  return restartEvtStmts.getAll.all({ limit });
+}
+
 /** Limpa todos os dados (útil para reset via UI) */
 export function clearAllData() {
   db.exec(`
@@ -835,6 +969,7 @@ setInterval(() => {
     pruneOldNodeEvents(30);       // eventos de nodes: 30 dias
     pruneOldDeploymentEvents(60); // eventos de deployments: 60 dias
     pruneOldCapacitySnapshots(3);  // snapshots de capacidade: 3 dias
+    pruneOldPodLogs(7);            // histórico de logs: 7 dias
     db.exec("PRAGMA wal_checkpoint(PASSIVE)"); // checkpoint do WAL
   } catch (err) {
     console.error("[db] Erro na manutenção automática:", err.message);

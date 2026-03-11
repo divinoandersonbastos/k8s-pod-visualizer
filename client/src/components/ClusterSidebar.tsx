@@ -29,6 +29,8 @@ interface ClusterSidebarProps {
   allPods?: PodMetrics[];
   selectedDeployment?: string;
   onDeploymentChange?: (deployment: string) => void;
+  displayMode?: "canvas" | "app";
+  onDisplayModeChange?: (mode: "canvas" | "app") => void;
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -88,6 +90,8 @@ export function ClusterSidebar({
   allPods = [],
   selectedDeployment = "",
   onDeploymentChange,
+  displayMode = "canvas",
+  onDisplayModeChange,
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded]     = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
@@ -214,6 +218,39 @@ export function ClusterSidebar({
             ))}
           </div>
         </div>
+
+        {/* Modo de exibição: Canvas vs App */}
+        {onDisplayModeChange && (
+          <div className="space-y-2">
+            <div className="text-[10px] text-slate-500 uppercase tracking-widest">Modo de Exibição</div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                onClick={() => onDisplayModeChange("canvas")}
+                className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all"
+                style={{
+                  background: displayMode === "canvas" ? "oklch(0.55 0.22 260 / 0.25)" : "oklch(0.16 0.02 250)",
+                  border: `1px solid ${displayMode === "canvas" ? "oklch(0.55 0.22 260 / 0.6)" : "oklch(0.22 0.03 250)"}`,
+                  color: displayMode === "canvas" ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+                }}
+              >
+                <Activity size={12} />
+                Bolhas
+              </button>
+              <button
+                onClick={() => onDisplayModeChange("app")}
+                className="flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-semibold transition-all"
+                style={{
+                  background: displayMode === "app" ? "oklch(0.55 0.22 260 / 0.25)" : "oklch(0.16 0.02 250)",
+                  border: `1px solid ${displayMode === "app" ? "oklch(0.55 0.22 260 / 0.6)" : "oklch(0.22 0.03 250)"}`,
+                  color: displayMode === "app" ? "oklch(0.72 0.18 200)" : "oklch(0.55 0.015 250)",
+                }}
+              >
+                <Layers size={12} />
+                Por App
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Modo de layout */}
         <div className="space-y-2">

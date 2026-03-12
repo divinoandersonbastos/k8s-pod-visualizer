@@ -919,6 +919,39 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── /api/namespaces ──────────────────────────────────────────────────────────
+  // Lista todos os namespaces do cluster. Usuários SRE veem todos;
+  // usuários Squad veem apenas os namespaces permitidos na sua conta.
+  if (url.pathname === "/api/namespaces") {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const nsRes = await k8sRequest("/api/v1/namespaces");
+        const allNs = (nsRes.body?.items ?? []).map((ns) => ({
+          name: ns.metadata.name,
+          status: ns.status?.phase ?? "Active",
+          labels: ns.metadata.labels ?? {},
+          creationTimestamp: ns.metadata.creationTimestamp,
+        }));
+        // Filtra por namespaces permitidos para usuários Squad
+        const filtered = user.role === "sre"
+          ? allNs
+          : allNs.filter((ns) => {
+              const allowed = Array.isArray(user.namespaces) ? user.namespaces : [];
+              return allowed.length === 0 || allowed.includes(ns.name);
+            });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ items: filtered, timestamp: Date.now() }));
+      } catch (err) {
+        console.error("[error] /api/namespaces:", err.message);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      }
+    });
+    return;
+  }
 
   // ── /api/nodes ─────────────────────────────────────────────────────────────
   if (url.pathname === "/api/nodes") {

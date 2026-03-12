@@ -35,6 +35,7 @@ interface ClusterSidebarProps {
   securitySeverity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null;
   securityMode?: boolean;
   onToggleSecurityMode?: () => void;
+  allNamespaces?: string[];
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -100,6 +101,7 @@ export function ClusterSidebar({
   securitySeverity,
   securityMode = false,
   onToggleSecurityMode,
+  allNamespaces,
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded]     = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
@@ -115,12 +117,15 @@ export function ClusterSidebar({
   const criticalColor = statusColorSet(sc.criticalHue, "critical").stroke;
 
   // Namespaces filtrados pela busca
+  // Usa allNamespaces (lista completa do cluster) quando disponível,
+  // com fallback para stats.namespaces (apenas namespaces com pods Running)
   const filteredNamespaces = useMemo(() => {
-    if (!stats) return [];
+    if (!stats && !allNamespaces) return [];
+    const nsList = (allNamespaces && allNamespaces.length > 0) ? allNamespaces : (stats?.namespaces ?? []);
     const q = nsSearch.trim().toLowerCase();
-    if (!q) return stats.namespaces;
-    return stats.namespaces.filter((ns) => ns.toLowerCase().includes(q));
-  }, [stats, nsSearch]);
+    if (!q) return nsList;
+    return nsList.filter((ns) => ns.toLowerCase().includes(q));
+  }, [stats, nsSearch, allNamespaces]);
 
   // Lista de deployments únicos derivada dos pods
   const deploymentList = useMemo(() => {
@@ -410,7 +415,7 @@ export function ClusterSidebar({
         )}
 
         {/* Filtro por namespace */}
-        {stats && stats.namespaces.length > 0 && (
+        {(filteredNamespaces.length > 0 || (allNamespaces && allNamespaces.length > 0) || (stats && stats.namespaces.length > 0)) && (
           <div className="space-y-2">
             <button
               onClick={() => setNsExpanded((v) => !v)}
@@ -455,7 +460,7 @@ export function ClusterSidebar({
                   }}
                 >
                   <span className="font-mono">Todos</span>
-                  <span className="float-right text-[10px] text-slate-600">{stats.totalPods}</span>
+                  <span className="float-right text-[10px] text-slate-600">{stats?.totalPods ?? 0}</span>
                 </button>
                 {filteredNamespaces.length === 0 && nsSearch && (
                   <div className="text-[10px] font-mono text-center py-2" style={{ color: "oklch(0.40 0.015 250)" }}>

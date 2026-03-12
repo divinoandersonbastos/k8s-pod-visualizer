@@ -69,6 +69,7 @@ export default function Home() {
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("");
+  const [allNamespaces, setAllNamespaces] = useState<string[]>([]);
 
   const { theme } = useThemeCustomizer();
   const { clusterInfo, nodes: realNodes } = useClusterMeta();
@@ -132,6 +133,25 @@ export default function Home() {
     const interval = setInterval(update, 5000);
     return () => clearInterval(interval);
   }, [getAllEvents]);
+
+  // Buscar lista completa de namespaces do cluster (inclui namespaces sem pods Running)
+  useEffect(() => {
+    if (!inCluster && !apiUrl) return;
+    const fetchNamespaces = async () => {
+      try {
+        const base = apiUrl || "";
+        const r = await fetch(`${base}/api/namespaces`, { credentials: "include" });
+        if (r.ok) {
+          const data = await r.json();
+          const names = (data.items ?? []).map((ns: { name: string }) => ns.name).sort();
+          setAllNamespaces(names);
+        }
+      } catch { /* silencioso */ }
+    };
+    fetchNamespaces();
+    const interval = setInterval(fetchNamespaces, 60_000); // a cada 1 min
+    return () => clearInterval(interval);
+  }, [inCluster, apiUrl]);
 
   // Carregar security summary periodicamente para colorir o botão na sidebar
   useEffect(() => {
@@ -322,6 +342,7 @@ export default function Home() {
           securitySeverity={securitySeverity}
           securityMode={securityMode}
           onToggleSecurityMode={() => setSecurityMode(v => !v)}
+          allNamespaces={allNamespaces.length > 0 ? allNamespaces : undefined}
         />
 
         {/* Canvas principal */}

@@ -62,24 +62,20 @@ interface ImageScanResult {
   error?: string;
 }
 
+interface RuntimeRiskIssue {
+  type: string;       // "runAsRoot", "privileged", "allowPrivEsc", etc.
+  severity: string;   // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
+  container?: string;
+  msg: string;
+  yaml?: string;
+}
 interface RuntimeRisk {
   pod: string;
   namespace: string;
-  container: string;
-  image: string;
-  risks: {
-    runAsRoot: boolean;
-    privileged: boolean;
-    allowPrivEsc: boolean;
-    hostNetwork: boolean;
-    hostIPC: boolean;
-    hostPID: boolean;
-    missingCpuLimit: boolean;
-    missingMemLimit: boolean;
-    readOnlyRootFs: boolean;
-  };
   riskLevel: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK";
-  riskCount: number;
+  issueCount: number;
+  issues: RuntimeRiskIssue[];
+  labels: Record<string, string>;
 }
 
 interface RbacIssue {
@@ -330,14 +326,14 @@ function OverviewTab({
           ) : (
             runtimeData.filter(r => r.riskLevel !== "OK").slice(0, 6).map((r) => (
               <div
-                key={`${r.pod}-${r.container}`}
+                key={r.pod}
                 className="flex items-center gap-2 px-3 py-2 rounded-lg"
                 style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
               >
                 <RiskIcon level={r.riskLevel} />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-mono truncate" style={{ color: "oklch(0.72 0.01 250)" }}>{r.pod}</div>
-                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{r.container}</div>
+                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{r.namespace} · {r.issueCount} issues</div>
                 </div>
                 <SevBadge sev={r.riskLevel} />
               </div>
@@ -607,10 +603,9 @@ function RuntimeTab({
   );
 
   const copyFix = (r: RuntimeRisk) => {
-    const activeRisks = Object.entries(r.risks).filter(([, v]) => v === true).map(([k]) => k);
-    const yaml = activeRisks.map(rk => RISK_FIX[rk] ?? `# Fix para ${rk}`).join("\n");
+    const yaml = (r.issues ?? []).map(iss => iss.yaml ?? `# Fix para ${iss.type}`).join("\n---\n");
     navigator.clipboard.writeText(yaml);
-    setCopied(`${r.pod}-${r.container}`);
+    setCopied(r.pod);
     setTimeout(() => setCopied(null), 2000);
   };
 
@@ -638,9 +633,9 @@ function RuntimeTab({
       </div>
 
       {risky.map((r) => {
-        const key = `${r.pod}-${r.container}`;
+        const key = r.pod;
         const isExp = expanded === key;
-        const activeRisks = Object.entries(r.risks).filter(([, v]) => v === true).map(([k]) => k);
+        const issues = r.issues ?? [];
 
         return (
           <div
@@ -657,12 +652,12 @@ function RuntimeTab({
               <div className="flex-1 min-w-0">
                 <div className="text-xs font-mono truncate" style={{ color: "oklch(0.75 0.01 250)" }}>{r.pod}</div>
                 <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
-                  {r.namespace} · {r.container}
+                  {r.namespace}
                 </div>
               </div>
               <div className="flex items-center gap-1.5 shrink-0">
                 <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
-                  {r.riskCount} issues
+                  {r.issueCount} issues
                 </span>
                 <SevBadge sev={r.riskLevel} />
                 {isExp
@@ -673,32 +668,27 @@ function RuntimeTab({
 
             {isExp && (
               <div className="px-3 pb-3 space-y-2" style={{ background: "oklch(0.12 0.015 250)" }}>
-                {/* Lista de riscos */}
+                {/* Lista de issues */}
                 <div className="pt-2 space-y-1">
-                  {activeRisks.map((rk) => (
-                    <div key={rk} className="flex items-center gap-2 py-1">
+                  {issues.map((iss, idx) => (
+                    <div key={idx} className="flex items-start gap-2 py-1">
                       <AlertTriangle
                         size={11}
-                        style={{ color: `oklch(0.65 0.18 ${SEV_HUE[RISK_SEV[rk]] ?? 250})`, flexShrink: 0 }}
+                        style={{ color: `oklch(0.65 0.18 ${SEV_HUE[iss.severity] ?? 250})`, flexShrink: 0, marginTop: 1 }}
                       />
                       <span className="text-[10px] font-mono flex-1" style={{ color: "oklch(0.65 0.01 250)" }}>
-                        {RISK_LABELS[rk] ?? rk}
+                        {iss.msg}
+                        {iss.container && (
+                          <span className="ml-1" style={{ color: "oklch(0.45 0.01 250)" }}>({iss.container})</span>
+                        )}
                       </span>
-                      <SevBadge sev={RISK_SEV[rk] ?? "MEDIUM"} />
+                      <SevBadge sev={iss.severity} />
                     </div>
                   ))}
                 </div>
 
-                {/* Imagem */}
-                <div
-                  className="text-[9px] font-mono px-2 py-1 rounded"
-                  style={{ background: "oklch(0.55 0.18 200 / 0.08)", color: "oklch(0.55 0.18 200)" }}
-                >
-                  {r.image}
-                </div>
-
                 {/* Squad: sugestão YAML */}
-                {!isSRE && (
+                {!isSRE && issues.some(i => i.yaml) && (
                   <div
                     className="rounded-lg p-2.5"
                     style={{
@@ -723,7 +713,7 @@ function RuntimeTab({
                       className="text-[9px] font-mono overflow-x-auto whitespace-pre-wrap"
                       style={{ color: "oklch(0.58 0.01 250)" }}
                     >
-                      {activeRisks.map(rk => RISK_FIX[rk] ?? `# Fix para ${rk}`).join("\n")}
+                      {issues.filter(i => i.yaml).map(i => i.yaml).join("\n---\n")}
                     </pre>
                   </div>
                 )}

@@ -1696,12 +1696,18 @@ const server = http.createServer(async (req, res) => {
       try {
         const user = req.user;
         const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        // Para 1 namespace usa fieldSelector (eficiente); para múltiplos busca tudo e filtra
         const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const [podsData, secretsData] = await Promise.all([
           k8sGet(`/api/v1/pods${nsFilter}`),
           k8sGet(`/api/v1/secrets${nsFilter}`).catch(() => ({ items: [] })),
         ]);
-        const pods = podsData.items || []; const secrets = secretsData.items || [];
+        let pods = podsData.items || []; let secrets = secretsData.items || [];
+        // Filtro pós-fetch para múltiplos namespaces
+        if (allowedNs && allowedNs.length > 1) {
+          pods = pods.filter(p => allowedNs.includes(p.metadata?.namespace));
+          secrets = secrets.filter(s => allowedNs.includes(s.metadata?.namespace));
+        }
         const findings = [];
         for (const pod of pods) {
           for (const c of (pod.spec?.containers || [])) {
@@ -1738,7 +1744,12 @@ const server = http.createServer(async (req, res) => {
         k8sGet(`/api/v1/pods${nsFilter}`),
         k8sGet(`/apis/networking.k8s.io/v1/networkpolicies${nsFilter}`).catch(() => ({ items: [] })),
         ]);
-        const pods = podsData.items || []; const policies = npData.items || [];
+        let pods = podsData.items || []; let policies = npData.items || [];
+        // Filtro pós-fetch para múltiplos namespaces
+        if (allowedNs && allowedNs.length > 1) {
+          pods = pods.filter(p => allowedNs.includes(p.metadata?.namespace));
+          policies = policies.filter(np => allowedNs.includes(np.metadata?.namespace));
+        }
         const policyByNs = {};
         for (const np of policies) { const ns = np.metadata?.namespace; if (!policyByNs[ns]) policyByNs[ns] = []; policyByNs[ns].push(np); }
         const nsSet = new Set(pods.map(p => p.metadata?.namespace).filter(Boolean));
@@ -1772,7 +1783,9 @@ const server = http.createServer(async (req, res) => {
         const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
-        const pods = podsData.items || [];
+        let pods = podsData.items || [];
+        // Filtro pós-fetch para múltiplos namespaces
+        if (allowedNs && allowedNs.length > 1) pods = pods.filter(p => allowedNs.includes(p.metadata?.namespace));
         const imageSet = new Set();
         for (const pod of pods) {
         for (const c of (pod.spec?.containers || [])) { if (c.image) imageSet.add(c.image); }

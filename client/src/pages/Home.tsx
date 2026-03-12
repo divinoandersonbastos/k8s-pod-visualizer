@@ -135,7 +135,10 @@ export default function Home() {
   }, [getAllEvents]);
 
   // Buscar lista completa de namespaces do cluster (inclui namespaces sem pods Running)
+  // Executa sempre que inCluster ou apiUrl mudar; também executa no mount quando
+  // inCluster ainda é false mas apiUrl está definido (modo externo)
   useEffect(() => {
+    // Aguarda até ter inCluster=true OU apiUrl definido para saber onde chamar
     if (!inCluster && !apiUrl) return;
     const fetchNamespaces = async () => {
       try {
@@ -144,9 +147,13 @@ export default function Home() {
         if (r.ok) {
           const data = await r.json();
           const names = (data.items ?? []).map((ns: { name: string }) => ns.name).sort();
-          setAllNamespaces(names);
+          if (names.length > 0) setAllNamespaces(names);
+        } else {
+          console.warn("[namespaces] endpoint retornou", r.status);
         }
-      } catch { /* silencioso */ }
+      } catch (e) {
+        console.warn("[namespaces] erro ao buscar:", e);
+      }
     };
     fetchNamespaces();
     const interval = setInterval(fetchNamespaces, 60_000); // a cada 1 min

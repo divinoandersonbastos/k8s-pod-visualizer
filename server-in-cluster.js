@@ -926,8 +926,8 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const nsRes = await k8sRequest("/api/v1/namespaces");
-        const allNs = (nsRes.body?.items ?? []).map((ns) => ({
+        const nsData = await k8sGet("/api/v1/namespaces");
+        const allNs = (nsData?.items ?? []).map((ns) => ({
           name: ns.metadata.name,
           status: ns.status?.phase ?? "Active",
           labels: ns.metadata.labels ?? {},

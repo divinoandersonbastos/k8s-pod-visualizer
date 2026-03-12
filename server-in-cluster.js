@@ -1077,13 +1077,22 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── /api/pods/:namespace/:pod/restart — Restart de pod (SRE only) ────────────
+  // ── /api/pods/:namespace/:pod/restart — Restart de pod (SRE + Squad no próprio ns) ───
   const podRestartMatch = url.pathname.match(/^\/api\/pods\/([^/]+)\/([^/]+)\/restart$/);
   if (podRestartMatch && req.method === "DELETE") {
     const [, namespace, podName] = podRestartMatch;
     requireAuth(req, res, async () => {
-      requireSRE(req, res, async () => {
-        try {
+      // SRE: acesso total | Squad: apenas nos seus namespaces
+      const user = req.user;
+      if (user.role !== "sre") {
+        const allowedNs = Array.isArray(user.namespaces) ? user.namespaces : [];
+        if (!allowedNs.includes(namespace)) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Acesso negado: namespace ${namespace} não permitido para seu usuário` }));
+          return;
+        }
+      }
+      try {
           // Deleta o pod — o Deployment/DaemonSet cria um novo automaticamente
           const token = getToken();
           const ca    = getCA();
@@ -1134,13 +1143,11 @@ const server = http.createServer(async (req, res) => {
           savePodRestartEvent({ podName, namespace, triggeredBy: username, result: "error", errorMsg: err.message });
           console.error(`[error] restart pod ${namespace}/${podName}:`, err.message);
           res.writeHead(500, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: err.message }));
+           res.end(JSON.stringify({ error: err.message }));
         }
-      });
     });
     return;
   }
-
   // ── /api/pods/:namespace/:pod/restart-history — Histórico de restarts ────────
   const podRestartHistoryMatch = url.pathname.match(/^\/api\/pods\/([^/]+)\/([^/]+)\/restart-history$/);
   if (podRestartHistoryMatch && req.method === "GET") {

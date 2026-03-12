@@ -23,6 +23,15 @@ import { PodStatusTimeline } from "./PodStatusTimeline";
 import { OomRiskBadge, OomRiskSummary } from "./OomRiskPanel";
 import type { OomRiskInfo } from "@/hooks/usePodOomRisk";
 
+// ── Auth helper ───────────────────────────────────────────────────────────────
+const TOKEN_KEY = "k8s-viz-token";
+function getAuthHeaders(): Record<string, string> {
+  const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+  return t
+    ? { Accept: "application/json", Authorization: `Bearer ${t}` }
+    : { Accept: "application/json" };
+}
+
 interface PodDetailPanelProps {
   pod: PodMetrics | null;
   onClose: () => void;
@@ -182,7 +191,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
       const base = apiUrl || "";
       const resp = await fetch(`${base}/api/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/restart`, {
         method: "DELETE",
-        credentials: "include",
+        headers: getAuthHeaders(),
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));

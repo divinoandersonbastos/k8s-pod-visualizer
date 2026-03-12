@@ -248,6 +248,33 @@ async function getPodsWithMetrics() {
         const directOwner = ownerRefs[0];
         if (directOwner) deploymentName = `[${directOwner.kind}] ${directOwner.name}`;
       }
+      // ── Cálculo de securityRisk por pod ──────────────────────────────────
+      const podSpec = p.spec || {};
+      const podSec  = podSpec.securityContext || {};
+      let secRisk = "OK";
+      const secIssues = [];
+      if (podSpec.hostNetwork) { secRisk = "CRITICAL"; secIssues.push("hostNetwork"); }
+      if (podSpec.hostIPC)     { secRisk = "CRITICAL"; secIssues.push("hostIPC"); }
+      if (podSpec.hostPID)     { secRisk = "CRITICAL"; secIssues.push("hostPID"); }
+      for (const c of allContainers) {
+        const cSec = c.securityContext || {};
+        if (cSec.privileged === true) { secRisk = "CRITICAL"; secIssues.push("privileged"); }
+        const runAsUser = cSec.runAsUser ?? podSec.runAsUser;
+        const runAsNonRoot = cSec.runAsNonRoot ?? podSec.runAsNonRoot;
+        if (runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined)) {
+          if (secRisk !== "CRITICAL") secRisk = "HIGH";
+          secIssues.push("runAsRoot");
+        }
+        if (cSec.allowPrivilegeEscalation !== false) {
+          if (secRisk === "OK" || secRisk === "LOW") secRisk = "MEDIUM";
+          secIssues.push("allowPrivEsc");
+        }
+        const hasLimits = c.resources?.limits?.cpu && c.resources?.limits?.memory;
+        if (!hasLimits) {
+          if (secRisk === "OK" || secRisk === "LOW") secRisk = "MEDIUM";
+          secIssues.push("missingLimits");
+        }
+      }
       return {
         name:           p.metadata.name,
         namespace:      p.metadata.namespace,
@@ -258,6 +285,8 @@ async function getPodsWithMetrics() {
         containerNames,
         deploymentName,
         labels:         p.metadata?.labels || {},
+        securityRisk,
+        securityIssues: [...new Set(secIssues)],
         resources: {
           requests: {
             cpu:    totalCpuReq,
@@ -1751,6 +1780,207 @@ const server = http.createServer(async (req, res) => {
         }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ images: results, trivyAvailable, scannedAt: new Date().toISOString() }));
+      } catch (err) {
+        if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+      }
+    });
+    return;
+  }
+
+
+  // ── /api/security/runtime-risks ──────────────────────────────────────────
+  // Analisa cada pod individualmente: privileged, hostNetwork, hostIPC,
+  // runAsRoot, allowPrivEsc, missingLimits. Retorna risco por pod.
+  if (url.pathname === "/api/security/runtime-risks") {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsFilter = allowedNs && allowedNs.length === 1
+          ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}`
+          : "";
+        const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+        let pods = podsData.items || [];
+        if (allowedNs && allowedNs.length > 1) {
+          pods = pods.filter(p => allowedNs.includes(p.metadata?.namespace));
+        }
+
+        const podRisks = [];
+        for (const pod of pods) {
+          const podSpec = pod.spec || {};
+          const podSec = podSpec.securityContext || {};
+          const issues = [];
+
+          // Host-level risks (CRITICAL)
+          if (podSpec.hostNetwork) issues.push({ type: "hostNetwork", severity: "CRITICAL", msg: "Pod compartilha stack de rede do host (hostNetwork: true)", yaml: "spec:\n  hostNetwork: false  # Remover ou definir como false" });
+          if (podSpec.hostIPC)     issues.push({ type: "hostIPC",     severity: "CRITICAL", msg: "Pod compartilha IPC do host (hostIPC: true)", yaml: "spec:\n  hostIPC: false  # Remover ou definir como false" });
+          if (podSpec.hostPID)     issues.push({ type: "hostPID",     severity: "CRITICAL", msg: "Pod compartilha PID namespace do host (hostPID: true)", yaml: "spec:\n  hostPID: false  # Remover ou definir como false" });
+
+          for (const c of (podSpec.containers || [])) {
+            const cSec = c.securityContext || {};
+            const res_ = c.resources || {};
+            const hasLimits = res_.limits?.cpu && res_.limits?.memory;
+
+            // Container-level risks
+            if (cSec.privileged === true) {
+              issues.push({ type: "privileged", severity: "CRITICAL", container: c.name, msg: `Container '${c.name}' rodando em modo privilegiado`, yaml: `containers:\n- name: ${c.name}\n  securityContext:\n    privileged: false  # NUNCA usar em produção` });
+            }
+            const runAsUser = cSec.runAsUser ?? podSec.runAsUser;
+            const runAsNonRoot = cSec.runAsNonRoot ?? podSec.runAsNonRoot;
+            const isRoot = runAsUser === 0 || (!runAsNonRoot && runAsUser === undefined);
+            if (isRoot) {
+              issues.push({ type: "runAsRoot", severity: "HIGH", container: c.name, msg: `Container '${c.name}' rodando como root (uid 0 ou sem runAsNonRoot)`, yaml: `containers:\n- name: ${c.name}\n  securityContext:\n    runAsNonRoot: true\n    runAsUser: 1000  # Use UID não-root` });
+            }
+            if (cSec.allowPrivilegeEscalation !== false) {
+              issues.push({ type: "allowPrivEsc", severity: "MEDIUM", container: c.name, msg: `Container '${c.name}' permite escalação de privilégio`, yaml: `containers:\n- name: ${c.name}\n  securityContext:\n    allowPrivilegeEscalation: false` });
+            }
+            if (cSec.readOnlyRootFilesystem !== true) {
+              issues.push({ type: "writableRootFS", severity: "LOW", container: c.name, msg: `Container '${c.name}' tem filesystem raiz gravável`, yaml: `containers:\n- name: ${c.name}\n  securityContext:\n    readOnlyRootFilesystem: true` });
+            }
+            if (!hasLimits) {
+              issues.push({ type: "missingLimits", severity: "MEDIUM", container: c.name, msg: `Container '${c.name}' sem resource limits (risco de DoS no node)`, yaml: `containers:\n- name: ${c.name}\n  resources:\n    limits:\n      cpu: "500m"    # Ajuste conforme necessário\n      memory: "256Mi"  # Ajuste conforme necessário\n    requests:\n      cpu: "100m"\n      memory: "128Mi"` });
+            }
+          }
+
+          const maxSev = issues.some(i => i.severity === "CRITICAL") ? "CRITICAL"
+                       : issues.some(i => i.severity === "HIGH")     ? "HIGH"
+                       : issues.some(i => i.severity === "MEDIUM")   ? "MEDIUM"
+                       : issues.some(i => i.severity === "LOW")      ? "LOW"
+                       : "OK";
+
+          if (issues.length > 0) {
+            podRisks.push({
+              namespace: pod.metadata?.namespace,
+              pod: pod.metadata?.name,
+              riskLevel: maxSev,
+              issueCount: issues.length,
+              issues,
+              labels: pod.metadata?.labels || {},
+            });
+          }
+        }
+
+        // Ranking por namespace para SRE
+        const nsSummary = {};
+        for (const pr of podRisks) {
+          const ns = pr.namespace;
+          if (!nsSummary[ns]) nsSummary[ns] = { namespace: ns, critical: 0, high: 0, medium: 0, low: 0, total: 0 };
+          nsSummary[ns][pr.riskLevel.toLowerCase()] = (nsSummary[ns][pr.riskLevel.toLowerCase()] || 0) + 1;
+          nsSummary[ns].total++;
+        }
+        const nsRanking = Object.values(nsSummary).sort((a, b) => b.critical - a.critical || b.high - a.high || b.total - a.total);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          pods: podRisks,
+          nsRanking,
+          summary: {
+            totalPodsAnalyzed: pods.length,
+            podsWithIssues: podRisks.length,
+            critical: podRisks.filter(p => p.riskLevel === "CRITICAL").length,
+            high: podRisks.filter(p => p.riskLevel === "HIGH").length,
+            medium: podRisks.filter(p => p.riskLevel === "MEDIUM").length,
+            low: podRisks.filter(p => p.riskLevel === "LOW").length,
+          },
+          checkedAt: new Date().toISOString(),
+        }));
+      } catch (err) {
+        if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+      }
+    });
+    return;
+  }
+
+  // ── /api/security/vuln-report ─────────────────────────────────────────────
+  // Tenta ler VulnerabilityReport CRDs do Trivy Operator.
+  // Se não disponível, retorna lista de imagens únicas com status "pending_scan".
+  if (url.pathname === "/api/security/vuln-report") {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsFilter = allowedNs && allowedNs.length === 1
+          ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}`
+          : "";
+
+        // Tenta ler VulnerabilityReports do Trivy Operator
+        let trivyOperatorAvailable = false;
+        let reports = [];
+        try {
+          const vrData = await k8sGet(`/apis/aquasecurity.github.io/v1alpha1/vulnerabilityreports${nsFilter}`);
+          if (vrData && vrData.items) {
+            trivyOperatorAvailable = true;
+            for (const vr of vrData.items) {
+              const vulns = [];
+              for (const v of (vr.report?.vulnerabilities || [])) {
+                vulns.push({
+                  id: v.vulnerabilityID,
+                  severity: v.severity,
+                  pkg: v.resource,
+                  installedVersion: v.installedVersion,
+                  fixedVersion: v.fixedVersion || null,
+                  title: v.title || v.vulnerabilityID,
+                  publishedDate: v.publishedDate || null,
+                });
+              }
+              const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+              for (const v of vulns) counts[v.severity] = (counts[v.severity] || 0) + 1;
+              reports.push({
+                namespace: vr.metadata?.namespace,
+                name: vr.metadata?.name,
+                container: vr.metadata?.labels?.["trivy-operator.container.name"] || "",
+                image: vr.report?.artifact?.repository ? `${vr.report.artifact.repository}:${vr.report.artifact.tag || "latest"}` : "",
+                vulns: vulns.slice(0, 200),
+                counts,
+                scannedAt: vr.metadata?.creationTimestamp,
+                source: "trivy-operator",
+              });
+            }
+          }
+        } catch (_) { trivyOperatorAvailable = false; }
+
+        if (!trivyOperatorAvailable) {
+          // Fallback: listar imagens únicas dos pods e retornar status pending_scan
+          const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
+          let pods = podsData.items || [];
+          if (allowedNs && allowedNs.length > 1) pods = pods.filter(p => allowedNs.includes(p.metadata?.namespace));
+          const imageMap = new Map();
+          for (const pod of pods) {
+            for (const c of [...(pod.spec?.containers || []), ...(pod.spec?.initContainers || [])]) {
+              if (!c.image) continue;
+              if (!imageMap.has(c.image)) imageMap.set(c.image, { namespaces: new Set(), pods: new Set() });
+              imageMap.get(c.image).namespaces.add(pod.metadata?.namespace);
+              imageMap.get(c.image).pods.add(pod.metadata?.name);
+            }
+          }
+          for (const [image, meta] of imageMap) {
+            reports.push({
+              image,
+              namespaces: [...meta.namespaces],
+              pods: [...meta.pods].slice(0, 10),
+              vulns: [],
+              counts: {},
+              scannedAt: null,
+              source: "pending_scan",
+              message: "Trivy Operator não detectado. Instale o Trivy Operator para scan automático de imagens.",
+            });
+          }
+        }
+
+        // Filtrar por namespace para Squad
+        if (allowedNs && allowedNs.length > 0) {
+          reports = reports.filter(r => !r.namespace || allowedNs.includes(r.namespace));
+        }
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          reports,
+          trivyOperatorAvailable,
+          totalImages: reports.length,
+          criticalImages: reports.filter(r => (r.counts?.CRITICAL || 0) > 0).length,
+          highImages: reports.filter(r => (r.counts?.HIGH || 0) > 0).length,
+          checkedAt: new Date().toISOString(),
+        }));
       } catch (err) {
         if (!res.headersSent) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
       }

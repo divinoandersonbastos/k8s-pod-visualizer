@@ -39,6 +39,7 @@ interface BubbleCanvasProps {
   layoutMode: LayoutMode;
   onSelectPod: (pod: PodMetrics | null) => void;
   selectedPodId?: string;
+  securityMode?: boolean;
 }
 
 // ─── Paleta de cores por namespace ────────────────────────────────────────────
@@ -240,6 +241,7 @@ export function BubbleCanvas({
   layoutMode,
   onSelectPod,
   selectedPodId,
+  securityMode = false,
 }: BubbleCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -680,7 +682,16 @@ export function BubbleCanvas({
 
           {/* ── Bolhas ── */}
           {nodes.map((node) => {
-            const colors = STATUS_COLORS[node.status];
+            // Em securityMode, usa cores de risco de segurança em vez de status de recurso
+            const secRisk = (node as PodMetrics).securityRisk ?? "OK";
+            const SEC_COLORS: Record<string, typeof STATUS_COLORS["healthy"]> = {
+              CRITICAL: { fill: "oklch(0.45 0.28 25)",  stroke: "oklch(0.70 0.28 25)",  glow: "oklch(0.30 0.20 25 / 0.5)",  label: "oklch(0.85 0.20 25)",  text: "oklch(0.95 0.05 25)" },
+              HIGH:     { fill: "oklch(0.55 0.22 45)",  stroke: "oklch(0.75 0.22 45)",  glow: "oklch(0.35 0.18 45 / 0.5)",  label: "oklch(0.88 0.18 45)",  text: "oklch(0.95 0.05 45)" },
+              MEDIUM:   { fill: "oklch(0.60 0.18 85)",  stroke: "oklch(0.78 0.18 85)",  glow: "oklch(0.40 0.14 85 / 0.5)",  label: "oklch(0.90 0.14 85)",  text: "oklch(0.95 0.05 85)" },
+              LOW:      { fill: "oklch(0.55 0.14 200)", stroke: "oklch(0.72 0.14 200)", glow: "oklch(0.35 0.10 200 / 0.5)", label: "oklch(0.85 0.10 200)", text: "oklch(0.95 0.05 200)" },
+              OK:       { fill: "oklch(0.50 0.16 145)", stroke: "oklch(0.70 0.16 145)", glow: "oklch(0.30 0.12 145 / 0.5)", label: "oklch(0.82 0.12 145)", text: "oklch(0.95 0.05 145)" },
+            };
+            const colors = securityMode ? (SEC_COLORS[secRisk] ?? SEC_COLORS.OK) : STATUS_COLORS[node.status];
             const isSelected = node.id === selectedPodId;
             const percent = viewMode === "cpu" ? node.cpuPercent : node.memoryPercent;
             const value = viewMode === "cpu"
@@ -1076,8 +1087,31 @@ export function BubbleCanvas({
           {Math.round(zoom * 100)}%
         </div>
       </div>
-
-      {/* ── Hint de navegação (aparece apenas com muitos pods) ─────────────────── */}
+      {/* ── Legenda de segurança (aparece quando securityMode está ativo) ──────────── */}
+      {securityMode && (
+        <div
+          className="absolute bottom-4 left-4 flex items-center gap-3 px-3 py-2 rounded-lg pointer-events-none z-20"
+          style={{
+            background: "oklch(0.12 0.02 250 / 0.92)",
+            border: "1px solid oklch(0.22 0.04 250)",
+          }}
+        >
+          <span className="text-[9px] font-mono" style={{ color: "oklch(0.50 0.01 250)" }}>RISCO:</span>
+          {[
+            { key: "CRITICAL", label: "Crítico",  hue: 25 },
+            { key: "HIGH",     label: "Alto",     hue: 45 },
+            { key: "MEDIUM",   label: "Médio",    hue: 85 },
+            { key: "LOW",      label: "Baixo",    hue: 200 },
+            { key: "OK",       label: "OK",       hue: 145 },
+          ].map(({ key, label, hue }) => (
+            <span key={key} className="flex items-center gap-1 text-[9px] font-mono" style={{ color: `oklch(0.72 0.18 ${hue})` }}>
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: `oklch(0.55 0.20 ${hue})`, boxShadow: `0 0 4px oklch(0.55 0.20 ${hue} / 0.6)` }} />
+              {label}
+            </span>
+          ))}
+        </div>
+      )}
+      {/* ── Hint de navegação (aparece apenas com muitos pods) ───────────────────── */}
       {pods.length > 100 && zoom === 1 && pan.x === 0 && pan.y === 0 && (
         <div
           className="absolute bottom-4 left-1/2 -translate-x-1/2 text-[10px] font-mono px-3 py-1 rounded-full pointer-events-none"

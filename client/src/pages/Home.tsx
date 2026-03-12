@@ -60,6 +60,7 @@ export default function Home() {
   const [showTrace, setShowTrace] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
+  const [securityMode, setSecurityMode] = useState(false);
   const { user, isSRE, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
@@ -319,6 +320,8 @@ export default function Home() {
           onDisplayModeChange={setDisplayMode}
           onShowSecurity={() => setShowSecurity(true)}
           securitySeverity={securitySeverity}
+          securityMode={securityMode}
+          onToggleSecurityMode={() => setSecurityMode(v => !v)}
         />
 
         {/* Canvas principal */}
@@ -421,6 +424,7 @@ export default function Home() {
               layoutMode={layoutMode}
               onSelectPod={setSelectedPod}
               selectedPodId={selectedPod?.id}
+              securityMode={securityMode}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center">

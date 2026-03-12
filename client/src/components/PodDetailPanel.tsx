@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
-  RotateCcw, Copy, Check, Network,
+  RotateCcw, Copy, Check, Network, Shield,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
@@ -607,6 +607,55 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                       </div>
                     </div>
                   )}
+
+                  {/* Security Badges */}
+                  {(() => {
+                    const p = pod as unknown as { securityRisk?: string; securityIssues?: string[] };
+                    const risk = p.securityRisk;
+                    const issues = p.securityIssues ?? [];
+                    if (!risk || risk === "OK" || issues.length === 0) return null;
+                    const riskColors: Record<string, { bg: string; border: string; text: string; label: string }> = {
+                      CRITICAL: { bg: "oklch(0.18 0.04 25)",  border: "oklch(0.45 0.22 25)",  text: "oklch(0.72 0.22 25)",  label: "CRÍTICO" },
+                      HIGH:     { bg: "oklch(0.18 0.04 50)",  border: "oklch(0.55 0.18 50)",  text: "oklch(0.78 0.18 50)",  label: "ALTO" },
+                      MEDIUM:   { bg: "oklch(0.18 0.04 80)",  border: "oklch(0.60 0.14 80)",  text: "oklch(0.82 0.14 80)",  label: "MÉDIO" },
+                      LOW:      { bg: "oklch(0.18 0.03 200)", border: "oklch(0.45 0.10 200)", text: "oklch(0.70 0.10 200)", label: "BAIXO" },
+                    };
+                    const rc = riskColors[risk] ?? riskColors.LOW;
+                    const issueLabels: Record<string, string> = {
+                      root:          "Rodando como Root",
+                      privileged:    "Container Privilegiado",
+                      allowPrivEsc:  "Allow Privilege Escalation",
+                      hostNetwork:   "Host Network",
+                      hostIPC:       "Host IPC",
+                      hostPID:       "Host PID",
+                      missingLimits: "Sem Resource Limits",
+                    };
+                    return (
+                      <>
+                        <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            <Shield size={11} style={{ color: rc.text }} />
+                            <span className="text-[10px] text-slate-500 uppercase tracking-widest">Riscos de Segurança</span>
+                            <span className="ml-auto text-[10px] font-bold px-1.5 py-0.5 rounded"
+                              style={{ background: rc.bg, border: `1px solid ${rc.border}`, color: rc.text }}>
+                              {rc.label}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {issues.map(issue => (
+                              <span key={issue}
+                                className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium"
+                                style={{ background: rc.bg, border: `1px solid ${rc.border}`, color: rc.text }}>
+                                <AlertTriangle size={10} />
+                                {issueLabels[issue] ?? issue}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
 
                   {/* Gauges */}
                   <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />

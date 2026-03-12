@@ -1,33 +1,36 @@
 /**
- * SecurityPanel.tsx — Sprint 4
+ * SecurityPanel.tsx — Sprint 4B
  *
- * Painel de segurança do cluster com 5 abas:
- * 1. Vulnerabilidades de Imagens (Trivy)
- * 2. Containers como Root / Privilegiados
- * 3. RBAC Excessivo (SRE only)
- * 4. Secrets Expostos
- * 5. Network Policies
+ * Painel de segurança com visões diferenciadas SRE/Squad:
+ * SRE: Dashboard cluster-wide com ranking de namespaces por risco
+ * Squad: Visão namespace-scoped com CVEs, sugestões YAML inline
  *
- * Disponível para SRE (todos os namespaces) e Squad (namespace restrito).
+ * Abas:
+ * 1. Visão Geral (SRE: ranking | Squad: resumo namespace)
+ * 2. Vulnerabilidades de Imagens (Trivy)
+ * 3. Runtime Risks (Root/Privileged/HostNetwork/Limites)
+ * 4. RBAC Excessivo (SRE only)
+ * 5. Secrets Expostos
+ * 6. Network Policies
  */
-
 import { useState, useEffect, useCallback } from "react";
 import {
   Shield, ShieldAlert, ShieldCheck, ShieldX,
   X, RefreshCw, Loader2, AlertTriangle, CheckCircle2,
-  Lock, Network, Key, UserX, ChevronDown, ChevronRight,
-  ExternalLink, Info, Eye, EyeOff,
+  Network, Key, UserX, ChevronDown, ChevronRight,
+  Eye, EyeOff, Copy, Check, Package, Zap,
 } from "lucide-react";
 
-// ── Auth helper ──────────────────────────────────────────────────────────────
+// ── Auth helper ───────────────────────────────────────────────────────────────
 const TOKEN_KEY = "k8s-viz-token";
 function getAuthHeaders(): Record<string, string> {
   const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
-  return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+  return t
+    ? { Accept: "application/json", Authorization: `Bearer ${t}` }
+    : { Accept: "application/json" };
 }
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
-
 type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN" | "OK";
 
 interface SecuritySummary {
@@ -50,6 +53,8 @@ interface ImageVuln {
 
 interface ImageScanResult {
   image: string;
+  pod: string;
+  namespace: string;
   vulns: ImageVuln[];
   counts: Record<string, number>;
   scanned: boolean;
@@ -57,86 +62,48 @@ interface ImageScanResult {
   error?: string;
 }
 
-interface RootContainer {
-  namespace: string;
+interface RuntimeRisk {
   pod: string;
+  namespace: string;
   container: string;
   image: string;
-  runAsUser?: number;
-  runAsNonRoot?: boolean;
-  privileged: boolean;
-  allowPrivilegeEscalation: boolean;
-  readOnlyRootFilesystem: boolean;
-  risk: Severity;
-  reason: string;
+  risks: {
+    runAsRoot: boolean;
+    privileged: boolean;
+    allowPrivEsc: boolean;
+    hostNetwork: boolean;
+    hostIPC: boolean;
+    hostPID: boolean;
+    missingCpuLimit: boolean;
+    missingMemLimit: boolean;
+    readOnlyRootFs: boolean;
+  };
+  riskLevel: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK";
+  riskCount: number;
 }
 
-interface RbacFinding {
-  type: string;
+interface RbacIssue {
+  kind: string;
   name: string;
   namespace: string;
-  role: string;
   subjects: string[];
-  issues: { severity: Severity; message: string }[];
-  maxSeverity: Severity;
+  risks: string[];
+  riskLevel: string;
 }
 
-interface SecretExposure {
-  namespace: string;
-  pod: string;
-  container: string;
-  secrets: { type: string; secretName: string; key: string; envVar: string }[];
-  risk: Severity;
-  reason: string;
-}
-
-interface RiskySecret {
-  namespace: string;
+interface SecretIssue {
   name: string;
+  namespace: string;
   type: string;
+  exposedInEnv: { pod: string; container: string; key: string }[];
   sensitiveKeys: string[];
-  risk: Severity;
 }
 
-interface NetworkPolicy {
-  namespace: string;
-  name: string;
-  ingressRules: number;
-  egressRules: number;
-  policyTypes: string[];
+interface NetworkPolicyData {
+  namespacesWithoutPolicy: string[];
+  permissivePolicies: { namespace: string; name: string; risk: string; reason: string }[];
+  podsWithoutPolicy: { namespace: string; pod: string; risk: string }[];
 }
-
-// ── Helpers de estilo por severidade ─────────────────────────────────────────
-
-const SEV_COLORS: Record<string, { bg: string; text: string; border: string; label: string }> = {
-  CRITICAL: { bg: "oklch(0.70 0.22 25 / 0.15)", text: "oklch(0.75 0.22 25)", border: "oklch(0.70 0.22 25 / 0.4)", label: "CRÍTICO" },
-  HIGH:     { bg: "oklch(0.70 0.20 45 / 0.15)", text: "oklch(0.75 0.20 45)", border: "oklch(0.70 0.20 45 / 0.4)", label: "ALTO" },
-  MEDIUM:   { bg: "oklch(0.75 0.18 80 / 0.15)", text: "oklch(0.78 0.18 80)", border: "oklch(0.75 0.18 80 / 0.4)", label: "MÉDIO" },
-  LOW:      { bg: "oklch(0.65 0.12 200 / 0.10)", text: "oklch(0.65 0.12 200)", border: "oklch(0.65 0.12 200 / 0.3)", label: "BAIXO" },
-  UNKNOWN:  { bg: "oklch(0.45 0.01 250 / 0.15)", text: "oklch(0.55 0.01 250)", border: "oklch(0.45 0.01 250 / 0.3)", label: "DESCONHECIDO" },
-  OK:       { bg: "oklch(0.65 0.18 142 / 0.10)", text: "oklch(0.65 0.18 142)", border: "oklch(0.65 0.18 142 / 0.3)", label: "OK" },
-};
-
-function SevBadge({ sev }: { sev: string }) {
-  const s = SEV_COLORS[sev] || SEV_COLORS.UNKNOWN;
-  return (
-    <span
-      className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold font-mono"
-      style={{ background: s.bg, color: s.text, border: `1px solid ${s.border}` }}
-    >
-      {s.label}
-    </span>
-  );
-}
-
-function SevIcon({ sev, size = 14 }: { sev: string; size?: number }) {
-  if (sev === "CRITICAL" || sev === "HIGH") return <ShieldX size={size} style={{ color: SEV_COLORS[sev]?.text }} />;
-  if (sev === "MEDIUM") return <ShieldAlert size={size} style={{ color: SEV_COLORS[sev]?.text }} />;
-  if (sev === "OK") return <ShieldCheck size={size} style={{ color: SEV_COLORS.OK.text }} />;
-  return <Shield size={size} style={{ color: SEV_COLORS[sev]?.text || SEV_COLORS.UNKNOWN.text }} />;
-}
-
-// ── Componente principal ──────────────────────────────────────────────────────
 
 interface SecurityPanelProps {
   onClose: () => void;
@@ -144,550 +111,421 @@ interface SecurityPanelProps {
   isSRE: boolean;
 }
 
-type Tab = "images" | "root" | "rbac" | "secrets" | "network";
+// ── Helpers visuais ───────────────────────────────────────────────────────────
+const SEV_HUE: Record<string, number> = {
+  CRITICAL: 25, HIGH: 45, MEDIUM: 85, LOW: 200, UNKNOWN: 250, OK: 145,
+};
 
-const TABS: { id: Tab; label: string; icon: React.ReactNode; sreOnly?: boolean }[] = [
-  { id: "images",  label: "Imagens",        icon: <Shield size={13} /> },
-  { id: "root",    label: "Root/Priv",       icon: <UserX size={13} /> },
-  { id: "rbac",    label: "RBAC",            icon: <Key size={13} />, sreOnly: true },
-  { id: "secrets", label: "Secrets",         icon: <Lock size={13} /> },
-  { id: "network", label: "Network Policies",icon: <Network size={13} /> },
-];
-
-export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("images");
-  const [summary, setSummary] = useState<SecuritySummary | null>(null);
-  const [summaryLoading, setSummaryLoading] = useState(true);
-
-  // ── Dados por aba ──────────────────────────────────────────────────────────
-  const [imageData, setImageData] = useState<{ images: ImageScanResult[]; trivyAvailable: boolean; scannedAt: string } | null>(null);
-  const [imageLoading, setImageLoading] = useState(false);
-  const [imageError, setImageError] = useState<string | null>(null);
-
-  const [rootData, setRootData] = useState<{ containers: RootContainer[]; total: number } | null>(null);
-  const [rootLoading, setRootLoading] = useState(false);
-  const [rootError, setRootError] = useState<string | null>(null);
-
-  const [rbacData, setRbacData] = useState<{ findings: RbacFinding[]; total: number } | null>(null);
-  const [rbacLoading, setRbacLoading] = useState(false);
-  const [rbacError, setRbacError] = useState<string | null>(null);
-
-  const [secretsData, setSecretsData] = useState<{ envExposures: SecretExposure[]; riskySecrets: RiskySecret[] } | null>(null);
-  const [secretsLoading, setSecretsLoading] = useState(false);
-  const [secretsError, setSecretsError] = useState<string | null>(null);
-
-  const [networkData, setNetworkData] = useState<{
-    policies: NetworkPolicy[];
-    nsWithoutPolicy: string[];
-    permissivePolicies: { namespace: string; name: string; risk: string; reason: string }[];
-    podsWithoutPolicy: { namespace: string; pod: string; risk: string }[];
-    summary: { totalPolicies: number; nsWithoutPolicy: number; permissivePolicies: number; podsWithoutPolicy: number };
-  } | null>(null);
-  const [networkLoading, setNetworkLoading] = useState(false);
-  const [networkError, setNetworkError] = useState<string | null>(null);
-
-  // ── Fetch helpers ──────────────────────────────────────────────────────────
-  const fetchSummary = useCallback(async () => {
-    setSummaryLoading(true);
-    try {
-      const r = await fetch(`${apiUrl}/api/security/summary`, { headers: getAuthHeaders() });
-      if (r.ok) setSummary(await r.json());
-    } catch { /* silencioso */ }
-    setSummaryLoading(false);
-  }, [apiUrl]);
-
-  const fetchTab = useCallback(async (tab: Tab) => {
-    const endpoints: Record<Tab, string> = {
-      images:  "/api/security/image-scan",
-      root:    "/api/security/root-containers",
-      rbac:    "/api/security/rbac",
-      secrets: "/api/security/secrets",
-      network: "/api/security/network-policies",
-    };
-    const setLoading = { images: setImageLoading, root: setRootLoading, rbac: setRbacLoading, secrets: setSecretsLoading, network: setNetworkLoading }[tab];
-    const setError   = { images: setImageError,   root: setRootError,   rbac: setRbacError,   secrets: setSecretsError,   network: setNetworkError   }[tab];
-    const setData    = { images: setImageData,     root: setRootData,    rbac: setRbacData,    secrets: setSecretsData,    network: setNetworkData    }[tab] as (d: unknown) => void;
-
-    setLoading(true);
-    setError(null);
-    try {
-      const r = await fetch(`${apiUrl}${endpoints[tab]}`, { headers: getAuthHeaders() });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setData(await r.json());
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-    setLoading(false);
-  }, [apiUrl]);
-
-  useEffect(() => { fetchSummary(); }, [fetchSummary]);
-  useEffect(() => { fetchTab(activeTab); }, [activeTab, fetchTab]);
-
-  // ── Render ─────────────────────────────────────────────────────────────────
-  const summaryColor = summary ? (SEV_COLORS[summary.severity] || SEV_COLORS.UNKNOWN) : SEV_COLORS.UNKNOWN;
-
+function SevBadge({ sev }: { sev: string }) {
+  const hue = SEV_HUE[sev] ?? 250;
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center"
-      style={{ background: "oklch(0.05 0.01 250 / 0.85)", backdropFilter: "blur(4px)" }}
+    <span
+      className="text-[9px] font-mono px-1.5 py-0.5 rounded uppercase font-bold"
+      style={{
+        background: `oklch(0.55 0.20 ${hue} / 0.18)`,
+        border: `1px solid oklch(0.60 0.20 ${hue} / 0.5)`,
+        color: `oklch(0.78 0.20 ${hue})`,
+      }}
     >
-      <div
-        className="flex flex-col w-full max-w-5xl mx-4 rounded-xl overflow-hidden"
+      {sev}
+    </span>
+  );
+}
+
+function RiskIcon({ level }: { level: string }) {
+  const hue = SEV_HUE[level] ?? 250;
+  const Icon =
+    level === "CRITICAL" ? ShieldX :
+    level === "HIGH" ? ShieldAlert :
+    level === "OK" ? ShieldCheck : Shield;
+  return <Icon size={14} style={{ color: `oklch(0.72 0.20 ${hue})` }} />;
+}
+
+function LoadingState() {
+  return (
+    <div className="flex items-center justify-center py-12">
+      <Loader2 size={20} className="animate-spin" style={{ color: "oklch(0.55 0.18 200)" }} />
+      <span className="ml-2 text-sm font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>Analisando...</span>
+    </div>
+  );
+}
+
+function ErrorState({ msg, onRetry }: { msg: string; onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-10 gap-3">
+      <AlertTriangle size={20} style={{ color: "oklch(0.72 0.18 45)" }} />
+      <p className="text-xs font-mono text-center" style={{ color: "oklch(0.55 0.01 250)" }}>{msg}</p>
+      <button
+        onClick={onRetry}
+        className="text-xs font-mono px-3 py-1.5 rounded-lg"
         style={{
-          background: "oklch(0.10 0.015 250)",
-          border: "1px solid oklch(0.22 0.03 250)",
-          boxShadow: "0 25px 60px oklch(0.05 0.01 250 / 0.8)",
-          maxHeight: "90vh",
+          background: "oklch(0.55 0.18 200 / 0.15)",
+          border: "1px solid oklch(0.55 0.18 200 / 0.4)",
+          color: "oklch(0.65 0.18 200)",
         }}
       >
-        {/* Header */}
-        <div
-          className="flex items-center justify-between px-5 py-3 shrink-0"
-          style={{ borderBottom: "1px solid oklch(0.20 0.03 250)", background: "oklch(0.09 0.012 250)" }}
-        >
-          <div className="flex items-center gap-3">
-            <div
-              className="flex items-center justify-center w-8 h-8 rounded-lg"
-              style={{ background: summaryColor.bg, border: `1px solid ${summaryColor.border}` }}
-            >
-              <SevIcon sev={summary?.severity || "UNKNOWN"} size={16} />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold" style={{ color: "oklch(0.90 0.008 250)" }}>
-                Painel de Segurança
-              </h2>
-              <p className="text-[11px]" style={{ color: "oklch(0.45 0.01 250)" }}>
-                {summaryLoading ? "Carregando..." : summary
-                  ? `${summary.totalIssues} problema${summary.totalIssues !== 1 ? "s" : ""} detectado${summary.totalIssues !== 1 ? "s" : ""} · ${new Date(summary.checkedAt).toLocaleTimeString("pt-BR")}`
-                  : "Análise de segurança do cluster"}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {/* Resumo rápido */}
-            {summary && !summaryLoading && (
-              <div className="flex items-center gap-2 mr-2">
-                {summary.privilegedContainers > 0 && (
-                  <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded" style={{ background: SEV_COLORS.CRITICAL.bg, color: SEV_COLORS.CRITICAL.text, border: `1px solid ${SEV_COLORS.CRITICAL.border}` }}>
-                    <ShieldX size={10} /> {summary.privilegedContainers} priv
-                  </span>
-                )}
-                {summary.rootContainers > 0 && (
-                  <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded" style={{ background: SEV_COLORS.HIGH.bg, color: SEV_COLORS.HIGH.text, border: `1px solid ${SEV_COLORS.HIGH.border}` }}>
-                    <UserX size={10} /> {summary.rootContainers} root
-                  </span>
-                )}
-                {summary.nsWithoutNetworkPolicy > 0 && (
-                  <span className="flex items-center gap-1 text-[11px] px-2 py-0.5 rounded" style={{ background: SEV_COLORS.MEDIUM.bg, color: SEV_COLORS.MEDIUM.text, border: `1px solid ${SEV_COLORS.MEDIUM.border}` }}>
-                    <Network size={10} /> {summary.nsWithoutNetworkPolicy} ns sem policy
-                  </span>
-                )}
-              </div>
-            )}
-            <button
-              onClick={() => { fetchSummary(); fetchTab(activeTab); }}
-              className="p-1.5 rounded-lg transition-all hover:bg-white/5"
-              style={{ color: "oklch(0.50 0.01 250)" }}
-              title="Atualizar"
-            >
-              <RefreshCw size={13} />
-            </button>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-lg transition-all hover:bg-white/5"
-              style={{ color: "oklch(0.50 0.01 250)" }}
-            >
-              <X size={14} />
-            </button>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div
-          className="flex shrink-0 overflow-x-auto"
-          style={{ borderBottom: "1px solid oklch(0.20 0.03 250)", background: "oklch(0.09 0.012 250)" }}
-        >
-          {TABS.filter(t => !t.sreOnly || isSRE).map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              className="flex items-center gap-1.5 px-4 py-2.5 text-[12px] font-medium whitespace-nowrap transition-all"
-              style={{
-                color: activeTab === tab.id ? "oklch(0.72 0.18 200)" : "oklch(0.45 0.01 250)",
-                borderBottom: activeTab === tab.id ? "2px solid oklch(0.72 0.18 200)" : "2px solid transparent",
-                background: activeTab === tab.id ? "oklch(0.55 0.22 260 / 0.05)" : "transparent",
-              }}
-            >
-              {tab.icon}
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto" style={{ minHeight: 0 }}>
-          {activeTab === "images"  && <ImageScanTab data={imageData}   loading={imageLoading}   error={imageError}   onRefresh={() => fetchTab("images")} />}
-          {activeTab === "root"    && <RootTab      data={rootData}    loading={rootLoading}    error={rootError}    onRefresh={() => fetchTab("root")} />}
-          {activeTab === "rbac"    && <RbacTab      data={rbacData}    loading={rbacLoading}    error={rbacError}    onRefresh={() => fetchTab("rbac")} isSRE={isSRE} />}
-          {activeTab === "secrets" && <SecretsTab   data={secretsData} loading={secretsLoading} error={secretsError} onRefresh={() => fetchTab("secrets")} />}
-          {activeTab === "network" && <NetworkTab   data={networkData} loading={networkLoading} error={networkError} onRefresh={() => fetchTab("network")} />}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Helpers de layout ─────────────────────────────────────────────────────────
-
-function TabLoading() {
-  return (
-    <div className="flex items-center justify-center h-48 gap-3" style={{ color: "oklch(0.45 0.01 250)" }}>
-      <Loader2 size={20} className="animate-spin" />
-      <span className="text-sm">Analisando...</span>
-    </div>
-  );
-}
-
-function TabError({ error, onRefresh }: { error: string; onRefresh: () => void }) {
-  return (
-    <div className="m-4 p-4 rounded-lg flex items-start gap-3" style={{ background: "oklch(0.70 0.22 25 / 0.08)", border: "1px solid oklch(0.70 0.22 25 / 0.25)" }}>
-      <AlertTriangle size={16} style={{ color: "oklch(0.75 0.22 25)" }} className="shrink-0 mt-0.5" />
-      <div className="flex-1">
-        <div className="text-sm font-medium mb-1" style={{ color: "oklch(0.75 0.22 25)" }}>Erro ao carregar dados</div>
-        <div className="text-xs font-mono opacity-80" style={{ color: "oklch(0.75 0.22 25)" }}>{error}</div>
-      </div>
-      <button onClick={onRefresh} className="text-xs px-2 py-1 rounded" style={{ background: "oklch(0.70 0.22 25 / 0.2)", color: "oklch(0.75 0.22 25)" }}>
         Tentar novamente
       </button>
     </div>
   );
 }
 
-function EmptyState({ icon, title, desc }: { icon: React.ReactNode; title: string; desc: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center h-48 gap-3" style={{ color: "oklch(0.40 0.01 250)" }}>
-      <div style={{ color: "oklch(0.65 0.18 142)" }}>{icon}</div>
-      <div className="text-sm font-medium" style={{ color: "oklch(0.65 0.18 142)" }}>{title}</div>
-      <div className="text-xs text-center max-w-xs" style={{ color: "oklch(0.40 0.01 250)" }}>{desc}</div>
-    </div>
-  );
-}
-
-// ── Aba 1: Image Scan ─────────────────────────────────────────────────────────
-
-function ImageScanTab({ data, loading, error, onRefresh }: {
-  data: { images: ImageScanResult[]; trivyAvailable: boolean; scannedAt: string } | null;
-  loading: boolean; error: string | null; onRefresh: () => void;
+// ── Aba: Visão Geral ──────────────────────────────────────────────────────────
+function OverviewTab({
+  summary, loading, error, onRefresh, isSRE, runtimeData,
+}: {
+  summary: SecuritySummary | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  isSRE: boolean;
+  runtimeData: RuntimeRisk[] | null;
 }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [sevFilter, setSevFilter] = useState<string>("all");
+  if (loading) return <LoadingState />;
+  if (error) return <ErrorState msg={error} onRetry={onRefresh} />;
+  if (!summary) return null;
 
-  if (loading) return <TabLoading />;
-  if (error) return <TabError error={error} onRefresh={onRefresh} />;
-  if (!data) return null;
+  const sevHue = SEV_HUE[summary.severity] ?? 250;
 
-  const toggle = (img: string) => setExpanded(prev => {
-    const n = new Set(prev);
-    n.has(img) ? n.delete(img) : n.add(img);
-    return n;
-  });
-
-  const totalVulns = data.images.reduce((a, i) => a + i.vulns.length, 0);
-  const totalCritical = data.images.reduce((a, i) => a + (i.counts?.CRITICAL || 0), 0);
-  const totalHigh = data.images.reduce((a, i) => a + (i.counts?.HIGH || 0), 0);
+  // Ranking de namespaces por risco (SRE)
+  const nsRanking = runtimeData
+    ? Array.from(
+        runtimeData.reduce((acc, r) => {
+          const ns = r.namespace;
+          if (!acc.has(ns)) acc.set(ns, { ns, critical: 0, high: 0, medium: 0, total: 0 });
+          const e = acc.get(ns)!;
+          e.total++;
+          if (r.riskLevel === "CRITICAL") e.critical++;
+          else if (r.riskLevel === "HIGH") e.high++;
+          else if (r.riskLevel === "MEDIUM") e.medium++;
+          return acc;
+        }, new Map<string, { ns: string; critical: number; high: number; medium: number; total: number }>())
+        .values()
+      ).sort((a, b) => b.critical - a.critical || b.high - a.high)
+    : [];
 
   return (
-    <div className="p-4 space-y-3">
-      {/* Trivy status banner */}
-      {!data.trivyAvailable && (
-        <div className="flex items-start gap-3 p-3 rounded-lg" style={{ background: "oklch(0.75 0.18 80 / 0.08)", border: "1px solid oklch(0.75 0.18 80 / 0.25)" }}>
-          <Info size={14} style={{ color: "oklch(0.78 0.18 80)" }} className="shrink-0 mt-0.5" />
-          <div className="text-xs" style={{ color: "oklch(0.78 0.18 80)" }}>
-            <strong>Trivy não instalado</strong> neste container. Para habilitar o scan de vulnerabilidades, certifique-se de que o Trivy está instalado na imagem Docker (já incluído no Dockerfile v3.2.0+).
+    <div className="space-y-4">
+      {/* Score geral */}
+      <div
+        className="rounded-xl p-4 flex items-center gap-4"
+        style={{
+          background: `oklch(0.55 0.20 ${sevHue} / 0.08)`,
+          border: `1px solid oklch(0.55 0.20 ${sevHue} / 0.3)`,
+        }}
+      >
+        <div
+          className="w-12 h-12 rounded-xl flex items-center justify-center shrink-0"
+          style={{ background: `oklch(0.55 0.20 ${sevHue} / 0.15)` }}
+        >
+          <RiskIcon level={summary.severity} />
+        </div>
+        <div>
+          <div className="text-xs font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>Risco Geral do Cluster</div>
+          <div className="text-2xl font-bold font-mono" style={{ color: `oklch(0.78 0.20 ${sevHue})` }}>
+            {summary.severity}
+          </div>
+          <div className="text-[10px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+            {summary.totalIssues} issues · atualizado {new Date(summary.checkedAt).toLocaleTimeString("pt-BR")}
+          </div>
+        </div>
+      </div>
+
+      {/* Cards de métricas */}
+      <div className="grid grid-cols-3 gap-2">
+        {[
+          { label: "Root/Priv", value: summary.rootContainers + summary.privilegedContainers, hue: 25, icon: <UserX size={12} /> },
+          { label: "Sem NetPol", value: summary.nsWithoutNetworkPolicy, hue: 200, icon: <Network size={12} /> },
+          { label: "Total Issues", value: summary.totalIssues, hue: 45, icon: <AlertTriangle size={12} /> },
+        ].map(({ label, value, hue, icon }) => (
+          <div
+            key={label}
+            className="rounded-lg p-3 text-center"
+            style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+          >
+            <div className="flex items-center justify-center gap-1 mb-1" style={{ color: `oklch(0.65 0.18 ${hue})` }}>
+              {icon}
+              <span className="text-[9px] font-mono uppercase">{label}</span>
+            </div>
+            <div className="text-xl font-bold font-mono" style={{ color: `oklch(0.80 0.18 ${hue})` }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* SRE: Ranking de namespaces */}
+      {isSRE && nsRanking.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
+            Ranking de Risco por Namespace
+          </div>
+          <div className="space-y-1.5">
+            {nsRanking.slice(0, 8).map((ns) => {
+              const maxRisk =
+                ns.critical > 0 ? "CRITICAL" :
+                ns.high > 0 ? "HIGH" :
+                ns.medium > 0 ? "MEDIUM" : "OK";
+              return (
+                <div
+                  key={ns.ns}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                  style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+                >
+                  <RiskIcon level={maxRisk} />
+                  <span className="flex-1 text-xs font-mono" style={{ color: "oklch(0.72 0.01 250)" }}>{ns.ns}</span>
+                  <div className="flex items-center gap-1.5">
+                    {ns.critical > 0 && (
+                      <span className="text-[9px] font-mono px-1 rounded" style={{ background: "oklch(0.45 0.22 25 / 0.2)", color: "oklch(0.72 0.22 25)" }}>
+                        {ns.critical}C
+                      </span>
+                    )}
+                    {ns.high > 0 && (
+                      <span className="text-[9px] font-mono px-1 rounded" style={{ background: "oklch(0.55 0.18 45 / 0.2)", color: "oklch(0.75 0.18 45)" }}>
+                        {ns.high}H
+                      </span>
+                    )}
+                    {ns.medium > 0 && (
+                      <span className="text-[9px] font-mono px-1 rounded" style={{ background: "oklch(0.60 0.14 85 / 0.2)", color: "oklch(0.78 0.14 85)" }}>
+                        {ns.medium}M
+                      </span>
+                    )}
+                    <span className="text-[9px] font-mono" style={{ color: "oklch(0.38 0.01 250)" }}>{ns.total} pods</span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
 
-      {/* Resumo */}
-      {data.trivyAvailable && (
-        <div className="grid grid-cols-3 gap-3">
-          {[
-            { label: "Total de Vulns", value: totalVulns, sev: totalCritical > 0 ? "CRITICAL" : totalHigh > 0 ? "HIGH" : "MEDIUM" },
-            { label: "Críticas", value: totalCritical, sev: "CRITICAL" },
-            { label: "Altas", value: totalHigh, sev: "HIGH" },
-          ].map(({ label, value, sev }) => (
-            <div key={label} className="p-3 rounded-lg text-center" style={{ background: SEV_COLORS[sev]?.bg, border: `1px solid ${SEV_COLORS[sev]?.border}` }}>
-              <div className="text-2xl font-bold font-mono" style={{ color: SEV_COLORS[sev]?.text }}>{value}</div>
-              <div className="text-[11px] mt-1" style={{ color: "oklch(0.55 0.01 250)" }}>{label}</div>
+      {/* Squad: Pods com issues no namespace */}
+      {!isSRE && runtimeData && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
+            Pods com Issues no seu Namespace
+          </div>
+          {runtimeData.filter(r => r.riskLevel !== "OK").length === 0 ? (
+            <div
+              className="flex items-center gap-2 px-3 py-3 rounded-lg"
+              style={{ background: "oklch(0.50 0.16 145 / 0.08)", border: "1px solid oklch(0.50 0.16 145 / 0.3)" }}
+            >
+              <CheckCircle2 size={14} style={{ color: "oklch(0.65 0.18 145)" }} />
+              <span className="text-xs font-mono" style={{ color: "oklch(0.65 0.18 145)" }}>
+                Nenhum issue de runtime encontrado!
+              </span>
             </div>
-          ))}
+          ) : (
+            runtimeData.filter(r => r.riskLevel !== "OK").slice(0, 6).map((r) => (
+              <div
+                key={`${r.pod}-${r.container}`}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+              >
+                <RiskIcon level={r.riskLevel} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-mono truncate" style={{ color: "oklch(0.72 0.01 250)" }}>{r.pod}</div>
+                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{r.container}</div>
+                </div>
+                <SevBadge sev={r.riskLevel} />
+              </div>
+            ))
+          )}
         </div>
       )}
+    </div>
+  );
+}
 
-      {/* Filtro de severidade */}
-      <div className="flex items-center gap-2">
-        <span className="text-[11px]" style={{ color: "oklch(0.45 0.01 250)" }}>Filtrar:</span>
-        {["all", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map(s => (
-          <button
-            key={s}
-            onClick={() => setSevFilter(s)}
-            className="px-2 py-0.5 rounded text-[10px] font-mono transition-all"
-            style={{
-              background: sevFilter === s ? (SEV_COLORS[s]?.bg || "oklch(0.55 0.22 260 / 0.25)") : "oklch(0.14 0.02 250)",
-              color: sevFilter === s ? (SEV_COLORS[s]?.text || "oklch(0.72 0.18 200)") : "oklch(0.45 0.01 250)",
-              border: `1px solid ${sevFilter === s ? (SEV_COLORS[s]?.border || "oklch(0.55 0.22 260 / 0.5)") : "oklch(0.22 0.03 250)"}`,
-            }}
-          >
-            {s === "all" ? "TODOS" : s}
-          </button>
-        ))}
-      </div>
+// ── Aba: Vulnerabilidades ─────────────────────────────────────────────────────
+function VulnsTab({
+  data, loading, error, onRefresh, isSRE,
+}: {
+  data: ImageScanResult[] | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  isSRE: boolean;
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [sevFilter, setSevFilter] = useState<string>("ALL");
+  const [copied, setCopied] = useState<string | null>(null);
 
-      {/* Lista de imagens */}
-      <div className="space-y-2">
-        {data.images.map((img) => {
-          const isOpen = expanded.has(img.image);
-          const filteredVulns = sevFilter === "all" ? img.vulns : img.vulns.filter(v => v.severity === sevFilter);
-          const hasIssues = img.vulns.length > 0;
+  if (loading) return <LoadingState />;
+  if (error) return <ErrorState msg={error} onRetry={onRefresh} />;
+  if (!data || data.length === 0) return (
+    <div className="flex flex-col items-center justify-center py-12 gap-2">
+      <ShieldCheck size={24} style={{ color: "oklch(0.65 0.18 145)" }} />
+      <p className="text-sm font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>Nenhuma imagem escaneada</p>
+      <p className="text-xs font-mono text-center" style={{ color: "oklch(0.35 0.01 250)" }}>
+        {isSRE
+          ? "Instale o Trivy Operator para scan automático de imagens"
+          : "Sem dados de vulnerabilidades para seu namespace"}
+      </p>
+    </div>
+  );
 
+  const sevOrder = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN"];
+  const filtered = sevFilter === "ALL" ? data : data.filter(d => (d.counts[sevFilter] ?? 0) > 0);
+
+  const copyYaml = (image: string) => {
+    const yaml = [
+      "# Atualizar imagem para versão segura",
+      "spec:",
+      "  containers:",
+      "  - name: <container-name>",
+      `    image: ${image.split(":")[0]}:<nova-versão-segura>`,
+      "    securityContext:",
+      "      runAsNonRoot: true",
+      "      allowPrivilegeEscalation: false",
+      "      readOnlyRootFilesystem: true",
+    ].join("\n");
+    navigator.clipboard.writeText(yaml);
+    setCopied(image);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Filtros de severidade */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {["ALL", ...sevOrder].map((s) => {
+          const total =
+            s === "ALL"
+              ? data.reduce((acc, d) => acc + Object.values(d.counts).reduce((a, b) => a + b, 0), 0)
+              : data.reduce((acc, d) => acc + (d.counts[s] ?? 0), 0);
+          if (s !== "ALL" && total === 0) return null;
+          const hue = SEV_HUE[s] ?? 250;
           return (
-            <div
-              key={img.image}
-              className="rounded-lg overflow-hidden"
-              style={{ border: `1px solid ${hasIssues ? SEV_COLORS[img.vulns[0]?.severity]?.border || "oklch(0.22 0.03 250)" : "oklch(0.22 0.03 250)"}` }}
+            <button
+              key={s}
+              onClick={() => setSevFilter(s)}
+              className="text-[9px] font-mono px-2 py-1 rounded transition-all"
+              style={{
+                background: sevFilter === s ? `oklch(0.55 0.18 ${hue} / 0.25)` : "oklch(0.16 0.02 250)",
+                border: `1px solid ${sevFilter === s ? `oklch(0.60 0.18 ${hue} / 0.6)` : "oklch(0.22 0.03 250)"}`,
+                color: sevFilter === s ? `oklch(0.75 0.18 ${hue})` : "oklch(0.45 0.01 250)",
+              }}
             >
-              <button
-                onClick={() => toggle(img.image)}
-                className="w-full flex items-center gap-3 px-4 py-3 text-left transition-all hover:bg-white/[0.02]"
-                style={{ background: "oklch(0.12 0.018 250)" }}
-              >
-                {isOpen ? <ChevronDown size={13} style={{ color: "oklch(0.45 0.01 250)" }} /> : <ChevronRight size={13} style={{ color: "oklch(0.45 0.01 250)" }} />}
-                <span className="flex-1 text-[12px] font-mono truncate" style={{ color: "oklch(0.75 0.008 250)" }}>{img.image}</span>
-                {img.trivyMissing ? (
-                  <span className="text-[10px] px-2 py-0.5 rounded" style={{ background: "oklch(0.75 0.18 80 / 0.1)", color: "oklch(0.78 0.18 80)", border: "1px solid oklch(0.75 0.18 80 / 0.3)" }}>Trivy ausente</span>
-                ) : img.scanned ? (
-                  <div className="flex items-center gap-1.5">
-                    {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map(s => img.counts[s] > 0 && (
-                      <span key={s} className="text-[10px] px-1.5 py-0.5 rounded font-mono font-bold" style={{ background: SEV_COLORS[s].bg, color: SEV_COLORS[s].text, border: `1px solid ${SEV_COLORS[s].border}` }}>
-                        {img.counts[s]} {s.slice(0, 1)}
-                      </span>
-                    ))}
-                    {img.vulns.length === 0 && <CheckCircle2 size={14} style={{ color: SEV_COLORS.OK.text }} />}
-                  </div>
-                ) : (
-                  <span className="text-[10px]" style={{ color: "oklch(0.45 0.01 250)" }}>Erro no scan</span>
-                )}
-              </button>
-              {isOpen && img.scanned && filteredVulns.length > 0 && (
-                <div style={{ borderTop: "1px solid oklch(0.18 0.025 250)" }}>
-                  <table className="w-full text-[11px]">
-                    <thead>
-                      <tr style={{ background: "oklch(0.10 0.015 250)", color: "oklch(0.40 0.01 250)" }}>
-                        <th className="text-left px-4 py-2 font-medium">CVE</th>
-                        <th className="text-left px-3 py-2 font-medium">Severidade</th>
-                        <th className="text-left px-3 py-2 font-medium">Pacote</th>
-                        <th className="text-left px-3 py-2 font-medium">Versão</th>
-                        <th className="text-left px-3 py-2 font-medium">Correção</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredVulns.slice(0, 50).map((v, i) => (
-                        <tr key={i} className="hover:bg-white/[0.02]" style={{ borderTop: "1px solid oklch(0.15 0.02 250)" }}>
-                          <td className="px-4 py-1.5 font-mono" style={{ color: "oklch(0.65 0.15 260)" }}>{v.id}</td>
-                          <td className="px-3 py-1.5"><SevBadge sev={v.severity} /></td>
-                          <td className="px-3 py-1.5 font-mono" style={{ color: "oklch(0.70 0.008 250)" }}>{v.pkg}</td>
-                          <td className="px-3 py-1.5 font-mono text-[10px]" style={{ color: "oklch(0.55 0.01 250)" }}>{v.installedVersion}</td>
-                          <td className="px-3 py-1.5 font-mono text-[10px]" style={{ color: v.fixedVersion ? SEV_COLORS.OK.text : "oklch(0.40 0.01 250)" }}>
-                            {v.fixedVersion || "—"}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                  {filteredVulns.length > 50 && (
-                    <div className="px-4 py-2 text-[10px]" style={{ color: "oklch(0.40 0.01 250)" }}>
-                      + {filteredVulns.length - 50} vulnerabilidades adicionais
-                    </div>
-                  )}
-                </div>
-              )}
-              {isOpen && img.scanned && filteredVulns.length === 0 && (
-                <div className="px-4 py-3 text-[12px]" style={{ color: SEV_COLORS.OK.text, borderTop: "1px solid oklch(0.18 0.025 250)" }}>
-                  <CheckCircle2 size={13} className="inline mr-1.5" />
-                  Nenhuma vulnerabilidade encontrada para o filtro selecionado
-                </div>
-              )}
-            </div>
+              {s} {total > 0 && `(${total})`}
+            </button>
           );
         })}
       </div>
-    </div>
-  );
-}
 
-// ── Aba 2: Root / Privileged Containers ──────────────────────────────────────
+      {filtered.map((img) => {
+        const maxSev = sevOrder.find(s => (img.counts[s] ?? 0) > 0) ?? "OK";
+        const isExp = expanded === img.image;
+        const filteredVulns = sevFilter === "ALL" ? img.vulns : img.vulns.filter(v => v.severity === sevFilter);
 
-function RootTab({ data, loading, error, onRefresh }: {
-  data: { containers: RootContainer[]; total: number } | null;
-  loading: boolean; error: string | null; onRefresh: () => void;
-}) {
-  if (loading) return <TabLoading />;
-  if (error) return <TabError error={error} onRefresh={onRefresh} />;
-  if (!data) return null;
-  if (data.containers.length === 0) return (
-    <EmptyState
-      icon={<ShieldCheck size={32} />}
-      title="Nenhum container privilegiado detectado"
-      desc="Todos os containers estão rodando com configurações de segurança adequadas."
-    />
-  );
-
-  const critical = data.containers.filter(c => c.risk === "CRITICAL");
-  const high = data.containers.filter(c => c.risk === "HIGH");
-  const medium = data.containers.filter(c => c.risk === "MEDIUM");
-
-  return (
-    <div className="p-4 space-y-4">
-      {/* Resumo */}
-      <div className="grid grid-cols-3 gap-3">
-        {[
-          { label: "Privilegiados", value: critical.length, sev: "CRITICAL" },
-          { label: "Rodando como Root", value: high.length, sev: "HIGH" },
-          { label: "Escala de Privilégio", value: medium.length, sev: "MEDIUM" },
-        ].map(({ label, value, sev }) => (
-          <div key={label} className="p-3 rounded-lg text-center" style={{ background: SEV_COLORS[sev]?.bg, border: `1px solid ${SEV_COLORS[sev]?.border}` }}>
-            <div className="text-2xl font-bold font-mono" style={{ color: SEV_COLORS[sev]?.text }}>{value}</div>
-            <div className="text-[11px] mt-1" style={{ color: "oklch(0.55 0.01 250)" }}>{label}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Tabela */}
-      <div className="rounded-lg overflow-hidden" style={{ border: "1px solid oklch(0.20 0.03 250)" }}>
-        <table className="w-full text-[12px]">
-          <thead>
-            <tr style={{ background: "oklch(0.10 0.015 250)", color: "oklch(0.40 0.01 250)" }}>
-              <th className="text-left px-4 py-2.5 font-medium">Namespace / Pod</th>
-              <th className="text-left px-3 py-2.5 font-medium">Container</th>
-              <th className="text-left px-3 py-2.5 font-medium">Risco</th>
-              <th className="text-left px-3 py-2.5 font-medium">Problema</th>
-              <th className="text-center px-3 py-2.5 font-medium">Priv</th>
-              <th className="text-center px-3 py-2.5 font-medium">ReadOnly FS</th>
-            </tr>
-          </thead>
-          <tbody>
-            {data.containers.map((c, i) => (
-              <tr key={i} className="hover:bg-white/[0.02]" style={{ borderTop: "1px solid oklch(0.15 0.02 250)" }}>
-                <td className="px-4 py-2">
-                  <div className="text-[10px]" style={{ color: "oklch(0.45 0.01 250)" }}>{c.namespace}</div>
-                  <div className="font-mono text-[11px]" style={{ color: "oklch(0.72 0.008 250)" }}>{c.pod}</div>
-                </td>
-                <td className="px-3 py-2 font-mono text-[11px]" style={{ color: "oklch(0.65 0.008 250)" }}>{c.container}</td>
-                <td className="px-3 py-2"><SevBadge sev={c.risk} /></td>
-                <td className="px-3 py-2 text-[11px]" style={{ color: "oklch(0.60 0.008 250)" }}>{c.reason}</td>
-                <td className="px-3 py-2 text-center">
-                  {c.privileged
-                    ? <span style={{ color: SEV_COLORS.CRITICAL.text }}>✓</span>
-                    : <span style={{ color: "oklch(0.35 0.01 250)" }}>—</span>}
-                </td>
-                <td className="px-3 py-2 text-center">
-                  {c.readOnlyRootFilesystem
-                    ? <span style={{ color: SEV_COLORS.OK.text }}>✓</span>
-                    : <span style={{ color: SEV_COLORS.MEDIUM.text }}>✗</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Recomendação */}
-      <div className="p-3 rounded-lg text-[11px]" style={{ background: "oklch(0.65 0.12 200 / 0.08)", border: "1px solid oklch(0.65 0.12 200 / 0.25)", color: "oklch(0.65 0.12 200)" }}>
-        <Info size={12} className="inline mr-1.5" />
-        <strong>Recomendação:</strong> Adicione <code className="font-mono">securityContext.runAsNonRoot: true</code> e <code className="font-mono">readOnlyRootFilesystem: true</code> nos manifests dos pods afetados.
-      </div>
-    </div>
-  );
-}
-
-// ── Aba 3: RBAC ───────────────────────────────────────────────────────────────
-
-function RbacTab({ data, loading, error, onRefresh, isSRE }: {
-  data: { findings: RbacFinding[]; total: number } | null;
-  loading: boolean; error: string | null; onRefresh: () => void; isSRE: boolean;
-}) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-
-  if (!isSRE) return (
-    <EmptyState
-      icon={<Lock size={32} />}
-      title="Acesso restrito"
-      desc="A análise de RBAC está disponível apenas para usuários SRE."
-    />
-  );
-  if (loading) return <TabLoading />;
-  if (error) return <TabError error={error} onRefresh={onRefresh} />;
-  if (!data) return null;
-  if (data.findings.length === 0) return (
-    <EmptyState
-      icon={<ShieldCheck size={32} />}
-      title="Nenhum RBAC excessivo detectado"
-      desc="Todos os ClusterRoleBindings e RoleBindings analisados estão dentro dos padrões."
-    />
-  );
-
-  const toggle = (name: string) => setExpanded(prev => {
-    const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n;
-  });
-
-  return (
-    <div className="p-4 space-y-3">
-      <div className="text-[12px] px-1" style={{ color: "oklch(0.45 0.01 250)" }}>
-        {data.findings.length} binding{data.findings.length !== 1 ? "s" : ""} com permissões excessivas detectado{data.findings.length !== 1 ? "s" : ""}
-      </div>
-      {data.findings.map((f, i) => {
-        const isOpen = expanded.has(f.name);
-        const s = SEV_COLORS[f.maxSeverity] || SEV_COLORS.UNKNOWN;
         return (
-          <div key={i} className="rounded-lg overflow-hidden" style={{ border: `1px solid ${s.border}` }}>
+          <div
+            key={img.image}
+            className="rounded-xl overflow-hidden"
+            style={{ border: "1px solid oklch(0.22 0.03 250)" }}
+          >
             <button
-              onClick={() => toggle(f.name)}
-              className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/[0.02]"
-              style={{ background: "oklch(0.12 0.018 250)" }}
+              className="w-full flex items-center gap-2 px-3 py-2.5 text-left transition-all hover:brightness-110"
+              style={{ background: isExp ? "oklch(0.18 0.025 250)" : "oklch(0.15 0.02 250)" }}
+              onClick={() => setExpanded(isExp ? null : img.image)}
             >
-              {isOpen ? <ChevronDown size={13} style={{ color: "oklch(0.45 0.01 250)" }} /> : <ChevronRight size={13} style={{ color: "oklch(0.45 0.01 250)" }} />}
+              <Package size={13} style={{ color: `oklch(0.65 0.18 ${SEV_HUE[maxSev]})`, flexShrink: 0 }} />
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] font-mono font-medium" style={{ color: "oklch(0.80 0.008 250)" }}>{f.name}</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "oklch(0.55 0.22 260 / 0.1)", color: "oklch(0.65 0.18 260)", border: "1px solid oklch(0.55 0.22 260 / 0.25)" }}>{f.type}</span>
-                </div>
-                <div className="text-[10px] mt-0.5" style={{ color: "oklch(0.40 0.01 250)" }}>
-                  Role: <span className="font-mono">{f.role}</span> · {f.namespace}
-                </div>
+                <div className="text-xs font-mono truncate" style={{ color: "oklch(0.75 0.01 250)" }}>{img.image}</div>
+                {img.pod && (
+                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.38 0.01 250)" }}>
+                    {img.namespace}/{img.pod}
+                  </div>
+                )}
               </div>
-              <SevBadge sev={f.maxSeverity} />
+              <div className="flex items-center gap-1.5 shrink-0">
+                {sevOrder.map(s => (img.counts[s] ?? 0) > 0 && (
+                  <span
+                    key={s}
+                    className="text-[9px] font-mono px-1 rounded"
+                    style={{
+                      background: `oklch(0.50 0.18 ${SEV_HUE[s]} / 0.2)`,
+                      color: `oklch(0.72 0.18 ${SEV_HUE[s]})`,
+                    }}
+                  >
+                    {img.counts[s]}{s[0]}
+                  </span>
+                ))}
+                {isExp
+                  ? <ChevronDown size={12} style={{ color: "oklch(0.40 0.01 250)" }} />
+                  : <ChevronRight size={12} style={{ color: "oklch(0.40 0.01 250)" }} />}
+              </div>
             </button>
-            {isOpen && (
-              <div className="px-4 py-3 space-y-3" style={{ borderTop: `1px solid ${s.border}`, background: "oklch(0.10 0.015 250)" }}>
-                <div>
-                  <div className="text-[10px] font-medium mb-1.5" style={{ color: "oklch(0.40 0.01 250)" }}>SUBJECTS</div>
-                  <div className="flex flex-wrap gap-1.5">
-                    {f.subjects.map((s, j) => (
-                      <span key={j} className="text-[11px] font-mono px-2 py-0.5 rounded" style={{ background: "oklch(0.55 0.22 260 / 0.1)", color: "oklch(0.65 0.18 260)", border: "1px solid oklch(0.55 0.22 260 / 0.25)" }}>{s}</span>
-                    ))}
+
+            {isExp && (
+              <div style={{ background: "oklch(0.12 0.015 250)" }}>
+                {/* Squad: sugestão YAML */}
+                {!isSRE && (
+                  <div
+                    className="mx-3 mt-2 mb-1 rounded-lg p-2.5"
+                    style={{
+                      background: "oklch(0.55 0.18 200 / 0.08)",
+                      border: "1px solid oklch(0.55 0.18 200 / 0.25)",
+                    }}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[9px] font-mono uppercase" style={{ color: "oklch(0.55 0.18 200)" }}>
+                        Sugestão de Correção (YAML)
+                      </span>
+                      <button
+                        onClick={() => copyYaml(img.image)}
+                        className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded"
+                        style={{ background: "oklch(0.55 0.18 200 / 0.15)", color: "oklch(0.65 0.18 200)" }}
+                      >
+                        {copied === img.image ? <Check size={10} /> : <Copy size={10} />}
+                        {copied === img.image ? "Copiado!" : "Copiar"}
+                      </button>
+                    </div>
+                    <pre className="text-[9px] font-mono overflow-x-auto" style={{ color: "oklch(0.60 0.01 250)" }}>
+{`spec:
+  containers:
+  - name: <container>
+    image: ${img.image.split(":")[0]}:<nova-versão>
+    securityContext:
+      runAsNonRoot: true
+      allowPrivilegeEscalation: false`}
+                    </pre>
                   </div>
-                </div>
-                <div>
-                  <div className="text-[10px] font-medium mb-1.5" style={{ color: "oklch(0.40 0.01 250)" }}>PROBLEMAS DETECTADOS</div>
-                  <div className="space-y-1.5">
-                    {f.issues.map((issue, j) => (
-                      <div key={j} className="flex items-start gap-2 text-[11px]">
-                        <SevBadge sev={issue.severity} />
-                        <span style={{ color: "oklch(0.65 0.008 250)" }}>{issue.message}</span>
+                )}
+
+                {filteredVulns.length === 0 ? (
+                  <div className="px-3 py-3 text-xs font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+                    Nenhuma CVE para o filtro selecionado
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-[10px] font-mono">
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid oklch(0.20 0.02 250)" }}>
+                          {["CVE", "Severidade", "Pacote", "Versão", "Fix"].map(h => (
+                            <th key={h} className="px-3 py-1.5 text-left" style={{ color: "oklch(0.38 0.01 250)" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredVulns.slice(0, 20).map((v) => (
+                          <tr key={v.id} style={{ borderBottom: "1px solid oklch(0.16 0.02 250)" }}>
+                            <td className="px-3 py-1.5" style={{ color: "oklch(0.65 0.18 200)" }}>{v.id}</td>
+                            <td className="px-3 py-1.5"><SevBadge sev={v.severity} /></td>
+                            <td className="px-3 py-1.5" style={{ color: "oklch(0.65 0.01 250)" }}>{v.pkg}</td>
+                            <td className="px-3 py-1.5" style={{ color: "oklch(0.50 0.01 250)" }}>{v.installedVersion}</td>
+                            <td className="px-3 py-1.5" style={{ color: v.fixedVersion ? "oklch(0.65 0.18 145)" : "oklch(0.38 0.01 250)" }}>
+                              {v.fixedVersion ?? "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {filteredVulns.length > 20 && (
+                      <div className="px-3 py-1.5 text-[9px] font-mono" style={{ color: "oklch(0.38 0.01 250)" }}>
+                        +{filteredVulns.length - 20} CVEs adicionais
                       </div>
-                    ))}
+                    )}
                   </div>
-                </div>
+                )}
               </div>
             )}
           </div>
@@ -697,259 +535,624 @@ function RbacTab({ data, loading, error, onRefresh, isSRE }: {
   );
 }
 
-// ── Aba 4: Secrets ────────────────────────────────────────────────────────────
+// ── Aba: Runtime Risks ────────────────────────────────────────────────────────
+const RISK_LABELS: Record<string, string> = {
+  runAsRoot: "Rodando como Root (uid 0)",
+  privileged: "Modo Privilegiado",
+  allowPrivEsc: "Escalonamento de Privilégio",
+  hostNetwork: "Host Network Compartilhado",
+  hostIPC: "Host IPC Compartilhado",
+  hostPID: "Host PID Compartilhado",
+  missingCpuLimit: "Sem Limite de CPU",
+  missingMemLimit: "Sem Limite de Memória",
+  readOnlyRootFs: "Root FS Gravável",
+};
 
-function SecretsTab({ data, loading, error, onRefresh }: {
-  data: { envExposures: SecretExposure[]; riskySecrets: RiskySecret[] } | null;
-  loading: boolean; error: string | null; onRefresh: () => void;
+const RISK_SEV: Record<string, string> = {
+  runAsRoot: "HIGH", privileged: "CRITICAL", allowPrivEsc: "HIGH",
+  hostNetwork: "CRITICAL", hostIPC: "HIGH", hostPID: "CRITICAL",
+  missingCpuLimit: "MEDIUM", missingMemLimit: "MEDIUM", readOnlyRootFs: "LOW",
+};
+
+const RISK_FIX: Record<string, string> = {
+  runAsRoot: "  runAsNonRoot: true\n  runAsUser: 1000",
+  privileged: "  privileged: false",
+  allowPrivEsc: "  allowPrivilegeEscalation: false",
+  hostNetwork: "# Remover hostNetwork: true do spec do Pod",
+  hostIPC: "# Remover hostIPC: true do spec do Pod",
+  hostPID: "# Remover hostPID: true do spec do Pod",
+  missingCpuLimit: "  resources:\n    limits:\n      cpu: \"500m\"",
+  missingMemLimit: "  resources:\n    limits:\n      memory: \"256Mi\"",
+  readOnlyRootFs: "  readOnlyRootFilesystem: true",
+};
+
+function RuntimeTab({
+  data, loading, error, onRefresh, isSRE,
+}: {
+  data: RuntimeRisk[] | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  isSRE: boolean;
 }) {
-  const [showKeys, setShowKeys] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
 
-  if (loading) return <TabLoading />;
-  if (error) return <TabError error={error} onRefresh={onRefresh} />;
-  if (!data) return null;
-  const hasIssues = data.envExposures.length > 0 || data.riskySecrets.length > 0;
-  if (!hasIssues) return (
-    <EmptyState
-      icon={<ShieldCheck size={32} />}
-      title="Nenhum secret exposto detectado"
-      desc="Nenhum secret está sendo exposto como variável de ambiente nos pods analisados."
-    />
+  if (loading) return <LoadingState />;
+  if (error) return <ErrorState msg={error} onRetry={onRefresh} />;
+
+  const risky = (data ?? []).filter(r => r.riskLevel !== "OK");
+
+  if (risky.length === 0) return (
+    <div className="flex flex-col items-center justify-center py-12 gap-2">
+      <ShieldCheck size={24} style={{ color: "oklch(0.65 0.18 145)" }} />
+      <p className="text-sm font-mono" style={{ color: "oklch(0.65 0.18 145)" }}>
+        Todos os containers estão seguros!
+      </p>
+    </div>
+  );
+
+  const copyFix = (r: RuntimeRisk) => {
+    const activeRisks = Object.entries(r.risks).filter(([, v]) => v === true).map(([k]) => k);
+    const yaml = activeRisks.map(rk => RISK_FIX[rk] ?? `# Fix para ${rk}`).join("\n");
+    navigator.clipboard.writeText(yaml);
+    setCopied(`${r.pod}-${r.container}`);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  return (
+    <div className="space-y-2">
+      {/* Contadores por nível */}
+      <div className="grid grid-cols-4 gap-1.5 mb-3">
+        {["CRITICAL", "HIGH", "MEDIUM", "LOW"].map(lv => {
+          const cnt = risky.filter(r => r.riskLevel === lv).length;
+          const hue = SEV_HUE[lv];
+          return (
+            <div
+              key={lv}
+              className="rounded-lg p-2 text-center"
+              style={{
+                background: `oklch(0.50 0.18 ${hue} / 0.08)`,
+                border: `1px solid oklch(0.50 0.18 ${hue} / 0.25)`,
+              }}
+            >
+              <div className="text-lg font-bold font-mono" style={{ color: `oklch(0.75 0.20 ${hue})` }}>{cnt}</div>
+              <div className="text-[8px] font-mono uppercase" style={{ color: `oklch(0.55 0.15 ${hue})` }}>{lv}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {risky.map((r) => {
+        const key = `${r.pod}-${r.container}`;
+        const isExp = expanded === key;
+        const activeRisks = Object.entries(r.risks).filter(([, v]) => v === true).map(([k]) => k);
+
+        return (
+          <div
+            key={key}
+            className="rounded-xl overflow-hidden"
+            style={{ border: "1px solid oklch(0.22 0.03 250)" }}
+          >
+            <button
+              className="w-full flex items-center gap-2 px-3 py-2.5 text-left hover:brightness-110 transition-all"
+              style={{ background: isExp ? "oklch(0.18 0.025 250)" : "oklch(0.15 0.02 250)" }}
+              onClick={() => setExpanded(isExp ? null : key)}
+            >
+              <RiskIcon level={r.riskLevel} />
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-mono truncate" style={{ color: "oklch(0.75 0.01 250)" }}>{r.pod}</div>
+                <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+                  {r.namespace} · {r.container}
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+                  {r.riskCount} issues
+                </span>
+                <SevBadge sev={r.riskLevel} />
+                {isExp
+                  ? <ChevronDown size={12} style={{ color: "oklch(0.40 0.01 250)" }} />
+                  : <ChevronRight size={12} style={{ color: "oklch(0.40 0.01 250)" }} />}
+              </div>
+            </button>
+
+            {isExp && (
+              <div className="px-3 pb-3 space-y-2" style={{ background: "oklch(0.12 0.015 250)" }}>
+                {/* Lista de riscos */}
+                <div className="pt-2 space-y-1">
+                  {activeRisks.map((rk) => (
+                    <div key={rk} className="flex items-center gap-2 py-1">
+                      <AlertTriangle
+                        size={11}
+                        style={{ color: `oklch(0.65 0.18 ${SEV_HUE[RISK_SEV[rk]] ?? 250})`, flexShrink: 0 }}
+                      />
+                      <span className="text-[10px] font-mono flex-1" style={{ color: "oklch(0.65 0.01 250)" }}>
+                        {RISK_LABELS[rk] ?? rk}
+                      </span>
+                      <SevBadge sev={RISK_SEV[rk] ?? "MEDIUM"} />
+                    </div>
+                  ))}
+                </div>
+
+                {/* Imagem */}
+                <div
+                  className="text-[9px] font-mono px-2 py-1 rounded"
+                  style={{ background: "oklch(0.55 0.18 200 / 0.08)", color: "oklch(0.55 0.18 200)" }}
+                >
+                  {r.image}
+                </div>
+
+                {/* Squad: sugestão YAML */}
+                {!isSRE && (
+                  <div
+                    className="rounded-lg p-2.5"
+                    style={{
+                      background: "oklch(0.55 0.18 200 / 0.06)",
+                      border: "1px solid oklch(0.55 0.18 200 / 0.2)",
+                    }}
+                  >
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-[9px] font-mono uppercase" style={{ color: "oklch(0.55 0.18 200)" }}>
+                        Correção Sugerida (YAML)
+                      </span>
+                      <button
+                        onClick={() => copyFix(r)}
+                        className="flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded"
+                        style={{ background: "oklch(0.55 0.18 200 / 0.15)", color: "oklch(0.65 0.18 200)" }}
+                      >
+                        {copied === key ? <Check size={10} /> : <Copy size={10} />}
+                        {copied === key ? "Copiado!" : "Copiar"}
+                      </button>
+                    </div>
+                    <pre
+                      className="text-[9px] font-mono overflow-x-auto whitespace-pre-wrap"
+                      style={{ color: "oklch(0.58 0.01 250)" }}
+                    >
+                      {activeRisks.map(rk => RISK_FIX[rk] ?? `# Fix para ${rk}`).join("\n")}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Aba: RBAC ─────────────────────────────────────────────────────────────────
+function RbacTab({
+  data, loading, error, onRefresh,
+}: {
+  data: RbacIssue[] | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  if (loading) return <LoadingState />;
+  if (error) return <ErrorState msg={error} onRetry={onRefresh} />;
+  if (!data || data.length === 0) return (
+    <div className="flex flex-col items-center justify-center py-12 gap-2">
+      <ShieldCheck size={24} style={{ color: "oklch(0.65 0.18 145)" }} />
+      <p className="text-sm font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>
+        Nenhum RBAC excessivo detectado
+      </p>
+    </div>
   );
 
   return (
-    <div className="p-4 space-y-5">
-      {/* Secrets como variáveis de ambiente */}
-      {data.envExposures.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[13px] font-semibold" style={{ color: "oklch(0.80 0.008 250)" }}>
-              <AlertTriangle size={13} className="inline mr-1.5" style={{ color: SEV_COLORS.MEDIUM.text }} />
-              Secrets como Variáveis de Ambiente ({data.envExposures.length})
-            </h3>
+    <div className="space-y-2">
+      {data.map((item, i) => (
+        <div
+          key={i}
+          className="rounded-xl p-3 space-y-2"
+          style={{ background: "oklch(0.15 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+        >
+          <div className="flex items-center gap-2">
+            <UserX size={13} style={{ color: `oklch(0.65 0.18 ${SEV_HUE[item.riskLevel] ?? 250})` }} />
+            <span className="text-xs font-mono flex-1" style={{ color: "oklch(0.72 0.01 250)" }}>{item.name}</span>
+            <SevBadge sev={item.riskLevel} />
           </div>
-          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid oklch(0.20 0.03 250)" }}>
-            <table className="w-full text-[12px]">
-              <thead>
-                <tr style={{ background: "oklch(0.10 0.015 250)", color: "oklch(0.40 0.01 250)" }}>
-                  <th className="text-left px-4 py-2.5 font-medium">Namespace / Pod</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Container</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Secret</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Var. de Ambiente</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.envExposures.map((e, i) =>
-                  e.secrets.map((s, j) => (
-                    <tr key={`${i}-${j}`} className="hover:bg-white/[0.02]" style={{ borderTop: "1px solid oklch(0.15 0.02 250)" }}>
-                      {j === 0 && (
-                        <td className="px-4 py-2" rowSpan={e.secrets.length}>
-                          <div className="text-[10px]" style={{ color: "oklch(0.45 0.01 250)" }}>{e.namespace}</div>
-                          <div className="font-mono text-[11px]" style={{ color: "oklch(0.72 0.008 250)" }}>{e.pod}</div>
-                        </td>
-                      )}
-                      {j === 0 && <td className="px-3 py-2 font-mono text-[11px]" style={{ color: "oklch(0.65 0.008 250)" }} rowSpan={e.secrets.length}>{e.container}</td>}
-                      <td className="px-3 py-2 font-mono text-[11px]" style={{ color: "oklch(0.65 0.15 260)" }}>{s.secretName}</td>
-                      <td className="px-3 py-2 font-mono text-[11px]" style={{ color: SEV_COLORS.MEDIUM.text }}>{s.envVar}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+          <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+            {item.kind} · {item.namespace || "cluster-wide"}
           </div>
-          <div className="mt-2 p-2 rounded text-[11px]" style={{ background: "oklch(0.65 0.12 200 / 0.08)", color: "oklch(0.65 0.12 200)" }}>
-            <Info size={11} className="inline mr-1" />
-            Prefira montar secrets como volumes em vez de variáveis de ambiente para reduzir a exposição.
+          <div className="flex flex-wrap gap-1">
+            {item.risks.map((r, j) => (
+              <span
+                key={j}
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                style={{ background: "oklch(0.45 0.18 25 / 0.12)", color: "oklch(0.65 0.18 25)" }}
+              >
+                {r}
+              </span>
+            ))}
           </div>
+          {item.subjects.length > 0 && (
+            <div className="text-[9px] font-mono" style={{ color: "oklch(0.38 0.01 250)" }}>
+              Sujeitos: {item.subjects.slice(0, 3).join(", ")}
+              {item.subjects.length > 3 ? ` +${item.subjects.length - 3}` : ""}
+            </div>
+          )}
         </div>
-      )}
+      ))}
+    </div>
+  );
+}
 
-      {/* Secrets com chaves sensíveis */}
-      {data.riskySecrets.length > 0 && (
-        <div>
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-[13px] font-semibold" style={{ color: "oklch(0.80 0.008 250)" }}>
-              <Lock size={13} className="inline mr-1.5" style={{ color: SEV_COLORS.HIGH.text }} />
-              Secrets com Chaves Sensíveis ({data.riskySecrets.length})
-            </h3>
-            <button
-              onClick={() => setShowKeys(!showKeys)}
-              className="flex items-center gap-1 text-[11px] px-2 py-1 rounded transition-all"
-              style={{ background: "oklch(0.16 0.02 250)", color: "oklch(0.50 0.01 250)", border: "1px solid oklch(0.22 0.03 250)" }}
-            >
-              {showKeys ? <EyeOff size={11} /> : <Eye size={11} />}
-              {showKeys ? "Ocultar chaves" : "Mostrar chaves"}
-            </button>
+// ── Aba: Secrets ──────────────────────────────────────────────────────────────
+function SecretsTab({
+  data, loading, error, onRefresh,
+}: {
+  data: SecretIssue[] | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  const [showKeys, setShowKeys] = useState(false);
+
+  if (loading) return <LoadingState />;
+  if (error) return <ErrorState msg={error} onRetry={onRefresh} />;
+  if (!data || data.length === 0) return (
+    <div className="flex flex-col items-center justify-center py-12 gap-2">
+      <ShieldCheck size={24} style={{ color: "oklch(0.65 0.18 145)" }} />
+      <p className="text-sm font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>
+        Nenhum secret problemático encontrado
+      </p>
+    </div>
+  );
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+          {data.length} secrets com issues
+        </span>
+        <button
+          onClick={() => setShowKeys(!showKeys)}
+          className="flex items-center gap-1 text-[9px] font-mono px-2 py-1 rounded"
+          style={{
+            background: "oklch(0.16 0.02 250)",
+            border: "1px solid oklch(0.22 0.03 250)",
+            color: "oklch(0.50 0.01 250)",
+          }}
+        >
+          {showKeys ? <EyeOff size={10} /> : <Eye size={10} />}
+          {showKeys ? "Ocultar chaves" : "Mostrar chaves"}
+        </button>
+      </div>
+
+      {data.map((s, i) => (
+        <div
+          key={i}
+          className="rounded-xl p-3 space-y-2"
+          style={{ background: "oklch(0.15 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+        >
+          <div className="flex items-center gap-2">
+            <Key size={13} style={{ color: "oklch(0.65 0.18 45)" }} />
+            <span className="text-xs font-mono flex-1" style={{ color: "oklch(0.72 0.01 250)" }}>{s.name}</span>
+            <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{s.namespace}</span>
           </div>
-          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid oklch(0.20 0.03 250)" }}>
-            <table className="w-full text-[12px]">
-              <thead>
-                <tr style={{ background: "oklch(0.10 0.015 250)", color: "oklch(0.40 0.01 250)" }}>
-                  <th className="text-left px-4 py-2.5 font-medium">Namespace / Nome</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Tipo</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Risco</th>
-                  {showKeys && <th className="text-left px-3 py-2.5 font-medium">Chaves Sensíveis</th>}
-                </tr>
-              </thead>
-              <tbody>
-                {data.riskySecrets.map((s, i) => (
-                  <tr key={i} className="hover:bg-white/[0.02]" style={{ borderTop: "1px solid oklch(0.15 0.02 250)" }}>
-                    <td className="px-4 py-2">
-                      <div className="text-[10px]" style={{ color: "oklch(0.45 0.01 250)" }}>{s.namespace}</div>
-                      <div className="font-mono text-[11px]" style={{ color: "oklch(0.72 0.008 250)" }}>{s.name}</div>
-                    </td>
-                    <td className="px-3 py-2 font-mono text-[10px]" style={{ color: "oklch(0.55 0.01 250)" }}>{s.type}</td>
-                    <td className="px-3 py-2"><SevBadge sev={s.risk} /></td>
-                    {showKeys && (
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap gap-1">
-                          {s.sensitiveKeys.map((k, j) => (
-                            <span key={j} className="text-[10px] font-mono px-1.5 py-0.5 rounded" style={{ background: SEV_COLORS.HIGH.bg, color: SEV_COLORS.HIGH.text, border: `1px solid ${SEV_COLORS.HIGH.border}` }}>{k}</span>
-                          ))}
-                        </div>
-                      </td>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          {s.exposedInEnv.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[9px] font-mono uppercase" style={{ color: "oklch(0.45 0.18 45)" }}>
+                Exposto em variáveis de ambiente:
+              </div>
+              {s.exposedInEnv.slice(0, 3).map((e, j) => (
+                <div
+                  key={j}
+                  className="text-[9px] font-mono px-2 py-1 rounded"
+                  style={{ background: "oklch(0.45 0.18 45 / 0.08)", color: "oklch(0.65 0.01 250)" }}
+                >
+                  {e.pod} › {e.container} › {showKeys ? e.key : "●●●●●●"}
+                </div>
+              ))}
+            </div>
+          )}
+          {s.sensitiveKeys.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {s.sensitiveKeys.map((k, j) => (
+                <span
+                  key={j}
+                  className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                  style={{ background: "oklch(0.45 0.18 25 / 0.12)", color: "oklch(0.65 0.18 25)" }}
+                >
+                  {showKeys ? k : "●●●●●"}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Aba: Network Policies ─────────────────────────────────────────────────────
+function NetworkTab({
+  data, loading, error, onRefresh,
+}: {
+  data: NetworkPolicyData | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+}) {
+  if (loading) return <LoadingState />;
+  if (error) return <ErrorState msg={error} onRetry={onRefresh} />;
+  if (!data) return null;
+
+  const total = data.namespacesWithoutPolicy.length + data.permissivePolicies.length;
+
+  return (
+    <div className="space-y-4">
+      {total === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 gap-2">
+          <ShieldCheck size={24} style={{ color: "oklch(0.65 0.18 145)" }} />
+          <p className="text-sm font-mono" style={{ color: "oklch(0.65 0.18 145)" }}>
+            Network Policies bem configuradas!
+          </p>
+        </div>
+      ) : (
+        <>
+          {data.namespacesWithoutPolicy.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
+                Namespaces sem Network Policy ({data.namespacesWithoutPolicy.length})
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {data.namespacesWithoutPolicy.map((ns) => (
+                  <span
+                    key={ns}
+                    className="flex items-center gap-1 text-[10px] font-mono px-2 py-1 rounded-lg"
+                    style={{
+                      background: "oklch(0.45 0.18 25 / 0.12)",
+                      border: "1px solid oklch(0.45 0.18 25 / 0.3)",
+                      color: "oklch(0.65 0.18 25)",
+                    }}
+                  >
+                    <Network size={10} /> {ns}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {data.permissivePolicies.length > 0 && (
+            <div className="space-y-2">
+              <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
+                Policies Permissivas ({data.permissivePolicies.length})
+              </div>
+              {data.permissivePolicies.map((p, i) => (
+                <div
+                  key={i}
+                  className="rounded-xl p-3 space-y-1"
+                  style={{ background: "oklch(0.15 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+                >
+                  <div className="flex items-center gap-2">
+                    <Network size={12} style={{ color: "oklch(0.65 0.18 45)" }} />
+                    <span className="text-xs font-mono flex-1" style={{ color: "oklch(0.72 0.01 250)" }}>{p.name}</span>
+                    <SevBadge sev={p.risk} />
+                  </div>
+                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+                    {p.namespace} · {p.reason}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
 }
 
-// ── Aba 5: Network Policies ───────────────────────────────────────────────────
+// ── Componente principal ──────────────────────────────────────────────────────
+export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
+  const [activeTab, setActiveTab] = useState<"overview" | "vulns" | "runtime" | "rbac" | "secrets" | "network">("overview");
+  const [summary, setSummary] = useState<SecuritySummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+  const [tabData, setTabData] = useState<Record<string, unknown>>({});
+  const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({});
+  const [tabError, setTabError] = useState<Record<string, string | null>>({});
 
-function NetworkTab({ data, loading, error, onRefresh }: {
-  data: {
-    policies: NetworkPolicy[];
-    nsWithoutPolicy: string[];
-    permissivePolicies: { namespace: string; name: string; risk: string; reason: string }[];
-    podsWithoutPolicy: { namespace: string; pod: string; risk: string }[];
-    summary: { totalPolicies: number; nsWithoutPolicy: number; permissivePolicies: number; podsWithoutPolicy: number };
-  } | null;
-  loading: boolean; error: string | null; onRefresh: () => void;
-}) {
-  if (loading) return <TabLoading />;
-  if (error) return <TabError error={error} onRefresh={onRefresh} />;
-  if (!data) return null;
+  const fetchSummary = useCallback(async () => {
+    setSummaryLoading(true);
+    setSummaryError(null);
+    try {
+      const r = await fetch(`${apiUrl}/api/security/summary`, { headers: getAuthHeaders() });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setSummary(await r.json());
+    } catch (e) {
+      setSummaryError((e as Error).message);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, [apiUrl]);
 
-  const { summary } = data;
-  const noIssues = summary.nsWithoutPolicy === 0 && summary.permissivePolicies === 0;
+  const fetchTab = useCallback(async (tab: string) => {
+    const endpoints: Record<string, string> = {
+      vulns:   "/api/security/image-scan",
+      runtime: "/api/security/runtime-risks",
+      rbac:    "/api/security/rbac",
+      secrets: "/api/security/secrets",
+      network: "/api/security/network-policies",
+    };
+    if (!endpoints[tab]) return;
+    setTabLoading(prev => ({ ...prev, [tab]: true }));
+    setTabError(prev => ({ ...prev, [tab]: null }));
+    try {
+      const r = await fetch(`${apiUrl}${endpoints[tab]}`, { headers: getAuthHeaders() });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const json = await r.json();
+      setTabData(prev => ({ ...prev, [tab]: json }));
+    } catch (e) {
+      setTabError(prev => ({ ...prev, [tab]: (e as Error).message }));
+    } finally {
+      setTabLoading(prev => ({ ...prev, [tab]: false }));
+    }
+  }, [apiUrl]);
+
+  useEffect(() => { fetchSummary(); }, [fetchSummary]);
+  // Pré-carregar runtime para o OverviewTab
+  useEffect(() => { fetchTab("runtime"); }, [fetchTab]);
+  // Carregar aba ativa
+  useEffect(() => {
+    if (activeTab !== "overview") fetchTab(activeTab);
+  }, [activeTab, fetchTab]);
+
+  const TABS = [
+    { id: "overview", label: "Visão Geral", icon: <Shield size={12} />,   sreOnly: false },
+    { id: "vulns",    label: "Imagens",     icon: <Package size={12} />,  sreOnly: false },
+    { id: "runtime",  label: "Runtime",     icon: <Zap size={12} />,      sreOnly: false },
+    { id: "rbac",     label: "RBAC",        icon: <UserX size={12} />,    sreOnly: true  },
+    { id: "secrets",  label: "Secrets",     icon: <Key size={12} />,      sreOnly: false },
+    { id: "network",  label: "Network",     icon: <Network size={12} />,  sreOnly: false },
+  ];
+
+  const sevHue = summary ? (SEV_HUE[summary.severity] ?? 250) : 250;
 
   return (
-    <div className="p-4 space-y-5">
-      {/* Resumo */}
-      <div className="grid grid-cols-4 gap-3">
-        {[
-          { label: "Total de Policies", value: summary.totalPolicies, sev: "OK" },
-          { label: "NS sem Policy", value: summary.nsWithoutPolicy, sev: summary.nsWithoutPolicy > 0 ? "HIGH" : "OK" },
-          { label: "Policies Permissivas", value: summary.permissivePolicies, sev: summary.permissivePolicies > 0 ? "HIGH" : "OK" },
-          { label: "Pods sem Cobertura", value: summary.podsWithoutPolicy, sev: summary.podsWithoutPolicy > 0 ? "MEDIUM" : "OK" },
-        ].map(({ label, value, sev }) => (
-          <div key={label} className="p-3 rounded-lg text-center" style={{ background: SEV_COLORS[sev]?.bg, border: `1px solid ${SEV_COLORS[sev]?.border}` }}>
-            <div className="text-2xl font-bold font-mono" style={{ color: SEV_COLORS[sev]?.text }}>{value}</div>
-            <div className="text-[11px] mt-1" style={{ color: "oklch(0.55 0.01 250)" }}>{label}</div>
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-end"
+      style={{ background: "oklch(0.05 0.01 250 / 0.7)", backdropFilter: "blur(4px)" }}
+    >
+      <div
+        className="h-full flex flex-col overflow-hidden"
+        style={{
+          width: "min(680px, 95vw)",
+          background: "oklch(0.11 0.018 250)",
+          borderLeft: "1px solid oklch(0.22 0.03 250)",
+        }}
+      >
+        {/* Header */}
+        <div
+          className="flex items-center gap-3 px-5 py-4 shrink-0"
+          style={{ borderBottom: "1px solid oklch(0.20 0.03 250)" }}
+        >
+          <div
+            className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0"
+            style={{
+              background: `oklch(0.55 0.20 ${sevHue} / 0.15)`,
+              border: `1px solid oklch(0.55 0.20 ${sevHue} / 0.35)`,
+            }}
+          >
+            {summary?.severity === "CRITICAL"
+              ? <ShieldX size={16} style={{ color: `oklch(0.72 0.20 ${sevHue})` }} />
+              : summary?.severity === "HIGH" || summary?.severity === "MEDIUM"
+              ? <ShieldAlert size={16} style={{ color: `oklch(0.72 0.20 ${sevHue})` }} />
+              : <ShieldCheck size={16} style={{ color: `oklch(0.72 0.20 ${sevHue})` }} />}
           </div>
-        ))}
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-bold" style={{ color: "oklch(0.88 0.008 250)" }}>
+              Painel de Segurança
+            </div>
+            <div className="text-[10px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+              {isSRE ? "Visão SRE — Cluster-wide" : "Visão Squad — Namespace restrito"}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={fetchSummary}
+              className="w-7 h-7 flex items-center justify-center rounded-lg transition-all hover:brightness-110"
+              style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+              title="Atualizar"
+            >
+              <RefreshCw size={12} style={{ color: "oklch(0.50 0.01 250)" }} />
+            </button>
+            <button
+              onClick={onClose}
+              className="w-7 h-7 flex items-center justify-center rounded-lg transition-all hover:brightness-110"
+              style={{ background: "oklch(0.16 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+              title="Fechar"
+            >
+              <X size={14} style={{ color: "oklch(0.50 0.01 250)" }} />
+            </button>
+          </div>
+        </div>
+
+        {/* Tabs */}
+        <div
+          className="flex items-center gap-0.5 px-4 py-2 shrink-0 overflow-x-auto"
+          style={{ borderBottom: "1px solid oklch(0.18 0.025 250)" }}
+        >
+          {TABS.filter(t => !t.sreOnly || isSRE).map((tab) => {
+            const isActive = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-mono font-semibold transition-all whitespace-nowrap"
+                style={{
+                  background: isActive ? "oklch(0.55 0.22 260 / 0.20)" : "transparent",
+                  border: `1px solid ${isActive ? "oklch(0.55 0.22 260 / 0.5)" : "transparent"}`,
+                  color: isActive ? "oklch(0.72 0.18 200)" : "oklch(0.42 0.01 250)",
+                }}
+              >
+                {tab.icon}
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Conteúdo */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {activeTab === "overview" && (
+            <OverviewTab
+              summary={summary}
+              loading={summaryLoading}
+              error={summaryError}
+              onRefresh={fetchSummary}
+              isSRE={isSRE}
+              runtimeData={(tabData["runtime"] as RuntimeRisk[]) ?? null}
+            />
+          )}
+          {activeTab === "vulns" && (
+            <VulnsTab
+              data={(tabData["vulns"] as ImageScanResult[]) ?? null}
+              loading={!!tabLoading["vulns"]}
+              error={tabError["vulns"] ?? null}
+              onRefresh={() => fetchTab("vulns")}
+              isSRE={isSRE}
+            />
+          )}
+          {activeTab === "runtime" && (
+            <RuntimeTab
+              data={(tabData["runtime"] as RuntimeRisk[]) ?? null}
+              loading={!!tabLoading["runtime"]}
+              error={tabError["runtime"] ?? null}
+              onRefresh={() => fetchTab("runtime")}
+              isSRE={isSRE}
+            />
+          )}
+          {activeTab === "rbac" && isSRE && (
+            <RbacTab
+              data={(tabData["rbac"] as RbacIssue[]) ?? null}
+              loading={!!tabLoading["rbac"]}
+              error={tabError["rbac"] ?? null}
+              onRefresh={() => fetchTab("rbac")}
+            />
+          )}
+          {activeTab === "secrets" && (
+            <SecretsTab
+              data={(tabData["secrets"] as SecretIssue[]) ?? null}
+              loading={!!tabLoading["secrets"]}
+              error={tabError["secrets"] ?? null}
+              onRefresh={() => fetchTab("secrets")}
+            />
+          )}
+          {activeTab === "network" && (
+            <NetworkTab
+              data={(tabData["network"] as NetworkPolicyData) ?? null}
+              loading={!!tabLoading["network"]}
+              error={tabError["network"] ?? null}
+              onRefresh={() => fetchTab("network")}
+            />
+          )}
+        </div>
       </div>
-
-      {noIssues && (
-        <EmptyState
-          icon={<ShieldCheck size={32} />}
-          title="Network Policies bem configuradas"
-          desc="Todos os namespaces possuem NetworkPolicies e não há políticas excessivamente permissivas."
-        />
-      )}
-
-      {/* Namespaces sem policy */}
-      {data.nsWithoutPolicy.length > 0 && (
-        <div>
-          <h3 className="text-[13px] font-semibold mb-3" style={{ color: "oklch(0.80 0.008 250)" }}>
-            <AlertTriangle size={13} className="inline mr-1.5" style={{ color: SEV_COLORS.HIGH.text }} />
-            Namespaces sem NetworkPolicy ({data.nsWithoutPolicy.length})
-          </h3>
-          <div className="flex flex-wrap gap-2">
-            {data.nsWithoutPolicy.map((ns, i) => (
-              <span key={i} className="text-[12px] font-mono px-3 py-1.5 rounded-lg" style={{ background: SEV_COLORS.HIGH.bg, color: SEV_COLORS.HIGH.text, border: `1px solid ${SEV_COLORS.HIGH.border}` }}>
-                {ns}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Policies permissivas */}
-      {data.permissivePolicies.length > 0 && (
-        <div>
-          <h3 className="text-[13px] font-semibold mb-3" style={{ color: "oklch(0.80 0.008 250)" }}>
-            <ShieldAlert size={13} className="inline mr-1.5" style={{ color: SEV_COLORS.HIGH.text }} />
-            Policies Permissivas ({data.permissivePolicies.length})
-          </h3>
-          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid oklch(0.20 0.03 250)" }}>
-            <table className="w-full text-[12px]">
-              <thead>
-                <tr style={{ background: "oklch(0.10 0.015 250)", color: "oklch(0.40 0.01 250)" }}>
-                  <th className="text-left px-4 py-2.5 font-medium">Namespace</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Policy</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Problema</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.permissivePolicies.map((p, i) => (
-                  <tr key={i} className="hover:bg-white/[0.02]" style={{ borderTop: "1px solid oklch(0.15 0.02 250)" }}>
-                    <td className="px-4 py-2 font-mono text-[11px]" style={{ color: "oklch(0.65 0.008 250)" }}>{p.namespace}</td>
-                    <td className="px-3 py-2 font-mono text-[11px]" style={{ color: "oklch(0.72 0.008 250)" }}>{p.name}</td>
-                    <td className="px-3 py-2 text-[11px]" style={{ color: SEV_COLORS.HIGH.text }}>{p.reason}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Todas as policies */}
-      {data.policies.length > 0 && (
-        <div>
-          <h3 className="text-[13px] font-semibold mb-3" style={{ color: "oklch(0.80 0.008 250)" }}>
-            <Network size={13} className="inline mr-1.5" style={{ color: "oklch(0.65 0.18 200)" }} />
-            Todas as NetworkPolicies ({data.policies.length})
-          </h3>
-          <div className="rounded-lg overflow-hidden" style={{ border: "1px solid oklch(0.20 0.03 250)" }}>
-            <table className="w-full text-[12px]">
-              <thead>
-                <tr style={{ background: "oklch(0.10 0.015 250)", color: "oklch(0.40 0.01 250)" }}>
-                  <th className="text-left px-4 py-2.5 font-medium">Namespace</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Nome</th>
-                  <th className="text-center px-3 py-2.5 font-medium">Ingress</th>
-                  <th className="text-center px-3 py-2.5 font-medium">Egress</th>
-                  <th className="text-left px-3 py-2.5 font-medium">Tipos</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.policies.map((p, i) => (
-                  <tr key={i} className="hover:bg-white/[0.02]" style={{ borderTop: "1px solid oklch(0.15 0.02 250)" }}>
-                    <td className="px-4 py-2 font-mono text-[11px]" style={{ color: "oklch(0.55 0.01 250)" }}>{p.namespace}</td>
-                    <td className="px-3 py-2 font-mono text-[11px]" style={{ color: "oklch(0.72 0.008 250)" }}>{p.name}</td>
-                    <td className="px-3 py-2 text-center font-mono text-[11px]" style={{ color: "oklch(0.65 0.008 250)" }}>{p.ingressRules}</td>
-                    <td className="px-3 py-2 text-center font-mono text-[11px]" style={{ color: "oklch(0.65 0.008 250)" }}>{p.egressRules}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex gap-1">
-                        {p.policyTypes.map((t, j) => (
-                          <span key={j} className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: "oklch(0.55 0.22 260 / 0.1)", color: "oklch(0.65 0.18 260)", border: "1px solid oklch(0.55 0.22 260 / 0.25)" }}>{t}</span>
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

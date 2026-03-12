@@ -95,6 +95,8 @@ export interface PodMetrics {
   y?: number;
   vx?: number;
   vy?: number;
+  securityRisk?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK";
+  securityIssues?: string[];
 }
 
 export interface NodeInfo {
@@ -220,6 +222,8 @@ function apiPodToMetrics(raw: Record<string, unknown>, idx: number): PodMetrics 
     mainImage:       typeof raw.mainImage === "string" ? raw.mainImage : undefined,
     startTime:       typeof raw.startTime === "string" ? raw.startTime : null,
     podIP:           typeof raw.podIP === "string" ? raw.podIP : undefined,
+    securityRisk:    (raw.securityRisk as PodMetrics["securityRisk"]) ?? "OK",
+    securityIssues:  Array.isArray(raw.securityIssues) ? (raw.securityIssues as string[]) : [],
   };
 
   return { ...podBase, alerts: computePodAlerts(podBase) };

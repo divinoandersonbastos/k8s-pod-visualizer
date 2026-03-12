@@ -33,6 +33,8 @@ interface ClusterSidebarProps {
   onDisplayModeChange?: (mode: "canvas" | "app") => void;
   onShowSecurity?: () => void;
   securitySeverity?: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null;
+  securityMode?: boolean;
+  onToggleSecurityMode?: () => void;
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -96,6 +98,8 @@ export function ClusterSidebar({
   onDisplayModeChange,
   onShowSecurity,
   securitySeverity,
+  securityMode = false,
+  onToggleSecurityMode,
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded]     = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
@@ -283,7 +287,21 @@ export function ClusterSidebar({
             </button>
           );
         })()}
-
+        {/* Toggle Modo Segurança */}
+        {onToggleSecurityMode && (
+          <button
+            onClick={onToggleSecurityMode}
+            className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-semibold transition-all hover:brightness-110"
+            style={{
+              background: securityMode ? "oklch(0.55 0.22 25 / 0.20)" : "oklch(0.16 0.02 250)",
+              border: `1px solid ${securityMode ? "oklch(0.65 0.22 25 / 0.6)" : "oklch(0.22 0.03 250)"}`,
+              color: securityMode ? "oklch(0.80 0.20 25)" : "oklch(0.50 0.015 250)",
+            }}
+          >
+            <Shield size={12} />
+            {securityMode ? "Modo Segurança: ON" : "Modo Segurança"}
+          </button>
+        )}
         {/* Modo de layout */}
         <div className="space-y-2">
           <div className="text-[10px] text-slate-500 uppercase tracking-widest">Layout</div>

@@ -83,20 +83,34 @@ interface RuntimeRisk {
 }
 
 interface RbacIssue {
-  kind: string;
+  type: string;        // "ClusterRoleBinding" | "RoleBinding"
   name: string;
   namespace: string;
+  role: string;
   subjects: string[];
-  risks: string[];
-  riskLevel: string;
+  issues: { severity: string; message: string }[];
+  maxSeverity: string; // "CRITICAL" | "HIGH" | "MEDIUM" | "LOW"
 }
 
-interface SecretIssue {
-  name: string;
+// Formato retornado pelo backend em /api/security/secrets
+interface EnvExposure {
   namespace: string;
+  pod: string;
+  container: string;
+  secrets: { type: string; secretName: string; key: string; envVar: string }[];
+  risk: string;
+  reason: string;
+}
+interface RiskySecret {
+  namespace: string;
+  name: string;
   type: string;
-  exposedInEnv: { pod: string; container: string; key: string }[];
   sensitiveKeys: string[];
+  risk: string;
+}
+interface SecretsData {
+  envExposures: EnvExposure[];
+  riskySecrets: RiskySecret[];
 }
 
 interface NetworkPolicyData {
@@ -751,21 +765,21 @@ function RbacTab({
           style={{ background: "oklch(0.15 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
         >
           <div className="flex items-center gap-2">
-            <UserX size={13} style={{ color: `oklch(0.65 0.18 ${SEV_HUE[item.riskLevel] ?? 250})` }} />
+            <UserX size={13} style={{ color: `oklch(0.65 0.18 ${SEV_HUE[item.maxSeverity] ?? 250})` }} />
             <span className="text-xs font-mono flex-1" style={{ color: "oklch(0.72 0.01 250)" }}>{item.name}</span>
-            <SevBadge sev={item.riskLevel} />
+            <SevBadge sev={item.maxSeverity} />
           </div>
           <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
-            {item.kind} · {item.namespace || "cluster-wide"}
+            {item.type} · {item.namespace || "cluster-wide"} · role: {item.role}
           </div>
           <div className="flex flex-wrap gap-1">
-            {item.risks.map((r, j) => (
+            {(item.issues ?? []).map((iss, j) => (
               <span
                 key={j}
                 className="text-[9px] font-mono px-1.5 py-0.5 rounded"
                 style={{ background: "oklch(0.45 0.18 25 / 0.12)", color: "oklch(0.65 0.18 25)" }}
               >
-                {r}
+                {iss.message}
               </span>
             ))}
           </div>
@@ -785,7 +799,7 @@ function RbacTab({
 function SecretsTab({
   data, loading, error, onRefresh,
 }: {
-  data: SecretIssue[] | null;
+  data: SecretsData | null;
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
@@ -794,7 +808,12 @@ function SecretsTab({
 
   if (loading) return <LoadingState />;
   if (error) return <ErrorState msg={error} onRetry={onRefresh} />;
-  if (!data || data.length === 0) return (
+
+  const envExposures = data?.envExposures ?? [];
+  const riskySecrets = data?.riskySecrets ?? [];
+  const totalIssues = envExposures.length + riskySecrets.length;
+
+  if (totalIssues === 0) return (
     <div className="flex flex-col items-center justify-center py-12 gap-2">
       <ShieldCheck size={24} style={{ color: "oklch(0.65 0.18 145)" }} />
       <p className="text-sm font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>
@@ -807,7 +826,7 @@ function SecretsTab({
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-[10px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
-          {data.length} secrets com issues
+          {envExposures.length} exposições em env · {riskySecrets.length} secrets sensíveis
         </span>
         <button
           onClick={() => setShowKeys(!showKeys)}
@@ -819,52 +838,90 @@ function SecretsTab({
           }}
         >
           {showKeys ? <EyeOff size={10} /> : <Eye size={10} />}
-          {showKeys ? "Ocultar chaves" : "Mostrar chaves"}
+          {showKeys ? "Ocultar detalhes" : "Mostrar detalhes"}
         </button>
       </div>
 
-      {data.map((s, i) => (
-        <div
-          key={i}
-          className="rounded-xl p-3 space-y-2"
-          style={{ background: "oklch(0.15 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
-        >
-          <div className="flex items-center gap-2">
-            <Key size={13} style={{ color: "oklch(0.65 0.18 45)" }} />
-            <span className="text-xs font-mono flex-1" style={{ color: "oklch(0.72 0.01 250)" }}>{s.name}</span>
-            <span className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{s.namespace}</span>
+      {/* Exposições em variáveis de ambiente */}
+      {envExposures.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
+            Secrets expostos como env vars ({envExposures.length})
           </div>
-          {s.exposedInEnv.length > 0 && (
-            <div className="space-y-1">
-              <div className="text-[9px] font-mono uppercase" style={{ color: "oklch(0.45 0.18 45)" }}>
-                Exposto em variáveis de ambiente:
-              </div>
-              {s.exposedInEnv.slice(0, 3).map((e, j) => (
-                <div
-                  key={j}
-                  className="text-[9px] font-mono px-2 py-1 rounded"
-                  style={{ background: "oklch(0.45 0.18 45 / 0.08)", color: "oklch(0.65 0.01 250)" }}
-                >
-                  {e.pod} › {e.container} › {showKeys ? e.key : "●●●●●●"}
+          {envExposures.map((exp: EnvExposure, i: number) => (
+            <div
+              key={i}
+              className="rounded-xl p-3 space-y-2"
+              style={{ background: "oklch(0.15 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+            >
+              <div className="flex items-center gap-2">
+                <Key size={13} style={{ color: "oklch(0.65 0.18 45)" }} />
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs font-mono truncate" style={{ color: "oklch(0.72 0.01 250)" }}>{exp.pod}</div>
+                  <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{exp.namespace} · {exp.container}</div>
                 </div>
-              ))}
+                <SevBadge sev={exp.risk} />
+              </div>
+              {showKeys && exp.secrets.length > 0 && (
+                <div className="space-y-1">
+                  {exp.secrets.slice(0, 5).map((s: { type: string; secretName: string; key: string; envVar: string }, j: number) => (
+                    <div
+                      key={j}
+                      className="text-[9px] font-mono px-2 py-1 rounded"
+                      style={{ background: "oklch(0.45 0.18 45 / 0.08)", color: "oklch(0.65 0.01 250)" }}
+                    >
+                      {s.envVar} ← {s.secretName}/{s.key}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {!showKeys && (
+                <div className="text-[9px] font-mono" style={{ color: "oklch(0.38 0.01 250)" }}>
+                  {exp.secrets.length} secret(s) referenciado(s) — clique em "Mostrar detalhes" para ver
+                </div>
+              )}
             </div>
-          )}
-          {s.sensitiveKeys.length > 0 && (
-            <div className="flex flex-wrap gap-1">
-              {s.sensitiveKeys.map((k, j) => (
-                <span
-                  key={j}
-                  className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-                  style={{ background: "oklch(0.45 0.18 25 / 0.12)", color: "oklch(0.65 0.18 25)" }}
-                >
-                  {showKeys ? k : "●●●●●"}
-                </span>
-              ))}
-            </div>
-          )}
+          ))}
         </div>
-      ))}
+      )}
+
+      {/* Secrets com chaves sensíveis */}
+      {riskySecrets.length > 0 && (
+        <div className="space-y-2">
+          <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
+            Secrets com chaves sensíveis ({riskySecrets.length})
+          </div>
+          {riskySecrets.map((s: RiskySecret, i: number) => (
+            <div
+              key={i}
+              className="rounded-xl p-3 space-y-2"
+              style={{ background: "oklch(0.15 0.02 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+            >
+              <div className="flex items-center gap-2">
+                <Key size={13} style={{ color: "oklch(0.65 0.18 25)" }} />
+                <span className="text-xs font-mono flex-1" style={{ color: "oklch(0.72 0.01 250)" }}>{s.name}</span>
+                <SevBadge sev={s.risk} />
+              </div>
+              <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>
+                {s.namespace} · {s.type}
+              </div>
+              {s.sensitiveKeys.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  {s.sensitiveKeys.map((k: string, j: number) => (
+                    <span
+                      key={j}
+                      className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                      style={{ background: "oklch(0.45 0.18 25 / 0.12)", color: "oklch(0.65 0.18 25)" }}
+                    >
+                      {showKeys ? k : "●●●●●"}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -985,8 +1042,25 @@ export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
     try {
       const r = await fetch(`${apiUrl}${endpoints[tab]}`, { headers: getAuthHeaders() });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const json = await r.json();
-      setTabData(prev => ({ ...prev, [tab]: json }));
+      const json = await r.json() as Record<string, unknown>;
+      // Extrair o campo correto de cada resposta (servidor retorna objetos wrapper, não arrays diretos)
+      let extracted: unknown = json;
+      if (tab === "runtime") {
+        extracted = { pods: Array.isArray(json?.pods) ? json.pods : [], nsRanking: Array.isArray(json?.nsRanking) ? json.nsRanking : [] };
+      } else if (tab === "vulns") {
+        extracted = Array.isArray(json?.images) ? json.images : [];
+      } else if (tab === "rbac") {
+        extracted = Array.isArray(json?.findings) ? json.findings : [];
+      } else if (tab === "secrets") {
+        extracted = { envExposures: Array.isArray(json?.envExposures) ? json.envExposures : [], riskySecrets: Array.isArray(json?.riskySecrets) ? json.riskySecrets : [] };
+      } else if (tab === "network") {
+        extracted = {
+          namespacesWithoutPolicy: Array.isArray(json?.namespacesWithoutPolicy) ? json.namespacesWithoutPolicy : [],
+          permissivePolicies: Array.isArray(json?.permissivePolicies) ? json.permissivePolicies : [],
+          podsWithoutPolicy: Array.isArray(json?.podsWithoutPolicy) ? json.podsWithoutPolicy : [],
+        };
+      }
+      setTabData(prev => ({ ...prev, [tab]: extracted }));
     } catch (e) {
       setTabError(prev => ({ ...prev, [tab]: (e as Error).message }));
     } finally {
@@ -1106,7 +1180,7 @@ export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
               error={summaryError}
               onRefresh={fetchSummary}
               isSRE={isSRE}
-              runtimeData={(tabData["runtime"] as RuntimeRisk[]) ?? null}
+              runtimeData={(tabData["runtime"] as { pods: RuntimeRisk[]; nsRanking: unknown[] } | null)?.pods ?? null}
             />
           )}
           {activeTab === "vulns" && (
@@ -1120,7 +1194,7 @@ export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
           )}
           {activeTab === "runtime" && (
             <RuntimeTab
-              data={(tabData["runtime"] as RuntimeRisk[]) ?? null}
+              data={(tabData["runtime"] as { pods: RuntimeRisk[]; nsRanking: unknown[] } | null)?.pods ?? null}
               loading={!!tabLoading["runtime"]}
               error={tabError["runtime"] ?? null}
               onRefresh={() => fetchTab("runtime")}
@@ -1137,7 +1211,7 @@ export function SecurityPanel({ onClose, apiUrl, isSRE }: SecurityPanelProps) {
           )}
           {activeTab === "secrets" && (
             <SecretsTab
-              data={(tabData["secrets"] as SecretIssue[]) ?? null}
+              data={(tabData["secrets"] as SecretsData) ?? null}
               loading={!!tabLoading["secrets"]}
               error={tabError["secrets"] ?? null}
               onRefresh={() => fetchTab("secrets")}

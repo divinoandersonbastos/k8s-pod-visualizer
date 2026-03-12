@@ -285,7 +285,7 @@ async function getPodsWithMetrics() {
         containerNames,
         deploymentName,
         labels:         p.metadata?.labels || {},
-        securityRisk,
+        securityRisk: secRisk,
         securityIssues: [...new Set(secIssues)],
         resources: {
           requests: {

@@ -1438,23 +1438,40 @@ const server = http.createServer(async (req, res) => {
       return;
     }
   }
-
-  // ── /api/deployments ──────────────────────────────────────────────────────
+  // ── /api/deployments ────────────────────────────────────────────────────────────────────────────────────────
   if (url.pathname === "/api/deployments") {
-    try {
-      const namespace = url.searchParams.get("namespace") || null;
-      const deploys   = await getDeployments(namespace);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(deploys));
-    } catch (err) {
-      console.error("[error] /api/deployments:", err.message);
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
+    requireAuth(req, res, async () => {
+      try {
+        const nsParam    = url.searchParams.get("namespace") || null;
+        const user       = req.user;
+        const allowedNs  = (user.role !== "sre" && Array.isArray(user.namespaces) && user.namespaces.length > 0)
+          ? user.namespaces
+          : null; // null = sem restrição (SRE)
+        // Se Squad filtrou por namespace específico, valida que é permitido
+        let targetNs = nsParam;
+        if (allowedNs && nsParam && !allowedNs.includes(nsParam)) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Namespace ${nsParam} não permitido` }));
+          return;
+        }
+        // Squad sem filtro de namespace: busca todos e filtra depois
+        if (allowedNs && !nsParam) targetNs = null; // busca todos, filtra abaixo
+        const deploys = await getDeployments(targetNs);
+        // Filtra por namespaces permitidos para Squad
+        const filtered = allowedNs
+          ? deploys.filter((d) => allowedNs.includes(d.namespace))
+          : deploys;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(filtered));
+      } catch (err) {
+        console.error("[error] /api/deployments:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
     return;
   }
-
-  // ── /api/deployments/:ns/:name/rollout ─────────────────────────────────────
+  // ── /api/deployments/:ns/:name/rollout ─────────────────────────
   const deployRolloutMatch = url.pathname.match(/^\/api\/deployments\/([^/]+)\/([^/]+)\/rollout$/);
   if (deployRolloutMatch) {
     const [, namespace, deployName] = deployRolloutMatch;
@@ -1503,17 +1520,33 @@ const server = http.createServer(async (req, res) => {
   // ── /api/events/deployments — histórico persistido no SQLite ───────────────
   if (url.pathname === "/api/events/deployments") {
     if (req.method === "GET") {
-      try {
-        const limit     = parseInt(url.searchParams.get("limit")     || "500");
-        const eventType = url.searchParams.get("eventType") || null;
-        const namespace = url.searchParams.get("namespace") || null;
-        const events    = getAllDeploymentEvents(limit, eventType, namespace);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(events));
-      } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
+      requireAuth(req, res, async () => {
+        try {
+          const limit     = parseInt(url.searchParams.get("limit")     || "500");
+          const eventType = url.searchParams.get("eventType") || null;
+          const nsParam   = url.searchParams.get("namespace") || null;
+          const user      = req.user;
+          const allowedNs = (user.role !== "sre" && Array.isArray(user.namespaces) && user.namespaces.length > 0)
+            ? user.namespaces : null;
+          // Valida namespace específico solicitado
+          if (allowedNs && nsParam && !allowedNs.includes(nsParam)) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: `Namespace ${nsParam} não permitido` }));
+            return;
+          }
+          const namespace = nsParam;
+          let events = getAllDeploymentEvents(limit, eventType, namespace);
+          // Filtra por namespaces permitidos para Squad
+          if (allowedNs) {
+            events = events.filter((e) => allowedNs.includes(e.namespace));
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(events));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
       return;
     }
     if (req.method === "POST") {

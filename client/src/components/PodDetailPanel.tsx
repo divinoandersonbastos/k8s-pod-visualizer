@@ -591,6 +591,46 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                         >{value}</span>
                       </div>
                     ))}
+                    {/* Imagem(ns) do container */}
+                    {(() => {
+                      const p2 = pod as unknown as { mainImage?: string; containersDetail?: { name: string; image: string }[] };
+                      const details = p2.containersDetail;
+                      if (details && details.length > 1) {
+                        // Múltiplos containers — exibe cada um com nome
+                        return (
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-3">
+                              <span className="text-slate-600 shrink-0"><Box size={13} /></span>
+                              <span className="text-slate-500 text-xs w-24 shrink-0">Imagens</span>
+                            </div>
+                            {details.map((cd) => (
+                              <div key={cd.name} className="ml-9 space-y-0.5">
+                                <div className="text-[10px] font-mono" style={{ color: "oklch(0.55 0.015 250)" }}>{cd.name}</div>
+                                <div
+                                  className="font-mono text-[10px] break-all leading-tight px-2 py-1 rounded"
+                                  style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.22 0.03 250)", color: "oklch(0.65 0.15 200)" }}
+                                >{cd.image || "—"}</div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      }
+                      // Container único — exibe inline
+                      const img = (details && details[0]?.image) || p2.mainImage;
+                      if (!img) return null;
+                      return (
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-3">
+                            <span className="text-slate-600 shrink-0"><Box size={13} /></span>
+                            <span className="text-slate-500 text-xs w-24 shrink-0">Imagem</span>
+                          </div>
+                          <div
+                            className="ml-9 font-mono text-[10px] break-all leading-tight px-2 py-1.5 rounded"
+                            style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.22 0.03 250)", color: "oklch(0.65 0.15 200)" }}
+                          >{img}</div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Labels */}

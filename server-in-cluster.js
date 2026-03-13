@@ -275,6 +275,25 @@ async function getPodsWithMetrics() {
           secIssues.push("missingLimits");
         }
       }
+      // Monta containersDetail com imagem de cada container
+      const containerStatuses = p.status?.containerStatuses || [];
+      const csMap = {};
+      for (const cs of containerStatuses) { csMap[cs.name] = cs; }
+      const containersDetail = allContainers.map((c) => {
+        const cs = csMap[c.name] || {};
+        const stateObj = cs.state || {};
+        const stateKey = Object.keys(stateObj)[0] || "unknown";
+        const stateReason = stateObj[stateKey]?.reason || stateKey;
+        return {
+          name:     c.name,
+          image:    c.image || "",
+          ready:    cs.ready || false,
+          restarts: cs.restartCount || 0,
+          state:    stateKey,
+          stateReason,
+        };
+      });
+      const mainImage = allContainers[0]?.image || "";
       return {
         name:           p.metadata.name,
         namespace:      p.metadata.namespace,
@@ -283,8 +302,12 @@ async function getPodsWithMetrics() {
         cpuUsage:       usage.cpu,
         memoryUsage:    usage.mem,
         containerNames,
+        containersDetail,
+        mainImage,
         deploymentName,
         labels:         p.metadata?.labels || {},
+        podIP:          p.status?.podIP || null,
+        startTime:      p.status?.startTime || null,
         securityRisk: secRisk,
         securityIssues: [...new Set(secIssues)],
         resources: {

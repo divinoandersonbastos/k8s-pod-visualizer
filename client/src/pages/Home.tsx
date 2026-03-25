@@ -61,7 +61,7 @@ export default function Home() {
   const [showSecurity, setShowSecurity] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
-  const { user, isSRE, logout } = useAuth();
+  const { user, isSRE, isAdmin, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
@@ -309,6 +309,7 @@ export default function Home() {
         onShowTrace={() => setShowTrace(true)}
         onLogout={logout}
         isSRE={isSRE}
+        isAdmin={isAdmin}
         currentUser={user ? { displayName: user.displayName, username: user.username, role: user.role } : undefined}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
@@ -574,9 +575,9 @@ export default function Home() {
             )}
           </AnimatePresence>
 
-          {/* Painel de Gestão de Usuários (SRE only) */}
+          {/* Painel de Gestão de Usuários (Admin + SRE) */}
           <AnimatePresence>
-            {showUserManagement && isSRE && (
+            {showUserManagement && (isSRE || isAdmin) && (
               <UserManagementPanel
                 onClose={() => setShowUserManagement(false)}
                 availableNamespaces={Object.keys(nsCounts)}

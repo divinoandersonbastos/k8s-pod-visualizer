@@ -1,22 +1,26 @@
 /**
- * LoginPage.tsx — Tela de login e setup inicial para K8s Pod Visualizer v3.0
- * Design: terminal dark com gradiente ciano/verde, tipografia Space Grotesk
+ * LoginPage.tsx — Tela de login e setup inicial para K8s Pod Visualizer v3.6
+ *
+ * Setup flow:
+ *   1. Primeira vez: exibe formulário para criar conta ADMIN (master)
+ *   2. Após setup: exibe apenas tela de login (sem aba "Novo usuário")
+ *   3. Criação de SRE e Squad é feita pelo painel de usuários (Admin)
  */
 import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
-import { Shield, Terminal, Eye, EyeOff, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Crown, Terminal, Eye, EyeOff, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
 
 export default function LoginPage() {
   const { login, setup, setupDone, user } = useAuth();
   const [, setLocation] = useLocation();
 
-  // Se já autenticado, redireciona para home
   useEffect(() => {
     if (user) setLocation("/");
   }, [user, setLocation]);
-  const [mode, setMode] = useState<"login" | "setup">(setupDone ? "login" : "setup");
+
+  const isSetupMode = !setupDone;
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -30,15 +34,15 @@ export default function LoginPage() {
     e.preventDefault();
     setError("");
     setSuccess("");
-    if (mode === "setup") {
+    if (isSetupMode) {
       if (password !== confirmPassword) { setError("As senhas não coincidem."); return; }
       if (password.length < 8) { setError("A senha deve ter pelo menos 8 caracteres."); return; }
     }
     setLoading(true);
     try {
-      if (mode === "setup") {
+      if (isSetupMode) {
         await setup(username, password, displayName || username);
-        setSuccess("Conta SRE criada com sucesso! Redirecionando...");
+        setSuccess("Conta Admin criada com sucesso! Redirecionando...");
         setTimeout(() => setLocation("/"), 800);
       } else {
         await login(username, password);
@@ -74,7 +78,9 @@ export default function LoginPage() {
           width: 600,
           height: 600,
           borderRadius: "50%",
-          background: "radial-gradient(circle, oklch(0.55 0.22 200 / 0.08) 0%, transparent 70%)",
+          background: isSetupMode
+            ? "radial-gradient(circle, oklch(0.65 0.20 60 / 0.08) 0%, transparent 70%)"
+            : "radial-gradient(circle, oklch(0.55 0.22 200 / 0.08) 0%, transparent 70%)",
           top: "50%",
           left: "50%",
           transform: "translate(-50%, -50%)",
@@ -92,17 +98,21 @@ export default function LoginPage() {
           <div
             className="w-16 h-16 rounded-2xl flex items-center justify-center mb-4"
             style={{
-              background: "linear-gradient(135deg, oklch(0.55 0.22 200), oklch(0.45 0.20 160))",
-              boxShadow: "0 0 32px oklch(0.55 0.22 200 / 0.4)",
+              background: isSetupMode
+                ? "linear-gradient(135deg, oklch(0.65 0.20 60), oklch(0.55 0.18 40))"
+                : "linear-gradient(135deg, oklch(0.55 0.22 200), oklch(0.45 0.20 160))",
+              boxShadow: isSetupMode
+                ? "0 0 32px oklch(0.65 0.20 60 / 0.4)"
+                : "0 0 32px oklch(0.55 0.22 200 / 0.4)",
             }}
           >
-            <Terminal size={32} color="white" />
+            {isSetupMode ? <Crown size={32} color="white" /> : <Terminal size={32} color="white" />}
           </div>
           <h1 className="text-2xl font-bold tracking-tight" style={{ color: "oklch(0.92 0.04 250)", fontFamily: "'Space Grotesk', sans-serif" }}>
             K8s Pod Visualizer
           </h1>
           <p className="text-sm mt-1" style={{ color: "oklch(0.55 0.04 250)" }}>
-            {mode === "setup" ? "Configuração inicial — Conta SRE" : "Acesso ao painel de monitoramento"}
+            {isSetupMode ? "Configuração inicial — Conta Admin" : "Acesso ao painel de monitoramento"}
           </p>
         </div>
 
@@ -111,49 +121,30 @@ export default function LoginPage() {
           className="rounded-2xl p-8"
           style={{
             background: "oklch(0.12 0.02 250 / 0.95)",
-            border: "1px solid oklch(0.22 0.04 250)",
+            border: `1px solid ${isSetupMode ? "oklch(0.65 0.20 60 / 0.35)" : "oklch(0.22 0.04 250)"}`,
             boxShadow: "0 24px 64px oklch(0.05 0.01 250 / 0.8)",
             backdropFilter: "blur(12px)",
           }}
         >
-          {/* Tabs login/setup */}
-          {setupDone && (
-            <div className="flex rounded-lg p-1 mb-6" style={{ background: "oklch(0.08 0.015 250)" }}>
-              {(["login", "setup"] as const).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => { setMode(m); setError(""); }}
-                  className="flex-1 py-2 rounded-md text-sm font-medium transition-all"
-                  style={{
-                    background: mode === m ? "oklch(0.55 0.22 200)" : "transparent",
-                    color: mode === m ? "white" : "oklch(0.50 0.04 250)",
-                    fontFamily: "'Space Grotesk', sans-serif",
-                  }}
-                >
-                  {m === "login" ? "Entrar" : "Novo usuário"}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Setup banner */}
-          {mode === "setup" && !setupDone && (
+          {/* Banner de primeiro acesso */}
+          {isSetupMode && (
             <div
               className="flex items-start gap-3 rounded-lg p-3 mb-6"
-              style={{ background: "oklch(0.55 0.22 200 / 0.1)", border: "1px solid oklch(0.55 0.22 200 / 0.3)" }}
+              style={{ background: "oklch(0.65 0.20 60 / 0.10)", border: "1px solid oklch(0.65 0.20 60 / 0.30)" }}
             >
-              <Shield size={18} style={{ color: "oklch(0.65 0.22 200)", flexShrink: 0, marginTop: 2 }} />
+              <Crown size={18} style={{ color: "oklch(0.75 0.20 60)", flexShrink: 0, marginTop: 2 }} />
               <div>
-                <p className="text-sm font-semibold" style={{ color: "oklch(0.75 0.15 200)" }}>Primeiro acesso</p>
+                <p className="text-sm font-semibold" style={{ color: "oklch(0.80 0.18 60)" }}>Primeiro acesso — Conta Admin</p>
                 <p className="text-xs mt-0.5" style={{ color: "oklch(0.55 0.04 250)" }}>
-                  Crie a conta SRE administradora. Após o setup, novos usuários Squad podem ser cadastrados pelo painel de gestão.
+                  Esta conta é o administrador master do sistema. Após o setup, use-a para criar usuários SRE e Squad pelo painel de gestão.
                 </p>
               </div>
             </div>
           )}
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {mode === "setup" && (
+            {/* Nome de exibição (apenas no setup) */}
+            {isSetupMode && (
               <div>
                 <label className="block text-xs font-medium mb-1.5" style={{ color: "oklch(0.60 0.04 250)" }}>
                   Nome de exibição
@@ -170,12 +161,13 @@ export default function LoginPage() {
                     color: "oklch(0.88 0.04 250)",
                     fontFamily: "'Space Grotesk', sans-serif",
                   }}
-                  onFocus={e => e.target.style.borderColor = "oklch(0.55 0.22 200)"}
+                  onFocus={e => e.target.style.borderColor = "oklch(0.65 0.20 60)"}
                   onBlur={e => e.target.style.borderColor = "oklch(0.22 0.04 250)"}
                 />
               </div>
             )}
 
+            {/* Usuário */}
             <div>
               <label className="block text-xs font-medium mb-1.5" style={{ color: "oklch(0.60 0.04 250)" }}>
                 Usuário
@@ -193,11 +185,12 @@ export default function LoginPage() {
                   border: "1px solid oklch(0.22 0.04 250)",
                   color: "oklch(0.88 0.04 250)",
                 }}
-                onFocus={e => e.target.style.borderColor = "oklch(0.55 0.22 200)"}
+                onFocus={e => e.target.style.borderColor = isSetupMode ? "oklch(0.65 0.20 60)" : "oklch(0.55 0.22 200)"}
                 onBlur={e => e.target.style.borderColor = "oklch(0.22 0.04 250)"}
               />
             </div>
 
+            {/* Senha */}
             <div>
               <label className="block text-xs font-medium mb-1.5" style={{ color: "oklch(0.60 0.04 250)" }}>
                 Senha
@@ -207,16 +200,16 @@ export default function LoginPage() {
                   type={showPass ? "text" : "password"}
                   value={password}
                   onChange={e => setPassword(e.target.value)}
-                  placeholder={mode === "setup" ? "Mínimo 8 caracteres" : "••••••••"}
+                  placeholder={isSetupMode ? "Mínimo 8 caracteres" : "••••••••"}
                   required
-                  autoComplete={mode === "setup" ? "new-password" : "current-password"}
+                  autoComplete={isSetupMode ? "new-password" : "current-password"}
                   className="w-full rounded-lg px-3 py-2.5 pr-10 text-sm outline-none transition-all font-mono"
                   style={{
                     background: "oklch(0.09 0.015 250)",
                     border: "1px solid oklch(0.22 0.04 250)",
                     color: "oklch(0.88 0.04 250)",
                   }}
-                  onFocus={e => e.target.style.borderColor = "oklch(0.55 0.22 200)"}
+                  onFocus={e => e.target.style.borderColor = isSetupMode ? "oklch(0.65 0.20 60)" : "oklch(0.55 0.22 200)"}
                   onBlur={e => e.target.style.borderColor = "oklch(0.22 0.04 250)"}
                 />
                 <button
@@ -230,7 +223,8 @@ export default function LoginPage() {
               </div>
             </div>
 
-            {mode === "setup" && (
+            {/* Confirmar senha (apenas no setup) */}
+            {isSetupMode && (
               <div>
                 <label className="block text-xs font-medium mb-1.5" style={{ color: "oklch(0.60 0.04 250)" }}>
                   Confirmar senha
@@ -248,7 +242,7 @@ export default function LoginPage() {
                     border: "1px solid oklch(0.22 0.04 250)",
                     color: "oklch(0.88 0.04 250)",
                   }}
-                  onFocus={e => e.target.style.borderColor = "oklch(0.55 0.22 200)"}
+                  onFocus={e => e.target.style.borderColor = "oklch(0.65 0.20 60)"}
                   onBlur={e => e.target.style.borderColor = "oklch(0.22 0.04 250)"}
                 />
               </div>
@@ -282,14 +276,20 @@ export default function LoginPage() {
               disabled={loading}
               className="w-full rounded-lg py-3 text-sm font-semibold transition-all flex items-center justify-center gap-2"
               style={{
-                background: loading ? "oklch(0.40 0.15 200)" : "linear-gradient(135deg, oklch(0.55 0.22 200), oklch(0.50 0.20 170))",
+                background: loading
+                  ? "oklch(0.40 0.12 60)"
+                  : isSetupMode
+                    ? "linear-gradient(135deg, oklch(0.65 0.20 60), oklch(0.55 0.18 40))"
+                    : "linear-gradient(135deg, oklch(0.55 0.22 200), oklch(0.50 0.20 170))",
                 color: "white",
                 fontFamily: "'Space Grotesk', sans-serif",
-                boxShadow: loading ? "none" : "0 4px 16px oklch(0.55 0.22 200 / 0.35)",
+                boxShadow: loading ? "none" : isSetupMode
+                  ? "0 4px 16px oklch(0.65 0.20 60 / 0.35)"
+                  : "0 4px 16px oklch(0.55 0.22 200 / 0.35)",
               }}
             >
               {loading ? <Loader2 size={16} className="animate-spin" /> : null}
-              {mode === "setup" ? "Criar conta SRE" : "Entrar"}
+              {isSetupMode ? "Criar conta Admin" : "Entrar"}
             </button>
           </form>
         </div>

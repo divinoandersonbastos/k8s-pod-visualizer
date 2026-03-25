@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -35,6 +35,7 @@ interface ClusterHeaderProps {
   onShowTrace?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
+  isAdmin?: boolean;
   currentUser?: { displayName?: string; username: string; role: string };
   clusterName?: string;
   statusFilter: StatusFilter;
@@ -63,6 +64,7 @@ export function ClusterHeader({
   onShowTrace,
   onLogout,
   isSRE,
+  isAdmin,
   currentUser,
   clusterName,
   statusFilter,
@@ -450,12 +452,12 @@ export function ClusterHeader({
           </button>
         )}
 
-        {isSRE && onShowUserManagement && (
+        {(isSRE || isAdmin) && onShowUserManagement && (
           <button
             onClick={onShowUserManagement}
             className="p-2 rounded-lg transition-all hover:bg-white/5"
-            title="Gestão de Usuários Squad (SRE)"
-            style={{ color: "oklch(0.65 0.22 200)" }}
+            title={isAdmin ? "Gestão de Usuários (Admin)" : "Gestão de Usuários Squad (SRE)"}
+            style={{ color: isAdmin ? "oklch(0.75 0.20 60)" : "oklch(0.65 0.22 200)" }}
           >
             <Users size={14} />
           </button>
@@ -478,15 +480,30 @@ export function ClusterHeader({
               <div
                 className="flex items-center gap-1.5 px-2 py-1 rounded-lg"
                 style={{
-                  background: isSRE ? "oklch(0.55 0.22 260 / 0.12)" : "oklch(0.55 0.22 142 / 0.12)",
-                  border: `1px solid ${isSRE ? "oklch(0.55 0.22 260 / 0.30)" : "oklch(0.55 0.22 142 / 0.30)"}`,
+                  background: isAdmin
+                    ? "oklch(0.65 0.20 60 / 0.12)"
+                    : isSRE ? "oklch(0.55 0.22 260 / 0.12)" : "oklch(0.55 0.22 142 / 0.12)",
+                  border: `1px solid ${
+                    isAdmin
+                      ? "oklch(0.65 0.20 60 / 0.35)"
+                      : isSRE ? "oklch(0.55 0.22 260 / 0.30)" : "oklch(0.55 0.22 142 / 0.30)"
+                  }`,
                 }}
               >
-                {isSRE ? <Shield size={11} style={{ color: "oklch(0.65 0.22 260)" }} /> : <User size={11} style={{ color: "oklch(0.65 0.22 142)" }} />}
-                <span className="text-[10px] font-mono" style={{ color: isSRE ? "oklch(0.72 0.18 260)" : "oklch(0.72 0.18 142)" }}>
+                {isAdmin
+                  ? <Crown size={11} style={{ color: "oklch(0.75 0.20 60)" }} />
+                  : isSRE
+                    ? <Shield size={11} style={{ color: "oklch(0.65 0.22 260)" }} />
+                    : <User size={11} style={{ color: "oklch(0.65 0.22 142)" }} />
+                }
+                <span className="text-[10px] font-mono" style={{
+                  color: isAdmin ? "oklch(0.80 0.18 60)" : isSRE ? "oklch(0.72 0.18 260)" : "oklch(0.72 0.18 142)"
+                }}>
                   {currentUser.displayName || currentUser.username}
                 </span>
-                <span className="text-[9px] font-mono uppercase" style={{ color: isSRE ? "oklch(0.55 0.18 260)" : "oklch(0.55 0.18 142)" }}>
+                <span className="text-[9px] font-mono uppercase" style={{
+                  color: isAdmin ? "oklch(0.65 0.18 60)" : isSRE ? "oklch(0.55 0.18 260)" : "oklch(0.55 0.18 142)"
+                }}>
                   {currentUser.role}
                 </span>
               </div>

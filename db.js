@@ -268,6 +268,15 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_audit_resource  ON audit_log(resource_name, namespace, recorded_at DESC);
     `,
   },
+  // v5 — Role admin master (acima de SRE, gerencia todos os usuários)
+  {
+    version: 5,
+    sql: `
+      -- Adiciona suporte ao role 'admin' na tabela users (sem ALTER TABLE para SQLite)
+      -- O campo role já existe; apenas atualizamos o índice e adicionamos índice específico
+      CREATE INDEX IF NOT EXISTS idx_users_role_admin ON users(role) WHERE role = 'admin';
+    `,
+  },
 ];
 
 // Aplicar migrações pendentes dentro de uma transação
@@ -786,6 +795,24 @@ export function deleteUser(id) {
 
 export function hasSREUser() {
   return userStmts.countSRE.get().c > 0;
+}
+
+const adminStmts = {
+  countAdmin: db.prepare(`SELECT COUNT(*) AS c FROM users WHERE role = 'admin'`),
+  listSRE:    db.prepare(`SELECT id, username, role, namespaces, display_name, email, active, created_at, last_login FROM users WHERE role = 'sre' ORDER BY username`),
+  deleteAny:  db.prepare(`DELETE FROM users WHERE id = @id AND role != 'admin'`),
+};
+
+export function hasAdminUser() {
+  return adminStmts.countAdmin.get().c > 0;
+}
+
+export function listSREUsers() {
+  return adminStmts.listSRE.all().map(u => ({ ...u, namespaces: JSON.parse(u.namespaces || '[]') }));
+}
+
+export function deleteUserAny(id) {
+  return adminStmts.deleteAny.run({ id });
 }
 
 // ── Funções de Sessões ────────────────────────────────────────────────────────

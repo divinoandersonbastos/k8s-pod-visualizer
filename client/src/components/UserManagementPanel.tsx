@@ -1,16 +1,18 @@
 /**
- * UserManagementPanel.tsx — Gestão de usuários Squad para SRE (v3.0)
- * Permite cadastrar, editar e revogar usuários Squad com namespaces associados.
+ * UserManagementPanel.tsx — Gestão de usuários para Admin e SRE (v3.6)
+ *
+ * Admin: cria SRE e Squad, visualiza todos, pode deletar qualquer um
+ * SRE:   cria Squad, visualiza Squad, pode deletar Squad
  */
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Users, Plus, Trash2, Edit3, X, Check, Loader2, Shield, User,
-  Copy, RefreshCw, ChevronDown, ChevronRight, AlertCircle, Key
+  Copy, RefreshCw, ChevronDown, ChevronRight, AlertCircle, Key, Crown
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
-interface SquadUser {
+interface ManagedUser {
   id: number;
   username: string;
   displayName: string;
@@ -33,14 +35,15 @@ function getApiBase() {
 }
 
 export default function UserManagementPanel({ onClose, availableNamespaces }: UserManagementPanelProps) {
-  const { token } = useAuth();
-  const [users, setUsers] = useState<SquadUser[]>([]);
+  const { token, isAdmin, isSRE } = useAuth();
+  const [users, setUsers] = useState<ManagedUser[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
-  const [editUser, setEditUser] = useState<SquadUser | null>(null);
+  const [editUser, setEditUser] = useState<ManagedUser | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [copiedToken, setCopiedToken] = useState<number | null>(null);
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<"sre" | "squad">(isAdmin ? "sre" : "squad");
 
   // Form state
   const [formUsername, setFormUsername] = useState("");
@@ -61,7 +64,7 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
         headers: { Authorization: `Bearer ${token}` }
       });
       const data = await res.json();
-      if (res.ok) setUsers(data.users || []);
+      if (res.ok) setUsers(Array.isArray(data) ? data : (data.users || []));
       else setError(data.error || "Erro ao carregar usuários");
     } catch {
       setError("Servidor indisponível");
@@ -72,13 +75,18 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
 
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
 
+  // Sincronizar aba com role do formulário
+  useEffect(() => {
+    if (showForm) setFormRole(activeTab === "sre" ? "sre" : "squad");
+  }, [activeTab, showForm]);
+
   const resetForm = () => {
     setFormUsername(""); setFormDisplayName(""); setFormEmail("");
-    setFormPassword(""); setFormNamespaces([]); setFormRole("squad");
+    setFormPassword(""); setFormNamespaces([]); setFormRole(activeTab === "sre" ? "sre" : "squad");
     setFormError(""); setEditUser(null); setShowForm(false);
   };
 
-  const openEdit = (u: SquadUser) => {
+  const openEdit = (u: ManagedUser) => {
     setEditUser(u);
     setFormUsername(u.username);
     setFormDisplayName(u.displayName);
@@ -142,16 +150,20 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
     setFormNamespaces(prev => prev.includes(ns) ? prev.filter(n => n !== ns) : [...prev, ns]);
   };
 
-  const copyCredentials = (u: SquadUser) => {
-    const text = `Usuário: ${u.username}\nNamespaces: ${u.namespaces.join(", ")}\nURL: ${window.location.origin}`;
+  const copyCredentials = (u: ManagedUser) => {
+    const text = `Usuário: ${u.username}\nNamespaces: ${u.namespaces.join(", ") || "todos"}\nURL: ${window.location.origin}`;
     navigator.clipboard.writeText(text);
-    setCopiedToken(u.id);
-    setTimeout(() => setCopiedToken(null), 2000);
+    setCopiedId(u.id);
+    setTimeout(() => setCopiedId(null), 2000);
   };
+
+  const sreUsers   = users.filter(u => u.role === "sre");
+  const squadUsers = users.filter(u => u.role === "squad");
+  const displayedUsers = activeTab === "sre" ? sreUsers : squadUsers;
 
   const panelStyle: React.CSSProperties = {
     position: "fixed", top: 0, right: 0, bottom: 0,
-    width: 480, zIndex: 60,
+    width: 500, zIndex: 60,
     background: "oklch(0.10 0.018 250)",
     borderLeft: "1px solid oklch(0.20 0.04 250)",
     display: "flex", flexDirection: "column",
@@ -167,22 +179,31 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
     fontFamily: "'Space Grotesk', sans-serif",
   };
 
+  const roleColor = (role: "sre" | "squad") =>
+    role === "sre" ? "oklch(0.55 0.22 200)" : "oklch(0.55 0.22 145)";
+
   return (
     <motion.div
-      initial={{ x: 480 }} animate={{ x: 0 }} exit={{ x: 480 }}
+      initial={{ x: 500 }} animate={{ x: 0 }} exit={{ x: 500 }}
       transition={{ type: "spring", damping: 26, stiffness: 260 }}
       style={panelStyle}
     >
-      {/* Header */}
+      {/* ── Header ── */}
       <div className="flex items-center justify-between px-5 py-4" style={{ borderBottom: "1px solid oklch(0.18 0.04 250)" }}>
         <div className="flex items-center gap-2.5">
-          <Users size={18} style={{ color: "oklch(0.65 0.22 200)" }} />
+          {isAdmin
+            ? <Crown size={18} style={{ color: "oklch(0.75 0.20 60)" }} />
+            : <Users size={18} style={{ color: "oklch(0.65 0.22 200)" }} />
+          }
           <div>
             <h2 className="text-sm font-bold" style={{ color: "oklch(0.90 0.04 250)", fontFamily: "'Space Grotesk', sans-serif" }}>
-              Gestão de Usuários
+              {isAdmin ? "Gestão de Usuários — Admin" : "Gestão de Usuários — SRE"}
             </h2>
             <p className="text-xs" style={{ color: "oklch(0.45 0.04 250)" }}>
-              {users.length} usuário{users.length !== 1 ? "s" : ""} cadastrado{users.length !== 1 ? "s" : ""}
+              {isAdmin
+                ? `${sreUsers.length} SRE · ${squadUsers.length} Squad`
+                : `${squadUsers.length} usuário${squadUsers.length !== 1 ? "s" : ""} Squad`
+              }
             </p>
           </div>
         </div>
@@ -190,9 +211,15 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
           <button
             onClick={() => { resetForm(); setShowForm(true); }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold"
-            style={{ background: "oklch(0.55 0.22 200)", color: "white" }}
+            style={{
+              background: isAdmin && activeTab === "sre"
+                ? "oklch(0.55 0.22 200)"
+                : "oklch(0.50 0.20 145)",
+              color: "white",
+            }}
           >
-            <Plus size={13} /> Novo usuário
+            <Plus size={13} />
+            {isAdmin && activeTab === "sre" ? "Novo SRE" : "Novo Squad"}
           </button>
           <button onClick={onClose} className="p-1.5 rounded-lg" style={{ color: "oklch(0.45 0.04 250)" }}>
             <X size={18} />
@@ -200,8 +227,36 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
         </div>
       </div>
 
-      {/* Content */}
+      {/* ── Tabs SRE / Squad (apenas para admin) ── */}
+      {isAdmin && (
+        <div className="flex px-5 pt-3 gap-2" style={{ borderBottom: "1px solid oklch(0.18 0.04 250)", paddingBottom: 12 }}>
+          {(["sre", "squad"] as const).map(tab => (
+            <button
+              key={tab}
+              onClick={() => { setActiveTab(tab); resetForm(); }}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold transition-all"
+              style={{
+                background: activeTab === tab
+                  ? tab === "sre" ? "oklch(0.55 0.22 200 / 0.15)" : "oklch(0.55 0.22 145 / 0.15)"
+                  : "transparent",
+                border: `1px solid ${activeTab === tab
+                  ? tab === "sre" ? "oklch(0.55 0.22 200 / 0.40)" : "oklch(0.55 0.22 145 / 0.40)"
+                  : "oklch(0.20 0.04 250)"}`,
+                color: activeTab === tab
+                  ? tab === "sre" ? "oklch(0.75 0.18 200)" : "oklch(0.75 0.18 145)"
+                  : "oklch(0.50 0.04 250)",
+              }}
+            >
+              {tab === "sre" ? <Shield size={12} /> : <User size={12} />}
+              {tab === "sre" ? `SRE (${sreUsers.length})` : `Squad (${squadUsers.length})`}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* ── Content ── */}
       <div className="flex-1 overflow-y-auto">
+        {/* Formulário */}
         <AnimatePresence>
           {showForm && (
             <motion.div
@@ -212,7 +267,7 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
               <form onSubmit={handleSubmit} className="p-5 space-y-4">
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-sm font-bold" style={{ color: "oklch(0.80 0.04 250)", fontFamily: "'Space Grotesk', sans-serif" }}>
-                    {editUser ? `Editar: ${editUser.username}` : "Novo usuário"}
+                    {editUser ? `Editar: ${editUser.username}` : activeTab === "sre" ? "Novo usuário SRE" : "Novo usuário Squad"}
                   </h3>
                   <button type="button" onClick={resetForm} style={{ color: "oklch(0.45 0.04 250)" }}>
                     <X size={16} />
@@ -222,7 +277,7 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs mb-1" style={{ color: "oklch(0.55 0.04 250)" }}>Usuário *</label>
-                    <input style={inputStyle} value={formUsername} onChange={e => setFormUsername(e.target.value)} placeholder="username" required />
+                    <input style={inputStyle} value={formUsername} onChange={e => setFormUsername(e.target.value)} placeholder="username" required disabled={!!editUser} />
                   </div>
                   <div>
                     <label className="block text-xs mb-1" style={{ color: "oklch(0.55 0.04 250)" }}>Nome de exibição</label>
@@ -243,57 +298,70 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
                   </div>
                 </div>
 
-                {/* Perfil */}
-                <div>
-                  <label className="block text-xs mb-2" style={{ color: "oklch(0.55 0.04 250)" }}>Perfil</label>
-                  <div className="flex gap-2">
-                    {(["squad", "sre"] as const).map(r => (
-                      <button
-                        key={r} type="button" onClick={() => setFormRole(r)}
-                        className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5"
-                        style={{
-                          background: formRole === r
-                            ? r === "sre" ? "oklch(0.55 0.22 200 / 0.2)" : "oklch(0.55 0.22 145 / 0.2)"
-                            : "oklch(0.08 0.015 250)",
-                          border: `1px solid ${formRole === r
-                            ? r === "sre" ? "oklch(0.55 0.22 200 / 0.5)" : "oklch(0.55 0.22 145 / 0.5)"
-                            : "oklch(0.20 0.04 250)"}`,
-                          color: formRole === r
-                            ? r === "sre" ? "oklch(0.75 0.15 200)" : "oklch(0.75 0.15 145)"
-                            : "oklch(0.50 0.04 250)",
-                        }}
-                      >
-                        {r === "sre" ? <Shield size={13} /> : <User size={13} />}
-                        {r === "sre" ? "SRE" : "Squad"}
-                      </button>
-                    ))}
+                {/* Perfil — admin pode alternar entre SRE e Squad; SRE só vê Squad */}
+                {isAdmin && !editUser && (
+                  <div>
+                    <label className="block text-xs mb-2" style={{ color: "oklch(0.55 0.04 250)" }}>Perfil</label>
+                    <div className="flex gap-2">
+                      {(["squad", "sre"] as const).map(r => (
+                        <button
+                          key={r} type="button" onClick={() => setFormRole(r)}
+                          className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5"
+                          style={{
+                            background: formRole === r
+                              ? r === "sre" ? "oklch(0.55 0.22 200 / 0.2)" : "oklch(0.55 0.22 145 / 0.2)"
+                              : "oklch(0.08 0.015 250)",
+                            border: `1px solid ${formRole === r
+                              ? r === "sre" ? "oklch(0.55 0.22 200 / 0.5)" : "oklch(0.55 0.22 145 / 0.5)"
+                              : "oklch(0.20 0.04 250)"}`,
+                            color: formRole === r
+                              ? r === "sre" ? "oklch(0.75 0.15 200)" : "oklch(0.75 0.15 145)"
+                              : "oklch(0.50 0.04 250)",
+                          }}
+                        >
+                          {r === "sre" ? <Shield size={13} /> : <User size={13} />}
+                          {r === "sre" ? "SRE" : "Squad"}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
 
-                {/* Namespaces */}
-                <div>
-                  <label className="block text-xs mb-2" style={{ color: "oklch(0.55 0.04 250)" }}>
-                    Namespaces autorizados {formRole === "squad" ? "*" : "(opcional — SRE acessa todos)"}
-                  </label>
-                  <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                    {availableNamespaces.length === 0 ? (
-                      <span className="text-xs" style={{ color: "oklch(0.40 0.04 250)" }}>Nenhum namespace detectado</span>
-                    ) : availableNamespaces.map(ns => (
-                      <button
-                        key={ns} type="button" onClick={() => toggleNamespace(ns)}
-                        className="px-2 py-1 rounded-md text-xs font-mono"
-                        style={{
-                          background: formNamespaces.includes(ns) ? "oklch(0.55 0.22 200 / 0.2)" : "oklch(0.08 0.015 250)",
-                          border: `1px solid ${formNamespaces.includes(ns) ? "oklch(0.55 0.22 200 / 0.5)" : "oklch(0.20 0.04 250)"}`,
-                          color: formNamespaces.includes(ns) ? "oklch(0.75 0.15 200)" : "oklch(0.45 0.04 250)",
-                        }}
-                      >
-                        {formNamespaces.includes(ns) && <Check size={10} className="inline mr-1" />}
-                        {ns}
-                      </button>
-                    ))}
+                {/* Namespaces — apenas para Squad */}
+                {formRole === "squad" && (
+                  <div>
+                    <label className="block text-xs mb-2" style={{ color: "oklch(0.55 0.04 250)" }}>
+                      Namespaces autorizados *
+                    </label>
+                    <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                      {availableNamespaces.length === 0 ? (
+                        <span className="text-xs" style={{ color: "oklch(0.40 0.04 250)" }}>Nenhum namespace detectado</span>
+                      ) : availableNamespaces.map(ns => (
+                        <button
+                          key={ns} type="button" onClick={() => toggleNamespace(ns)}
+                          className="px-2 py-1 rounded-md text-xs font-mono"
+                          style={{
+                            background: formNamespaces.includes(ns) ? "oklch(0.55 0.22 145 / 0.2)" : "oklch(0.08 0.015 250)",
+                            border: `1px solid ${formNamespaces.includes(ns) ? "oklch(0.55 0.22 145 / 0.5)" : "oklch(0.20 0.04 250)"}`,
+                            color: formNamespaces.includes(ns) ? "oklch(0.75 0.15 145)" : "oklch(0.45 0.04 250)",
+                          }}
+                        >
+                          {formNamespaces.includes(ns) && <Check size={10} className="inline mr-1" />}
+                          {ns}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+                )}
+
+                {formRole === "sre" && (
+                  <div className="flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: "oklch(0.55 0.22 200 / 0.08)", border: "1px solid oklch(0.55 0.22 200 / 0.25)" }}>
+                    <Shield size={13} style={{ color: "oklch(0.65 0.22 200)" }} />
+                    <span className="text-xs" style={{ color: "oklch(0.65 0.15 200)" }}>
+                      Usuários SRE têm acesso total a todos os namespaces do cluster.
+                    </span>
+                  </div>
+                )}
 
                 {formError && (
                   <div className="flex items-center gap-2 rounded-lg px-3 py-2" style={{ background: "oklch(0.55 0.22 25 / 0.1)", border: "1px solid oklch(0.55 0.22 25 / 0.3)" }}>
@@ -306,8 +374,11 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
                   <button type="button" onClick={resetForm} className="flex-1 py-2 rounded-lg text-xs" style={{ background: "oklch(0.14 0.02 250)", color: "oklch(0.55 0.04 250)" }}>
                     Cancelar
                   </button>
-                  <button type="submit" disabled={formLoading} className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5"
-                    style={{ background: "oklch(0.55 0.22 200)", color: "white" }}>
+                  <button
+                    type="submit" disabled={formLoading}
+                    className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5"
+                    style={{ background: roleColor(formRole), color: "white" }}
+                  >
                     {formLoading ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
                     {editUser ? "Salvar alterações" : "Criar usuário"}
                   </button>
@@ -329,14 +400,21 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
               <span className="text-xs" style={{ color: "oklch(0.75 0.15 25)" }}>{error}</span>
               <button onClick={fetchUsers} className="ml-auto" style={{ color: "oklch(0.55 0.22 200)" }}><RefreshCw size={14} /></button>
             </div>
-          ) : users.length === 0 ? (
+          ) : displayedUsers.length === 0 ? (
             <div className="text-center py-12">
-              <Users size={32} className="mx-auto mb-3" style={{ color: "oklch(0.30 0.04 250)" }} />
-              <p className="text-sm" style={{ color: "oklch(0.45 0.04 250)" }}>Nenhum usuário cadastrado</p>
-              <p className="text-xs mt-1" style={{ color: "oklch(0.35 0.04 250)" }}>Clique em "Novo usuário" para começar</p>
+              {activeTab === "sre"
+                ? <Shield size={32} className="mx-auto mb-3" style={{ color: "oklch(0.30 0.04 250)" }} />
+                : <Users size={32} className="mx-auto mb-3" style={{ color: "oklch(0.30 0.04 250)" }} />
+              }
+              <p className="text-sm" style={{ color: "oklch(0.45 0.04 250)" }}>
+                {activeTab === "sre" ? "Nenhum usuário SRE cadastrado" : "Nenhum usuário Squad cadastrado"}
+              </p>
+              <p className="text-xs mt-1" style={{ color: "oklch(0.35 0.04 250)" }}>
+                Clique em "{activeTab === "sre" ? "Novo SRE" : "Novo Squad"}" para começar
+              </p>
             </div>
-          ) : users.map(u => (
-            <div key={u.id} className="rounded-xl overflow-hidden" style={{ border: "1px solid oklch(0.18 0.04 250)", background: "oklch(0.11 0.018 250)" }}>
+          ) : displayedUsers.map(u => (
+            <div key={u.id} className="rounded-xl overflow-hidden" style={{ border: `1px solid ${u.role === "sre" ? "oklch(0.55 0.22 200 / 0.20)" : "oklch(0.18 0.04 250)"}`, background: "oklch(0.11 0.018 250)" }}>
               <div
                 className="flex items-center gap-3 px-4 py-3 cursor-pointer"
                 onClick={() => setExpandedId(expandedId === u.id ? null : u.id)}
@@ -376,7 +454,7 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
                 </div>
                 <div className="flex items-center gap-1">
                   <button onClick={e => { e.stopPropagation(); copyCredentials(u); }} className="p-1.5 rounded-lg" style={{ color: "oklch(0.45 0.04 250)" }}>
-                    {copiedToken === u.id ? <Check size={14} style={{ color: "oklch(0.65 0.22 145)" }} /> : <Copy size={14} />}
+                    {copiedId === u.id ? <Check size={14} style={{ color: "oklch(0.65 0.22 145)" }} /> : <Copy size={14} />}
                   </button>
                   <button onClick={e => { e.stopPropagation(); openEdit(u); }} className="p-1.5 rounded-lg" style={{ color: "oklch(0.45 0.04 250)" }}>
                     <Edit3 size={14} />

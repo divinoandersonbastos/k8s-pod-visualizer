@@ -1,10 +1,14 @@
 /**
- * AuthContext.tsx — Contexto de autenticação para K8s Pod Visualizer v3.0
- * Gerencia login, logout, sessão JWT e perfis SRE/Squad.
+ * AuthContext.tsx — Contexto de autenticação para K8s Pod Visualizer v3.6
+ *
+ * Roles:
+ *   admin  — conta master; gerencia SRE e Squad; não acessa o cluster diretamente
+ *   sre    — acesso total ao cluster
+ *   squad  — acesso restrito por namespace
  */
 import React, { createContext, useContext, useState, useEffect, useCallback } from "react";
 
-export type UserRole = "sre" | "squad";
+export type UserRole = "admin" | "sre" | "squad";
 
 export interface AuthUser {
   id: number;
@@ -21,6 +25,7 @@ interface AuthContextValue {
   token: string | null;
   isLoading: boolean;
   setupDone: boolean;
+  isAdmin: boolean;
   isSRE: boolean;
   isSquad: boolean;
   login: (username: string, password: string) => Promise<void>;
@@ -62,7 +67,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const checkSetupStatus = useCallback(async () => {
     try {
       const res = await fetch(`${apiBase}/api/auth/setup-status`);
-      // Se backend não disponível (404/HTML do Vite), pula autenticação
       if (!res.ok || !(res.headers.get("content-type") ?? "").includes("json")) {
         setSetupDone(true);
         setIsLoading(false);
@@ -72,7 +76,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setSetupDone(data.setupDone);
       return data.setupDone;
     } catch {
-      setSetupDone(true); // assume setup feito se não conseguir verificar
+      setSetupDone(true);
       return true;
     }
   }, [apiBase]);
@@ -153,13 +157,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const canAccessNamespace = useCallback((ns: string) => {
     if (!user) return false;
-    if (user.role === "sre") return true;
+    if (user.role === "admin" || user.role === "sre") return true;
     return user.namespaces.includes(ns);
   }, [user]);
 
   return (
     <AuthContext.Provider value={{
       user, token, isLoading, setupDone,
+      isAdmin: user?.role === "admin",
       isSRE: user?.role === "sre",
       isSquad: user?.role === "squad",
       login, logout, setup, refreshUser, canAccessNamespace,

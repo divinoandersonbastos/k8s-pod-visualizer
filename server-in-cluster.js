@@ -32,7 +32,7 @@ import {
   savePodRestartEvent, getPodRestartEvents,
 } from "./db.js";
 import {
-  requireAuth, requireSRE,
+  requireAuth, requireSRE, requireAdmin,
   handleSetup, handleLogin, handleLogout, handleMe, handleSetupStatus,
   handleListUsers, handleCreateUser, handleUpdateUser, handleDeleteUser,
   handleAuditLog, insertAuditLog,
@@ -2132,16 +2132,17 @@ const server = http.createServer(async (req, res) => {
     return handleMe(req, res, () => {});
   }
 
-  // ── /api/users — Gestão de usuários Squad (SRE only) ──────────────────────
+  // ── /api/users — Gestão de usuários (Admin + SRE) ────────────────────────────
+  // A autorização granular (admin vs sre) é tratada dentro dos handlers
   if (url.pathname === "/api/users" && req.method === "GET") {
-    return requireSRE(req, res, () => handleListUsers(req, res));
+    return requireAuth(req, res, () => handleListUsers(req, res));
   }
   if (url.pathname === "/api/users" && req.method === "POST") {
     let body = "";
     req.on("data", (c) => { body += c; });
     req.on("end", async () => {
       try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-      requireSRE(req, res, () => handleCreateUser(req, res));
+      handleCreateUser(req, res);
     });
     return;
   }
@@ -2153,12 +2154,12 @@ const server = http.createServer(async (req, res) => {
       req.on("data", (c) => { body += c; });
       req.on("end", async () => {
         try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
-        requireSRE(req, res, () => handleUpdateUser(req, res));
+        handleUpdateUser(req, res);
       });
       return;
     }
     if (req.method === "DELETE") {
-      return requireSRE(req, res, () => handleDeleteUser(req, res));
+      return handleDeleteUser(req, res);
     }
   }
   if (url.pathname === "/api/audit-log" && req.method === "GET") {

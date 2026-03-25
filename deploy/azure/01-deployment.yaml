@@ -1,0 +1,254 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Azure AKS: Deployment + Service + PVC + HPA + PDB
+#
+# Pré-requisitos:
+#   1. kubectl apply -f deploy/base/00-namespace-rbac.yaml
+#   2. kubectl apply -f deploy/azure/00-configmap-secret.yaml
+#   3. kubectl apply -f deploy/azure/01-deployment.yaml
+#   4. kubectl apply -f deploy/azure/02-ingress.yaml  (opcional)
+#
+# StorageClass usada: managed-csi (Azure Disk — StandardSSD_LRS)
+# Ingress: NGINX Ingress Controller ou Application Gateway (AGIC)
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# ── PersistentVolumeClaim — SQLite (Azure Disk StandardSSD_LRS) ───────────────
+# Azure Disk: ReadWriteOnce — apenas 1 réplica por vez
+# Para múltiplas réplicas, use Azure Files (ReadWriteMany) com storageClassName: azurefile-csi
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: k8s-pod-visualizer-data
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+  annotations:
+    # Evita deleção acidental do PVC ao deletar o Helm release
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: managed-csi          # Azure Disk StandardSSD_LRS (padrão AKS)
+  resources:
+    requests:
+      storage: 5Gi                       # Ajuste conforme volume de eventos/logs
+
+---
+# ── Deployment ────────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+    app.kubernetes.io/version: "3.4.0"
+  annotations:
+    # Força rollout ao atualizar configmap/secret sem mudar a imagem
+    configmap/checksum: "placeholder"
+spec:
+  replicas: 1                            # Manter 1 com Azure Disk (ReadWriteOnce)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-pod-visualizer
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0                        # Evita conflito de mount com ReadWriteOnce
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k8s-pod-visualizer
+        app.kubernetes.io/version: "3.4.0"
+      annotations:
+        # Azure Monitor / Container Insights — coleta de logs automática
+        prometheus.io/scrape: "false"
+    spec:
+      serviceAccountName: k8s-pod-visualizer
+
+      # ── Segurança do Pod ────────────────────────────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      # ── Tolerações e Afinidade (AKS) ───────────────────────────────────────
+      # Descomente para forçar execução em node pool específico:
+      # nodeSelector:
+      #   agentpool: system                # ou: kubernetes.azure.com/agentpool: system
+      # tolerations:
+      #   - key: "CriticalAddonsOnly"
+      #     operator: "Exists"
+
+      # ── Prioridade ──────────────────────────────────────────────────────────
+      # priorityClassName: system-cluster-critical  # descomente se necessário
+
+      containers:
+        - name: k8s-pod-visualizer
+          image: divand/k8s-pod-visualizer:3.4.0    # Atualize para sua tag/ACR
+          imagePullPolicy: Always
+
+          # ── Portas ──────────────────────────────────────────────────────────
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+
+          # ── Variáveis de ambiente ────────────────────────────────────────────
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: PORT
+              value: "3000"
+            # Timezone (logs com horário correto)
+            - name: TZ
+              value: "America/Sao_Paulo"
+          envFrom:
+            # ConfigMap com variáveis não-sensíveis
+            - configMapRef:
+                name: k8s-pod-visualizer-config
+            # Secret com LICENSE_KEY e JWT_SECRET
+            - secretRef:
+                name: k8s-pod-visualizer-secrets
+
+          # ── Volumes ─────────────────────────────────────────────────────────
+          volumeMounts:
+            - name: data
+              mountPath: /app/data       # SQLite + license.jwt
+            - name: tmp
+              mountPath: /tmp
+
+          # ── Recursos ────────────────────────────────────────────────────────
+          # Ajuste conforme tamanho do cluster (número de pods/namespaces)
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+
+          # ── Health Checks ────────────────────────────────────────────────────
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          startupProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12          # 60s para iniciar
+
+          # ── Segurança do Container ───────────────────────────────────────────
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: k8s-pod-visualizer-data
+        - name: tmp
+          emptyDir: {}
+
+      # ── Graceful Shutdown ────────────────────────────────────────────────────
+      terminationGracePeriodSeconds: 30
+
+      # ── Imagem privada (ACR) ─────────────────────────────────────────────────
+      # Se usar Azure Container Registry privado, descomente:
+      # imagePullSecrets:
+      #   - name: acr-secret
+
+---
+# ── Service ───────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+  annotations:
+    # Azure Load Balancer interno (sem IP público) — recomendado para ferramentas internas
+    # service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    # service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "internal-subnet"
+spec:
+  type: ClusterIP                        # Use LoadBalancer para acesso direto sem Ingress
+  selector:
+    app.kubernetes.io/name: k8s-pod-visualizer
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+
+---
+# ── HorizontalPodAutoscaler ───────────────────────────────────────────────────
+# NOTA: Com Azure Disk (ReadWriteOnce), HPA só funciona com 1 réplica.
+# Para escalar horizontalmente, migre para Azure Files (ReadWriteMany).
+# Este HPA está configurado para escalar apenas se a app for stateless.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: k8s-pod-visualizer
+  minReplicas: 1
+  maxReplicas: 1                         # Manter 1 com Azure Disk; aumente com Azure Files
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 80
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 85
+
+---
+# ── PodDisruptionBudget ───────────────────────────────────────────────────────
+# Garante disponibilidade durante manutenções do AKS (node drain, upgrades)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  minAvailable: 0                        # Permite drain total (necessário com 1 réplica)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-pod-visualizer

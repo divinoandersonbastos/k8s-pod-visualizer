@@ -1,0 +1,95 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Azure AKS: Ingress
+#
+# Escolha UMA das opções abaixo conforme o ingress controller do seu AKS:
+#   Opção A: NGINX Ingress Controller (mais comum, open source)
+#   Opção B: Application Gateway Ingress Controller (AGIC) — nativo Azure
+#
+# Para instalar o NGINX Ingress Controller no AKS:
+#   helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+#   helm install ingress-nginx ingress-nginx/ingress-nginx \
+#     --namespace ingress-nginx --create-namespace \
+#     --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-health-probe-request-path"=/healthz
+#
+# Para usar AGIC (Application Gateway):
+#   https://learn.microsoft.com/azure/application-gateway/ingress-controller-overview
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# ── Opção A: NGINX Ingress Controller ─────────────────────────────────────────
+# Substitua k8s-visualizer.seudominio.com.br pelo seu domínio real.
+# Para TLS com cert-manager: kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: k8s-pod-visualizer
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+  annotations:
+    # ── NGINX ──────────────────────────────────────────────────────────────
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"    # WebSocket (logs ao vivo)
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"        # Streaming de logs
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+
+    # ── TLS automático com cert-manager ────────────────────────────────────
+    # Descomente após instalar o cert-manager:
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+
+    # ── AGIC (Application Gateway) — substitua as annotations acima ────────
+    # kubernetes.io/ingress.class: azure/application-gateway
+    # appgw.ingress.kubernetes.io/request-timeout: "300"
+    # appgw.ingress.kubernetes.io/ssl-redirect: "true"
+    # appgw.ingress.kubernetes.io/connection-draining: "true"
+    # appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+
+spec:
+  ingressClassName: nginx                # Troque por "azure/application-gateway" para AGIC
+
+  # ── TLS ────────────────────────────────────────────────────────────────────
+  # Descomente para habilitar HTTPS:
+  # tls:
+  #   - hosts:
+  #       - k8s-visualizer.seudominio.com.br
+  #     secretName: k8s-pod-visualizer-tls  # Criado automaticamente pelo cert-manager
+
+  rules:
+    - host: k8s-visualizer.seudominio.com.br    # ← Substitua pelo seu domínio
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: k8s-pod-visualizer
+                port:
+                  name: http
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ACESSO SEM DOMÍNIO (IP público direto)
+# ─────────────────────────────────────────────────────────────────────────────
+# Se não tiver domínio configurado, use um Service do tipo LoadBalancer:
+#
+# kubectl patch svc k8s-pod-visualizer -n k8s-pod-visualizer \
+#   -p '{"spec":{"type":"LoadBalancer"}}'
+#
+# Aguarde o IP externo:
+# kubectl get svc k8s-pod-visualizer -n k8s-pod-visualizer -w
+#
+# Para IP estático (recomendado para produção):
+# 1. Reserve um IP estático no Azure:
+#    az network public-ip create \
+#      --resource-group <RG_DO_AKS_NODE_POOL> \
+#      --name k8s-viz-ip \
+#      --sku Standard \
+#      --allocation-method static
+#
+# 2. Anote o IP e use no Service:
+#    kubectl patch svc k8s-pod-visualizer -n k8s-pod-visualizer \
+#      -p '{"spec":{"loadBalancerIP":"<IP_ESTATICO>","type":"LoadBalancer"}}'
+# ─────────────────────────────────────────────────────────────────────────────

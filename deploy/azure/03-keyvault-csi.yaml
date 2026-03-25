@@ -1,0 +1,80 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Azure Key Vault CSI Driver (opcional, recomendado prod)
+#
+# Pré-requisitos:
+#   1. AKS com Azure Key Vault Provider for Secrets Store CSI Driver habilitado:
+#      az aks enable-addons --addons azure-keyvault-secrets-provider \
+#        --name <AKS_CLUSTER_NAME> --resource-group <RESOURCE_GROUP>
+#
+#   2. Managed Identity com acesso ao Key Vault:
+#      az keyvault set-policy --name <VAULT_NAME> \
+#        --object-id <MANAGED_IDENTITY_OBJECT_ID> \
+#        --secret-permissions get list
+#
+#   3. Secrets criados no Key Vault:
+#      az keyvault secret set --vault-name <VAULT_NAME> \
+#        --name k8s-viz-jwt-secret --value "$(openssl rand -base64 64)"
+#      az keyvault secret set --vault-name <VAULT_NAME> \
+#        --name k8s-viz-license-key --value "$(cat license-tools/license.jwt)"
+#
+# Substitua os valores <VALOR> antes de aplicar.
+# ─────────────────────────────────────────────────────────────────────────────
+
+---
+# ── SecretProviderClass — mapeamento Key Vault → Secret Kubernetes ────────────
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: k8s-pod-visualizer-keyvault
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+spec:
+  provider: azure
+  parameters:
+    usePodIdentity: "false"
+    useVMManagedIdentity: "true"          # Usa Managed Identity do node pool
+    userAssignedIdentityID: "<MANAGED_IDENTITY_CLIENT_ID>"   # az identity show --query clientId
+    keyvaultName: "<VAULT_NAME>"          # Nome do Azure Key Vault
+    cloudName: "AzurePublicCloud"
+    tenantId: "<AZURE_TENANT_ID>"         # az account show --query tenantId
+    objects: |
+      array:
+        - |
+          objectName: k8s-viz-jwt-secret
+          objectType: secret
+          objectVersion: ""
+        - |
+          objectName: k8s-viz-license-key
+          objectType: secret
+          objectVersion: ""
+
+  # Sincroniza os secrets do Key Vault como Secret Kubernetes
+  secretObjects:
+    - secretName: k8s-pod-visualizer-secrets
+      type: Opaque
+      data:
+        - objectName: k8s-viz-jwt-secret
+          key: JWT_SECRET
+        - objectName: k8s-viz-license-key
+          key: LICENSE_KEY
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Para usar este SecretProviderClass, adicione ao Deployment (01-deployment.yaml)
+# o volume e volumeMount do CSI Driver:
+#
+# volumes:
+#   - name: secrets-store
+#     csi:
+#       driver: secrets-store.csi.k8s.io
+#       readOnly: true
+#       volumeAttributes:
+#         secretProviderClass: k8s-pod-visualizer-keyvault
+#
+# volumeMounts:
+#   - name: secrets-store
+#     mountPath: /mnt/secrets-store
+#     readOnly: true
+#
+# O Secret Kubernetes será criado automaticamente ao montar o volume.
+# ─────────────────────────────────────────────────────────────────────────────

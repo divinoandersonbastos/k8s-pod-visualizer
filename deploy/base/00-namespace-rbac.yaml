@@ -1,8 +1,26 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# K8s Pod Visualizer — Base: Namespace + RBAC
+# K8s Pod Visualizer — Base: Namespace + RBAC completo
 #
-# Aplique PRIMEIRO em qualquer ambiente:
+# Aplique PRIMEIRO em qualquer ambiente (on-premises ou cloud):
 #   kubectl apply -f deploy/base/00-namespace-rbac.yaml
+#
+# Permissões cobertas:
+#   ✅ Pods, Nodes, Namespaces, Events          → Dashboard principal
+#   ✅ Pods/log                                  → Aba de Logs
+#   ✅ Pods/exec, Pods/portforward               → Resource Editor (SRE)
+#   ✅ Deployments, ReplicaSets, StatefulSets    → Deploy Monitor
+#   ✅ DaemonSets, Jobs, CronJobs                → Deploy Monitor
+#   ✅ Services, Endpoints, ConfigMaps           → Painel de rede / Resource Editor
+#   ✅ Secrets (read-only)                       → Módulo de segurança
+#   ✅ NetworkPolicies                           → Módulo de segurança
+#   ✅ ClusterRoles, ClusterRoleBindings         → Módulo RBAC
+#   ✅ Roles, RoleBindings                       → Módulo RBAC
+#   ✅ Metrics (pods + nodes)                    → CPU/Memória em tempo real
+#   ✅ VulnerabilityReports (Trivy Operator)     → Módulo de Vulnerabilidades
+#   ✅ ExposedSecretReports (Trivy Operator)     → Módulo de Segurança
+#   ✅ ConfigAuditReports (Trivy Operator)       → Módulo de Segurança
+#   ✅ RbacAssessmentReports (Trivy Operator)    → Módulo RBAC
+#   ✅ InfraAssessmentReports (Trivy Operator)   → Módulo de Segurança
 # ─────────────────────────────────────────────────────────────────────────────
 
 ---
@@ -24,12 +42,12 @@ metadata:
   namespace: k8s-pod-visualizer
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
+  annotations:
+    # Azure Workload Identity (opcional — descomente se usar AAD Workload Identity)
+    # azure.workload.identity/client-id: "<AZURE_CLIENT_ID>"
 
 ---
-# 3. ClusterRole — permissões de leitura necessárias
-#    - pods/nodes/namespaces/events: monitoramento e histórico
-#    - pods/log: aba de Logs no painel de detalhes
-#    - metrics.k8s.io: CPU e memória em tempo real (requer metrics-server)
+# 3. ClusterRole — permissões necessárias para todos os módulos
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -37,15 +55,122 @@ metadata:
   labels:
     app.kubernetes.io/name: k8s-pod-visualizer
 rules:
+  # ── Core (v1) — leitura ──────────────────────────────────────────────────
   - apiGroups: [""]
-    resources: ["pods", "nodes", "namespaces", "events"]
+    resources:
+      - pods
+      - nodes
+      - namespaces
+      - events
+      - services
+      - endpoints
+      - configmaps
+      - persistentvolumes
+      - persistentvolumeclaims
+      - resourcequotas
+      - limitranges
+      - serviceaccounts
     verbs: ["get", "list", "watch"]
+
+  # Pods — delete (restart = delete pod, o Deployment recria automaticamente)
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["delete"]
+
+  # Pods — logs (streaming em tempo real)
   - apiGroups: [""]
     resources: ["pods/log"]
     verbs: ["get", "list"]
+
+  # Pods — exec e port-forward (Resource Editor — controlado por role SRE na app)
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create", "get"]
+
+  # Secrets — somente leitura (módulo de segurança)
+  # O acesso é filtrado por namespace no código: Squad vê apenas seus namespaces
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Apps (v1) ─────────────────────────────────────────────────────────────
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+
+  # Deployments — escrita (scale, restart, update-image — SRE only via RBAC da app)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch", "update"]
+
+  # Scale horizontal
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+
+  # ── Batch ─────────────────────────────────────────────────────────────────
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Networking ────────────────────────────────────────────────────────────
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+
+  # ── RBAC ──────────────────────────────────────────────────────────────────
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - clusterroles
+      - clusterrolebindings
+      - roles
+      - rolebindings
+    verbs: ["get", "list", "watch"]
+
+  # ── Autoscaling ───────────────────────────────────────────────────────────
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Policy ────────────────────────────────────────────────────────────────
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Storage ───────────────────────────────────────────────────────────────
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Metrics Server ────────────────────────────────────────────────────────
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods", "nodes"]
     verbs: ["get", "list"]
+
+  # ── Node metrics (Azure Monitor / kube-state-metrics) ─────────────────────
+  - apiGroups: [""]
+    resources: ["nodes/metrics", "nodes/stats", "nodes/proxy"]
+    verbs: ["get"]
+
+  # ── Trivy Operator (aquasecurity.github.io) ───────────────────────────────
+  # Instale o Trivy Operator para habilitar o módulo de vulnerabilidades:
+  #   helm install trivy-operator aqua/trivy-operator \
+  #     --namespace trivy-system --create-namespace
+  - apiGroups: ["aquasecurity.github.io"]
+    resources:
+      - vulnerabilityreports
+      - exposedsecretreports
+      - configauditreports
+      - rbacassessmentreports
+      - clusterrbacassessmentreports
+      - clusterconfigauditreports
+      - infraassessmentreports
+      - clusterinfraassessmentreports
+    verbs: ["get", "list", "watch"]
 
 ---
 # 4. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole

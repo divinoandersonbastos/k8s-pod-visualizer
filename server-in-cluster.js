@@ -18,6 +18,158 @@ import https from "https";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import crypto from "crypto";
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SISTEMA DE LICENÇA — K8s Pod Visualizer
+// ═══════════════════════════════════════════════════════════════════════════
+// Chave pública RSA embutida (gerada em license-tools/license_public.pem)
+// A chave PRIVADA fica apenas com o fornecedor (CentralDevOps)
+const LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyYw+ahOWi3yRzjZv8BVJ
+noEesHpuEpTKH5c1TmeqCfMrmJ03GlFumSM3xghv+xBLPqBsnwDzER3wk1XY9Cix
+CtVUyMdk0RmhtU4bIsrwKpo6UoWiA3OHcDvE6cuEJ7z7MMEjZkrGyKKuycavTzrF
+ioiSO2GuDTcLQkbKBq5Xk/u9Qbsmk2YLDeodJk+1G1+slHI5XN4dulzf6rrqoOCf
+XxrU+tsCmwMGKU4GviRHZx32WpOpr1JGB/kAzJYVtq/XzE/ytu7GN3iawbcTzvWh
+YdMb647vYvJYX+O3mASoyHJ6pGLv9XFYRHGrWrVxLpp9XaQqUXXYbb6ScKpmGr9+
+jwIDAQAB
+-----END PUBLIC KEY-----`;
+
+// Caminho padrão do arquivo de licença no servidor
+const LICENSE_FILE_PATH = process.env.LICENSE_FILE ||
+  path.join(path.dirname(fileURLToPath(import.meta.url)), "license.jwt");
+
+// Período de trial (dias) quando não há licença instalada
+const TRIAL_DAYS = parseInt(process.env.TRIAL_DAYS || "30");
+
+/**
+ * Verifica manualmente um JWT RS256 sem dependência externa.
+ * Retorna o payload decodificado ou lança um erro.
+ */
+function verifyLicenseJWT(token) {
+  const parts = token.split(".");
+  if (parts.length !== 3) throw new Error("Formato JWT inválido");
+  const [headerB64, payloadB64, signatureB64] = parts;
+  // Decodifica header e payload
+  const header  = JSON.parse(Buffer.from(headerB64,  "base64url").toString());
+  const payload = JSON.parse(Buffer.from(payloadB64, "base64url").toString());
+  if (header.alg !== "RS256") throw new Error(`Algoritmo não suportado: ${header.alg}`);
+  // Verifica assinatura RSA
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const signature    = Buffer.from(signatureB64, "base64url");
+  const verify       = crypto.createVerify("RSA-SHA256");
+  verify.update(signingInput);
+  const valid = verify.verify(LICENSE_PUBLIC_KEY, signature);
+  if (!valid) throw new Error("Assinatura inválida — licença adulterada");
+  // Verifica expiração pelo campo exp (unix timestamp)
+  if (payload.exp && Date.now() / 1000 > payload.exp) {
+    const expDate = new Date(payload.exp * 1000).toLocaleDateString("pt-BR");
+    throw new Error(`Licença expirada em ${expDate}`);
+  }
+  return payload;
+}
+
+/**
+ * Carrega e valida a licença do arquivo license.jwt.
+ * Retorna um objeto com status e dados da licença.
+ */
+function loadLicense() {
+  // Verifica variável de ambiente LICENSE_KEY (alternativa ao arquivo)
+  const envToken = process.env.LICENSE_KEY;
+  const token    = envToken || (fs.existsSync(LICENSE_FILE_PATH)
+    ? fs.readFileSync(LICENSE_FILE_PATH, "utf8").trim()
+    : null);
+
+  if (!token) {
+    // Modo trial: verifica data de instalação do banco
+    const dbPath   = process.env.DB_PATH || "/app/data/events.db";
+    const dbExists = fs.existsSync(dbPath);
+    const refDate  = dbExists
+      ? fs.statSync(dbPath).birthtime
+      : new Date();
+    const trialEnd    = new Date(refDate.getTime() + TRIAL_DAYS * 86400_000);
+    const daysLeft    = Math.ceil((trialEnd - Date.now()) / 86400_000);
+    const trialActive = daysLeft > 0;
+    return {
+      status    : trialActive ? "trial" : "expired",
+      trial     : true,
+      daysLeft  : Math.max(0, daysLeft),
+      trialEnd  : trialEnd.toISOString().split("T")[0],
+      customer  : "Trial",
+      contact   : "contato@centraldevops.com.br",
+      maxUsers  : 5,
+      maxNamespaces: 10,
+      message   : trialActive
+        ? `Modo trial — ${daysLeft} dia(s) restante(s). Instale uma licença para uso completo.`
+        : `Trial expirado. Contate contato@centraldevops.com.br para adquirir uma licença.`,
+    };
+  }
+
+  try {
+    const payload  = verifyLicenseJWT(token);
+    const expDate  = new Date(payload.expiresAt + "T23:59:59Z");
+    const daysLeft = Math.ceil((expDate - Date.now()) / 86400_000);
+    return {
+      status        : "active",
+      trial         : false,
+      daysLeft,
+      customer      : payload.customer,
+      cnpj          : payload.cnpj || "",
+      contact       : payload.contact || "contato@centraldevops.com.br",
+      maxUsers      : payload.maxUsers      || 999,
+      maxNamespaces : payload.maxNamespaces || 999,
+      issuedAt      : payload.issuedAt,
+      expiresAt     : payload.expiresAt,
+      hostname      : payload.hostname || null,
+      message       : daysLeft <= 30
+        ? `Licença expira em ${daysLeft} dia(s) — renove com ${payload.contact || "contato@centraldevops.com.br"}`
+        : null,
+    };
+  } catch (err) {
+    return {
+      status  : "invalid",
+      trial   : false,
+      daysLeft: 0,
+      customer: "Desconhecido",
+      contact : "contato@centraldevops.com.br",
+      maxUsers: 0,
+      maxNamespaces: 0,
+      message : err.message,
+    };
+  }
+}
+
+// Carrega licença na inicialização e mantém em memória
+let LICENSE = loadLicense();
+// Recarrega a cada 1 hora (para pegar renovações sem reiniciar)
+setInterval(() => { LICENSE = loadLicense(); }, 60 * 60_000);
+
+/**
+ * Middleware: bloqueia requisições se a licença estiver expirada ou inválida.
+ * Libera apenas /api/license e /api/license/activate.
+ */
+function requireLicense(req, res, next) {
+  const url = new URL(req.url, "http://localhost");
+  // Rotas sempre liberadas (setup, login, licença)
+  const freeRoutes = ["/api/license", "/api/license/activate", "/api/setup",
+    "/api/setup-status", "/api/login", "/api/logout"];
+  if (freeRoutes.some((r) => url.pathname.startsWith(r))) return next();
+  // Arquivos estáticos sempre liberados
+  if (!url.pathname.startsWith("/api/")) return next();
+  if (LICENSE.status === "expired" || LICENSE.status === "invalid") {
+    res.writeHead(402, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      error       : "license_required",
+      message     : LICENSE.message,
+      status      : LICENSE.status,
+      contact     : LICENSE.contact,
+      expiresAt   : LICENSE.expiresAt || null,
+    }));
+    return;
+  }
+  next();
+}
+// ═══════════════════════════════════════════════════════════════════════════
 import {
   savePodStatusEventsBatch, getPodStatusEvents, getAllPodStatusEvents,
   countPodEvents, clearPodEvents,
@@ -910,12 +1062,60 @@ const MIME = {
 // ── Servidor HTTP ─────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://localhost");
-
   // CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+
+  // ── /api/license — informações da licença atual (sempre acessível) ───────────────────
+  if (url.pathname === "/api/license" && req.method === "GET") {
+    const info = { ...LICENSE };
+    // Não expor dados sensíveis
+    delete info.hostname;
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(info));
+    return;
+  }
+
+  // ── /api/license/activate — ativa nova licença via POST ───────────────────────────
+  if (url.pathname === "/api/license/activate" && req.method === "POST") {
+    requireAuth(req, res, async () => {
+      // Apenas SRE pode ativar licença
+      if (req.user.role !== "sre") {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Apenas administradores SRE podem ativar licenças" }));
+        return;
+      }
+      let body = "";
+      req.on("data", (chunk) => { body += chunk; });
+      req.on("end", () => {
+        try {
+          const { token } = JSON.parse(body);
+          if (!token) throw new Error("Campo 'token' obrigatório");
+          // Valida o token antes de salvar
+          const payload = verifyLicenseJWT(token);
+          // Salva no arquivo
+          fs.writeFileSync(LICENSE_FILE_PATH, token.trim(), "utf8");
+          // Recarrega a licença em memória
+          LICENSE = loadLicense();
+          console.log(`[license] ✅ Licença ativada para: ${payload.customer} (expira: ${payload.expiresAt})`);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, license: LICENSE }));
+        } catch (err) {
+          console.error("[license] ❌ Falha ao ativar licença:", err.message);
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
+
+  // ── Middleware de licença — bloqueia APIs se expirada/inválida ─────────────────────────
+  let licenseBlocked = false;
+  requireLicense(req, res, () => { licenseBlocked = false; });
+  if (res.headersSent) return; // requireLicense já respondeu com 402
 
   // ── /api/pods ──────────────────────────────────────────────────────────────
   if (url.pathname === "/api/pods") {

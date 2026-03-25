@@ -115,3 +115,8 @@ temp/
 screenshots/
 page_texts/
 .github/workflows/
+
+# Sistema de licença — arquivos sensíveis (NUNCA commitar)
+license-tools/license_private.pem
+license-tools/node_modules/
+license.jwt

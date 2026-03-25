@@ -295,7 +295,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs mt-6" style={{ color: "oklch(0.35 0.02 250)" }}>
-          K8s Pod Visualizer v2.1.0 · CentralDevOps
+          K8s Pod Visualizer v3.5.0 · CentralDevOps
         </p>
       </motion.div>
     </div>

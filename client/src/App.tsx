@@ -10,18 +10,6 @@ import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import Home from "./pages/Home";
 import Landing from "./pages/Landing";
 import LoginPage from "./pages/LoginPage";
-import { useLicense, LicenseGate } from "./components/LicenseGate";
-
-/** Guard de licença: bloqueia a aplicação se a licença estiver expirada/inválida */
-function LicenseGuard({ children }: { children: React.ReactNode }) {
-  const apiUrl = (window as unknown as Record<string, string>).__API_URL__ || "";
-  const { license, loading, refetch } = useLicense(apiUrl);
-  if (loading) return null; // aguarda verificação silenciosa
-  if (license && (license.status === "expired" || license.status === "invalid")) {
-    return <LicenseGate license={license} apiUrl={apiUrl} onActivated={refetch} />;
-  }
-  return <>{children}</>;
-}
 
 /** Guard que redireciona para /login se não autenticado */
 function AuthGuard({ children }: { children: React.ReactNode }) {
@@ -66,19 +54,17 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 function Router() {
   return (
-    <LicenseGuard>
-      <Switch>
-        <Route path="/login" component={LoginPage} />
-        <Route path="/">
-          <AuthGuard>
-            <Home />
-          </AuthGuard>
-        </Route>
-        <Route path="/landing" component={Landing} />
-        <Route path="/404" component={NotFound} />
-        <Route component={NotFound} />
-      </Switch>
-    </LicenseGuard>
+    <Switch>
+      <Route path="/login" component={LoginPage} />
+      <Route path="/">
+        <AuthGuard>
+          <Home />
+        </AuthGuard>
+      </Route>
+      <Route path="/landing" component={Landing} />
+      <Route path="/404" component={NotFound} />
+      <Route component={NotFound} />
+    </Switch>
   );
 }
 

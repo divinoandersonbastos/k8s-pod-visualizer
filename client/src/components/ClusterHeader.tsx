@@ -112,7 +112,7 @@ export function ClusterHeader({
               letterSpacing: "0.04em",
             }}
           >
-            K8s Pods Visualizer v2.0
+            K8s Pods Visualizer v3.5
           </span>
         </div>
         {/* Badge compacto para telas menores */}
@@ -124,7 +124,7 @@ export function ClusterHeader({
             color: "oklch(0.62 0.16 260)",
           }}
         >
-          v2.0
+          v3.5
         </span>
       </div>
 

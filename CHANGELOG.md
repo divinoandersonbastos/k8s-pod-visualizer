@@ -6,6 +6,21 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e o 
 
 ---
 
+## [3.5.0] — 2026-03-25
+
+### Removido
+- **Sistema de licença JWT + RSA** removido do backend (`server-in-cluster.js`) e do frontend (`LicenseGate.tsx`, `App.tsx`). O licenciamento será reimplementado como **servidor externo de ativação** em repositório separado (`k8s-pod-visualizer-license-server`).
+- Endpoints `/api/license` e `/api/license/activate` removidos.
+- Middleware `requireLicense` e funções `loadLicense`, `verifyLicenseJWT` removidos do backend.
+- Componente `LicenseGate`, `LicenseBanner` e hook `useLicense` removidos do frontend.
+- Import `crypto` removido (era usado exclusivamente pelo sistema de licença).
+
+### Atualizado
+- Versão exibida no header e tela de login atualizada para `v3.5`.
+- `package.json` atualizado para `3.5.0`.
+
+---
+
 ## [3.0.1] — 2026-03-09
 
 ### Corrigido

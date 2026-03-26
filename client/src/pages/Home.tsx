@@ -34,6 +34,7 @@ import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
 import { AppAccessPanel } from "@/components/AppAccessPanel";
 import { TopologyGraph } from "@/components/TopologyGraph";
+import NetworkFlowMap from "@/components/NetworkFlowMap";
 import { SecurityPanel } from "@/components/SecurityPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
@@ -63,6 +64,7 @@ export default function Home() {
   const [showSecurity, setShowSecurity] = useState(false);
   const [showAppAccess, setShowAppAccess] = useState(false);
   const [showTopology, setShowTopology] = useState(false);
+  const [showNetworkFlow, setShowNetworkFlow] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
   const { user, isSRE, isAdmin, logout } = useAuth();
@@ -325,6 +327,7 @@ export default function Home() {
         onShowTrace={() => setShowTrace(true)}
         onShowAppAccess={() => setShowAppAccess(true)}
         onShowTopology={() => setShowTopology(true)}
+        onShowNetworkFlow={() => setShowNetworkFlow(true)}
         onLogout={logout}
         isSRE={isSRE}
         isAdmin={isAdmin}
@@ -735,6 +738,12 @@ export default function Home() {
           apiUrl={apiUrl}
           isSRE={isSRE}
           selectedNamespace={selectedNamespace}
+        />
+      )}
+      {/* Mapa de Fluxos de Rede (eBPF) */}
+      {showNetworkFlow && (
+        <NetworkFlowMap
+          onClose={() => setShowNetworkFlow(false)}
         />
       )}
       {/* Modal de configuração */}

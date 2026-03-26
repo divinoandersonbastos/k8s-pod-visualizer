@@ -19,8 +19,8 @@
 #   ✅ VulnerabilityReports (Trivy Operator)     → Módulo de Vulnerabilidades
 #   ✅ ExposedSecretReports (Trivy Operator)     → Módulo de Segurança
 #   ✅ ConfigAuditReports (Trivy Operator)       → Módulo de Segurança
-#   ✅ RbacAssessmentReports (Trivy Operator)    → Módulo RBAC
-#   ✅ InfraAssessmentReports (Trivy Operator)   → Módulo de Segurança
+#   ✅ RbacAssessmentReports (Trivy Operator)    → Módulo RBA#   ✅ InfraAssessmentReports (Trivy Operator)     → Módulo de Segurança
+#   ✅ Pods do agente eBPF (Role namespaced)         → Mapa de Fluxos de Rede
 # ─────────────────────────────────────────────────────────────────────────────
 
 ---
@@ -172,6 +172,35 @@ rules:
       - clusterinfraassessmentreports
     verbs: ["get", "list", "watch"]
 
+---
+# 5. Role namespaced — permite que o visualizador descubra pods do agente eBPF
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: k8s-pod-visualizer-ebpf-reader
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: k8s-pod-visualizer-ebpf-reader
+  namespace: k8s-pod-visualizer
+  labels:
+    app.kubernetes.io/name: k8s-pod-visualizer
+subjects:
+  - kind: ServiceAccount
+    name: k8s-pod-visualizer
+    namespace: k8s-pod-visualizer
+roleRef:
+  kind: Role
+  name: k8s-pod-visualizer-ebpf-reader
+  apiGroup: rbac.authorization.k8s.io
 ---
 # 4. ClusterRoleBinding — vincula o ServiceAccount ao ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1

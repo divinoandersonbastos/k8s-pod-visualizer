@@ -1,0 +1,132 @@
+# ── Integração com Cilium Hubble (opcional) ───────────────────────────────────
+# Use este arquivo SE o cluster já usa Cilium como CNI (AKS com Azure CNI + Cilium)
+# Habilita o Hubble Relay e expõe a API gRPC para o k8s-pod-visualizer
+#
+# Verificar se Cilium está instalado:
+#   kubectl get pods -n kube-system -l k8s-app=cilium
+#
+# Habilitar Hubble via Helm:
+#   helm upgrade cilium cilium/cilium \
+#     --namespace kube-system \
+#     --reuse-values \
+#     --set hubble.enabled=true \
+#     --set hubble.relay.enabled=true \
+#     --set hubble.ui.enabled=true \
+#     --set hubble.relay.service.type=ClusterIP
+#
+# Aplicar este arquivo após habilitar o Hubble:
+#   kubectl apply -f deploy/ebpf/01-hubble-integration.yaml
+---
+# Service para expor o Hubble Relay internamente ao k8s-pod-visualizer
+apiVersion: v1
+kind: Service
+metadata:
+  name: hubble-relay-proxy
+  namespace: k8s-pod-visualizer
+  labels:
+    app: hubble-relay-proxy
+spec:
+  selector:
+    app: hubble-relay-proxy
+  ports:
+    - name: http
+      port: 4245
+      targetPort: 4245
+---
+# Proxy HTTP → gRPC para o Hubble Relay
+# Converte chamadas REST do backend Node.js para gRPC do Hubble
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hubble-relay-proxy
+  namespace: k8s-pod-visualizer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hubble-relay-proxy
+  template:
+    metadata:
+      labels:
+        app: hubble-relay-proxy
+    spec:
+      containers:
+        - name: grpc-gateway
+          # Envoy como proxy gRPC → HTTP/JSON
+          image: envoyproxy/envoy:v1.29-latest
+          ports:
+            - containerPort: 4245
+          volumeMounts:
+            - name: envoy-config
+              mountPath: /etc/envoy
+          command: ["envoy", "-c", "/etc/envoy/envoy.yaml"]
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+      volumes:
+        - name: envoy-config
+          configMap:
+            name: hubble-envoy-config
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hubble-envoy-config
+  namespace: k8s-pod-visualizer
+data:
+  envoy.yaml: |
+    static_resources:
+      listeners:
+        - name: listener_0
+          address:
+            socket_address:
+              address: 0.0.0.0
+              port_value: 4245
+          filter_chains:
+            - filters:
+                - name: envoy.filters.network.http_connection_manager
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                    stat_prefix: ingress_http
+                    codec_type: AUTO
+                    route_config:
+                      name: local_route
+                      virtual_hosts:
+                        - name: local_service
+                          domains: ["*"]
+                          routes:
+                            - match:
+                                prefix: "/"
+                              route:
+                                cluster: hubble_relay
+                    http_filters:
+                      - name: envoy.filters.http.grpc_json_transcoder
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_json_transcoder.v3.GrpcJsonTranscoder
+                          proto_descriptor_bin: ""
+                          services: ["observer.Observer"]
+                          print_options:
+                            add_whitespace: true
+                      - name: envoy.filters.http.router
+                        typed_config:
+                          "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+      clusters:
+        - name: hubble_relay
+          connect_timeout: 5s
+          type: LOGICAL_DNS
+          lb_policy: ROUND_ROBIN
+          http2_protocol_options: {}
+          load_assignment:
+            cluster_name: hubble_relay
+            endpoints:
+              - lb_endpoints:
+                  - endpoint:
+                      address:
+                        socket_address:
+                          # Endereço do Hubble Relay no namespace kube-system
+                          address: hubble-relay.kube-system.svc.cluster.local
+                          port_value: 80

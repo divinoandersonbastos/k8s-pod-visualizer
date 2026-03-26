@@ -2277,6 +2277,228 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/app-access/ingresses — Lista Ingresses do cluster ─────────────────
+  if (url.pathname === "/api/app-access/ingresses" && req.method === "GET") {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const isFullAccess = ["sre", "admin"].includes(user.role);
+        const allowedNs = isFullAccess ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        // Busca Ingresses de todos os namespaces
+        const [netV1, extV1] = await Promise.allSettled([
+          k8sGet("/apis/networking.k8s.io/v1/ingresses"),
+          k8sGet("/apis/extensions/v1beta1/ingresses"),
+        ]);
+        const rawItems = [
+          ...(netV1.status === "fulfilled" && netV1.value?.body?.items ? netV1.value.body.items : []),
+          ...(extV1.status === "fulfilled" && extV1.value?.body?.items ? extV1.value.body.items : []),
+        ];
+        const ingresses = rawItems
+          .filter(ing => allowedNs === null || allowedNs.includes(ing.metadata?.namespace))
+          .map(ing => {
+            const ns   = ing.metadata?.namespace || "default";
+            const name = ing.metadata?.name || "";
+            const rules = (ing.spec?.rules || []).flatMap(rule => {
+              const host = rule.host || "";
+              const paths = (rule.http?.paths || []).map(p => ({
+                path: p.path || "/",
+                pathType: p.pathType || "Prefix",
+                service: p.backend?.service?.name || p.backend?.serviceName || "",
+                port: p.backend?.service?.port?.number || p.backend?.servicePort || 80,
+              }));
+              return paths.map(p => ({ host, ...p }));
+            });
+            const tls = (ing.spec?.tls || []).flatMap(t => t.hosts || []);
+            const urls = rules.map(r => {
+              const scheme = tls.includes(r.host) ? "https" : "http";
+              const hostPart = r.host || "";
+              return hostPart ? `${scheme}://${hostPart}${r.path === "/" ? "" : r.path}` : null;
+            }).filter(Boolean);
+            return { namespace: ns, name, rules, tls: tls.length > 0, urls, annotations: ing.metadata?.annotations || {} };
+          });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ items: ingresses, timestamp: Date.now() }));
+      } catch (err) {
+        console.error("[error] /api/app-access/ingresses:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ── /api/app-access/services — Lista Services (para port-forward) ────────────
+  if (url.pathname === "/api/app-access/services" && req.method === "GET") {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const isFullAccess = ["sre", "admin"].includes(user.role);
+        const allowedNs = isFullAccess ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const nsParam = url.searchParams.get("namespace") || null;
+        // Valida namespace para Squad
+        if (!isFullAccess && nsParam && !allowedNs.includes(nsParam)) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Namespace ${nsParam} não permitido` }));
+          return;
+        }
+        const path = nsParam
+          ? `/api/v1/namespaces/${nsParam}/services`
+          : "/api/v1/services";
+        const result = await k8sGet(path);
+        const allSvcs = result?.body?.items || [];
+        const svcs = allSvcs
+          .filter(svc => allowedNs === null || allowedNs.includes(svc.metadata?.namespace))
+          .filter(svc => svc.spec?.type !== "ExternalName")
+          .map(svc => ({
+            namespace: svc.metadata?.namespace || "default",
+            name: svc.metadata?.name || "",
+            type: svc.spec?.type || "ClusterIP",
+            clusterIP: svc.spec?.clusterIP || "",
+            ports: (svc.spec?.ports || []).map(p => ({
+              name: p.name || "",
+              port: p.port,
+              targetPort: p.targetPort,
+              protocol: p.protocol || "TCP",
+            })),
+            selector: svc.spec?.selector || {},
+          }));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ items: svcs, timestamp: Date.now() }));
+      } catch (err) {
+        console.error("[error] /api/app-access/services:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ── /api/app-access/portforward — Gerencia port-forwards ativos ──────────────
+  // Mapa de port-forwards ativos: id -> { process, localPort, namespace, service, remotePort, startedAt, user }
+  if (!global._portForwards) global._portForwards = new Map();
+
+  if (url.pathname === "/api/app-access/portforward" && req.method === "GET") {
+    requireAuth(req, res, () => {
+      const user = req.user;
+      const isFullAccess = ["sre", "admin"].includes(user.role);
+      const list = [...global._portForwards.entries()]
+        .filter(([, pf]) => isFullAccess || pf.username === user.username)
+        .map(([id, pf]) => ({
+          id, localPort: pf.localPort, namespace: pf.namespace,
+          service: pf.service, remotePort: pf.remotePort,
+          startedAt: pf.startedAt, username: pf.username,
+          url: `http://localhost:${pf.localPort}`,
+          status: pf.process?.killed ? "stopped" : "running",
+        }));
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ items: list }));
+    });
+    return;
+  }
+
+  if (url.pathname === "/api/app-access/portforward" && req.method === "POST") {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const isFullAccess = ["sre", "admin"].includes(user.role);
+        const allowedNs = isFullAccess ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const body = await new Promise((resolve) => {
+          let d = "";
+          req.on("data", c => d += c);
+          req.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve({}); } });
+        });
+        const { namespace, service, remotePort = 80, localPort } = body;
+        if (!namespace || !service) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "namespace e service são obrigatórios" }));
+          return;
+        }
+        if (!isFullAccess && !allowedNs.includes(namespace)) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Namespace ${namespace} não permitido` }));
+          return;
+        }
+        // Encontra uma porta local livre (entre 30000 e 32767)
+        const assignedPort = localPort || (30000 + Math.floor(Math.random() * 2767));
+        // Verifica se já existe um port-forward para este serviço
+        const existing = [...global._portForwards.values()].find(
+          pf => pf.namespace === namespace && pf.service === service && pf.remotePort === remotePort
+        );
+        if (existing) {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, localPort: existing.localPort, url: `http://localhost:${existing.localPort}`, alreadyRunning: true }));
+          return;
+        }
+        // Inicia kubectl port-forward via spawn
+        const { spawn } = await import("child_process");
+        const pfId = `${namespace}-${service}-${remotePort}-${Date.now()}`;
+        const pfProcess = spawn("kubectl", [
+          "port-forward",
+          `svc/${service}`,
+          `${assignedPort}:${remotePort}`,
+          "-n", namespace,
+          "--address", "0.0.0.0",
+        ], { detached: false, stdio: ["ignore", "pipe", "pipe"] });
+        pfProcess.on("error", (err) => {
+          console.error(`[portforward] Erro ao iniciar ${pfId}:`, err.message);
+          global._portForwards.delete(pfId);
+        });
+        pfProcess.on("exit", (code) => {
+          console.log(`[portforward] ${pfId} encerrado (código ${code})`);
+          global._portForwards.delete(pfId);
+        });
+        global._portForwards.set(pfId, {
+          process: pfProcess, localPort: assignedPort,
+          namespace, service, remotePort,
+          startedAt: new Date().toISOString(),
+          username: user.username,
+        });
+        // Aguarda 1.5s para o port-forward estabilizar
+        await new Promise(r => setTimeout(r, 1500));
+        const isRunning = !pfProcess.killed;
+        res.writeHead(isRunning ? 200 : 500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          ok: isRunning,
+          id: pfId,
+          localPort: assignedPort,
+          url: `http://localhost:${assignedPort}`,
+          message: isRunning
+            ? `Port-forward ativo: localhost:${assignedPort} → ${service}:${remotePort}`
+            : "Falha ao iniciar port-forward — verifique se kubectl está disponível no pod",
+        }));
+      } catch (err) {
+        console.error("[error] /api/app-access/portforward POST:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (url.pathname.startsWith("/api/app-access/portforward/") && req.method === "DELETE") {
+    requireAuth(req, res, () => {
+      const pfId = decodeURIComponent(url.pathname.replace("/api/app-access/portforward/", ""));
+      const pf = global._portForwards.get(pfId);
+      if (!pf) {
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Port-forward não encontrado" }));
+        return;
+      }
+      const user = req.user;
+      const isFullAccess = ["sre", "admin"].includes(user.role);
+      if (!isFullAccess && pf.username !== user.username) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Sem permissão para encerrar este port-forward" }));
+        return;
+      }
+      try { pf.process.kill("SIGTERM"); } catch (_) {}
+      global._portForwards.delete(pfId);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, message: `Port-forward ${pfId} encerrado` }));
+    });
+    return;
+  }
+
   // ── Arquivos estáticos ─────────────────────────────────────────────────────
   let filePath = path.join(
     __dirname, "public",

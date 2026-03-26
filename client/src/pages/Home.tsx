@@ -32,6 +32,7 @@ import { CustomizerPanel } from "@/components/CustomizerPanel";
 import UserManagementPanel from "@/components/UserManagementPanel";
 import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
+import { AppAccessPanel } from "@/components/AppAccessPanel";
 import { SecurityPanel } from "@/components/SecurityPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
@@ -59,6 +60,7 @@ export default function Home() {
   const [showResourceEditor, setShowResourceEditor] = useState(false);
   const [showTrace, setShowTrace] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
+  const [showAppAccess, setShowAppAccess] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
   const { user, isSRE, isAdmin, logout } = useAuth();
@@ -311,6 +313,7 @@ export default function Home() {
         onShowUserManagement={() => setShowUserManagement(true)}
         onShowResourceEditor={() => setShowResourceEditor(true)}
         onShowTrace={() => setShowTrace(true)}
+        onShowAppAccess={() => setShowAppAccess(true)}
         onLogout={logout}
         isSRE={isSRE}
         isAdmin={isAdmin}
@@ -703,6 +706,14 @@ export default function Home() {
           onClose={() => setShowSecurity(false)}
           apiUrl={apiUrl}
           isSRE={isSRE}
+        />
+      )}
+
+      {/* Painel de Acesso às Aplicações */}
+      {showAppAccess && (
+        <AppAccessPanel
+          onClose={() => setShowAppAccess(false)}
+          apiUrl={apiUrl}
         />
       )}
 

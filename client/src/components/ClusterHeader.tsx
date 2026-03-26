@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown, Network } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -33,6 +33,7 @@ interface ClusterHeaderProps {
   onShowUserManagement?: () => void;
   onShowResourceEditor?: () => void;
   onShowTrace?: () => void;
+  onShowAppAccess?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
   isAdmin?: boolean;
@@ -62,6 +63,7 @@ export function ClusterHeader({
   onShowUserManagement,
   onShowResourceEditor,
   onShowTrace,
+  onShowAppAccess,
   onLogout,
   isSRE,
   isAdmin,
@@ -438,6 +440,17 @@ export function ClusterHeader({
             style={{ color: "oklch(0.65 0.22 320)" }}
           >
             <GitBranch size={14} />
+          </button>
+        )}
+
+        {onShowAppAccess && (
+          <button
+            onClick={onShowAppAccess}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Acesso às Aplicações (Ingress / Port-Forward)"
+            style={{ color: "oklch(0.65 0.22 200)" }}
+          >
+            <Network size={14} />
           </button>
         )}
 

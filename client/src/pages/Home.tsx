@@ -33,6 +33,7 @@ import UserManagementPanel from "@/components/UserManagementPanel";
 import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
 import { AppAccessPanel } from "@/components/AppAccessPanel";
+import { TopologyGraph } from "@/components/TopologyGraph";
 import { SecurityPanel } from "@/components/SecurityPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
@@ -61,6 +62,7 @@ export default function Home() {
   const [showTrace, setShowTrace] = useState(false);
   const [showSecurity, setShowSecurity] = useState(false);
   const [showAppAccess, setShowAppAccess] = useState(false);
+  const [showTopology, setShowTopology] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
   const { user, isSRE, isAdmin, logout } = useAuth();
@@ -322,6 +324,7 @@ export default function Home() {
         onShowResourceEditor={() => setShowResourceEditor(true)}
         onShowTrace={() => setShowTrace(true)}
         onShowAppAccess={() => setShowAppAccess(true)}
+        onShowTopology={() => setShowTopology(true)}
         onLogout={logout}
         isSRE={isSRE}
         isAdmin={isAdmin}
@@ -725,6 +728,15 @@ export default function Home() {
         />
       )}
 
+      {/* Grafo de Topologia do Cluster */}
+      {showTopology && (
+        <TopologyGraph
+          onClose={() => setShowTopology(false)}
+          apiUrl={apiUrl}
+          isSRE={isSRE}
+          selectedNamespace={selectedNamespace}
+        />
+      )}
       {/* Modal de configuração */}
       <ConfigModal
         open={showConfig}

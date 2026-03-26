@@ -34,6 +34,7 @@ interface ClusterHeaderProps {
   onShowResourceEditor?: () => void;
   onShowTrace?: () => void;
   onShowAppAccess?: () => void;
+  onShowTopology?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
   isAdmin?: boolean;
@@ -64,6 +65,7 @@ export function ClusterHeader({
   onShowResourceEditor,
   onShowTrace,
   onShowAppAccess,
+  onShowTopology,
   onLogout,
   isSRE,
   isAdmin,
@@ -440,6 +442,20 @@ export function ClusterHeader({
             style={{ color: "oklch(0.65 0.22 320)" }}
           >
             <GitBranch size={14} />
+          </button>
+        )}
+
+        {onShowTopology && (
+          <button
+            onClick={onShowTopology}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Topologia do Cluster (Grafo Interativo)"
+            style={{ color: "oklch(0.65 0.22 160)" }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
+              <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
+            </svg>
           </button>
         )}
 

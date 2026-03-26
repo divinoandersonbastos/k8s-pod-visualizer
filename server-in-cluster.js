@@ -2540,7 +2540,208 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── Arquivos estáticos ─────────────────────────────────────────────────────
+  // ── /api/topology — Grafo dinâmico de topologia do cluster ─────────────────────────
+  if (url.pathname === "/api/topology" && req.method === "GET") {
+    requireAuth(req, res, async () => {
+      try {
+        const user = req.user;
+        const isFullAccess = ["sre", "admin"].includes(user.role);
+        const allowedNs = isFullAccess ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+
+        // Busca paralela de todos os recursos necessários
+        const [podsRes, svcsRes, depsRes, rsRes, ingRes, netpolRes, epRes] = await Promise.allSettled([
+          k8sRequest("/api/v1/pods"),
+          k8sRequest("/api/v1/services"),
+          k8sRequest("/apis/apps/v1/deployments"),
+          k8sRequest("/apis/apps/v1/replicasets"),
+          k8sRequest("/apis/networking.k8s.io/v1/ingresses"),
+          k8sRequest("/apis/networking.k8s.io/v1/networkpolicies"),
+          k8sRequest("/api/v1/endpoints"),
+        ]);
+
+        const pods    = podsRes.status    === "fulfilled" ? (podsRes.value.body?.items    || []) : [];
+        const svcs    = svcsRes.status    === "fulfilled" ? (svcsRes.value.body?.items    || []) : [];
+        const deps    = depsRes.status    === "fulfilled" ? (depsRes.value.body?.items    || []) : [];
+        const rsets   = rsRes.status      === "fulfilled" ? (rsRes.value.body?.items      || []) : [];
+        const ings    = ingRes.status     === "fulfilled" ? (ingRes.value.body?.items     || []) : [];
+        const netpols = netpolRes.status  === "fulfilled" ? (netpolRes.value.body?.items  || []) : [];
+        const eps     = epRes.status      === "fulfilled" ? (epRes.value.body?.items      || []) : [];
+
+        // Filtra por namespace para Squad
+        const filterNs = (items) => allowedNs
+          ? items.filter(i => allowedNs.includes(i.metadata?.namespace))
+          : items;
+
+        const filteredPods = filterNs(pods).filter(p => p.status?.phase === "Running");
+        const filteredSvcs = filterNs(svcs).filter(s => s.metadata?.name !== "kubernetes");
+        const filteredDeps = filterNs(deps);
+        const filteredIngs = filterNs(ings);
+        const filteredEps  = filterNs(eps);
+
+        // Mapa ReplicaSet -> Deployment
+        const rsToDeployment = {};
+        for (const rs of rsets) {
+          const owner = (rs.metadata?.ownerReferences || []).find(r => r.kind === "Deployment");
+          if (owner) rsToDeployment[rs.metadata.name] = owner.name;
+        }
+
+        // Mapa Pod -> Deployment
+        const podToDeployment = {};
+        for (const pod of filteredPods) {
+          const rsOwner = (pod.metadata?.ownerReferences || []).find(r => r.kind === "ReplicaSet");
+          if (rsOwner && rsToDeployment[rsOwner.name]) {
+            podToDeployment[`${pod.metadata.namespace}/${pod.metadata.name}`] = rsToDeployment[rsOwner.name];
+          }
+        }
+
+        // Nós: Namespaces (grupos), Deployments, Services, Pods, Ingresses
+        const nodes = [];
+        const edges = [];
+        const edgeSet = new Set();
+
+        const addEdge = (source, target, type, label = "") => {
+          const key = `${source}--${target}--${type}`;
+          if (edgeSet.has(key)) return;
+          edgeSet.add(key);
+          edges.push({ id: key, source, target, type, label });
+        };
+
+        // Namespaces como grupos
+        const nsSet = new Set([
+          ...filteredPods.map(p => p.metadata.namespace),
+          ...filteredSvcs.map(s => s.metadata.namespace),
+          ...filteredDeps.map(d => d.metadata.namespace),
+        ]);
+        for (const ns of nsSet) {
+          nodes.push({ id: `ns:${ns}`, type: "namespace", label: ns, namespace: ns });
+        }
+
+        // Nós de Deployment
+        for (const dep of filteredDeps) {
+          const ns = dep.metadata.namespace;
+          const name = dep.metadata.name;
+          const id = `dep:${ns}/${name}`;
+          const ready = dep.status?.readyReplicas || 0;
+          const desired = dep.status?.replicas || 0;
+          const version = dep.metadata?.labels?.version ||
+            dep.spec?.template?.metadata?.labels?.version ||
+            dep.spec?.template?.spec?.containers?.[0]?.image?.split(":")[1] || "latest";
+          nodes.push({
+            id, type: "deployment", label: name, namespace: ns,
+            data: { ready, desired, version,
+              image: dep.spec?.template?.spec?.containers?.[0]?.image || "",
+              replicas: dep.status?.replicas || 0,
+              availableReplicas: dep.status?.availableReplicas || 0,
+              labels: dep.metadata?.labels || {},
+            }
+          });
+        }
+
+        // Nós de Service + arestas Service -> Deployment (via selector)
+        for (const svc of filteredSvcs) {
+          const ns = svc.metadata.namespace;
+          const name = svc.metadata.name;
+          const id = `svc:${ns}/${name}`;
+          const selector = svc.spec?.selector || {};
+          const svcType = svc.spec?.type || "ClusterIP";
+          const ports = (svc.spec?.ports || []).map(p => `${p.port}${p.protocol !== "TCP" ? "/" + p.protocol : ""}`);
+          nodes.push({
+            id, type: "service", label: name, namespace: ns,
+            data: { svcType, ports, selector, clusterIP: svc.spec?.clusterIP || "" }
+          });
+          // Liga Service -> Deployments que têm labels correspondentes ao selector
+          for (const dep of filteredDeps.filter(d => d.metadata.namespace === ns)) {
+            const podLabels = dep.spec?.template?.metadata?.labels || {};
+            const matches = Object.entries(selector).every(([k, v]) => podLabels[k] === v);
+            if (matches && Object.keys(selector).length > 0) {
+              addEdge(id, `dep:${ns}/${dep.metadata.name}`, "service-to-deployment", svcType);
+            }
+          }
+        }
+
+        // Nós de Pod (agrupados por Deployment) + arestas Pod -> Service
+        for (const pod of filteredPods) {
+          const ns = pod.metadata.namespace;
+          const name = pod.metadata.name;
+          const id = `pod:${ns}/${name}`;
+          const depName = podToDeployment[`${ns}/${name}`];
+          const podLabels = pod.metadata?.labels || {};
+          const containers = pod.spec?.containers || [];
+          const restarts = (pod.status?.containerStatuses || []).reduce((a, c) => a + (c.restartCount || 0), 0);
+          const phase = pod.status?.phase || "Unknown";
+          nodes.push({
+            id, type: "pod", label: name, namespace: ns,
+            data: {
+              phase, restarts, deployment: depName || "",
+              image: containers[0]?.image || "",
+              containers: containers.map(c => ({ name: c.name, image: c.image })),
+              labels: podLabels,
+              podIP: pod.status?.podIP || "",
+              nodeName: pod.spec?.nodeName || "",
+            }
+          });
+          // Liga Pod -> Deployment
+          if (depName) addEdge(id, `dep:${ns}/${depName}`, "pod-to-deployment");
+        }
+
+        // Nós de Ingress + arestas Ingress -> Service
+        for (const ing of filteredIngs) {
+          const ns = ing.metadata.namespace;
+          const name = ing.metadata.name;
+          const id = `ing:${ns}/${name}`;
+          const rules = ing.spec?.rules || [];
+          const hosts = rules.map(r => r.host || "*");
+          const tls = (ing.spec?.tls || []).length > 0;
+          nodes.push({
+            id, type: "ingress", label: name, namespace: ns,
+            data: { hosts, tls, ingressClass: ing.spec?.ingressClassName || "" }
+          });
+          // Liga Ingress -> Services referenciados nas regras
+          for (const rule of rules) {
+            for (const path of (rule.http?.paths || [])) {
+              const svcName = path.backend?.service?.name;
+              if (svcName) addEdge(id, `svc:${ns}/${svcName}`, "ingress-to-service", rule.host || "*");
+            }
+          }
+        }
+
+        // Arestas de NetworkPolicy (indica restrições de tráfego)
+        for (const np of netpols) {
+          const ns = np.metadata.namespace;
+          const podSel = np.spec?.podSelector?.matchLabels || {};
+          // Encontra deployments afetados pela policy
+          for (const dep of filteredDeps.filter(d => d.metadata.namespace === ns)) {
+            const podLabels = dep.spec?.template?.metadata?.labels || {};
+            const matches = Object.keys(podSel).length === 0 ||
+              Object.entries(podSel).every(([k, v]) => podLabels[k] === v);
+            if (matches) {
+              const depId = `dep:${ns}/${dep.metadata.name}`;
+              // Adiciona metadado de network policy no nó (não uma aresta visual)
+              const depNode = nodes.find(n => n.id === depId);
+              if (depNode) {
+                depNode.data = depNode.data || {};
+                depNode.data.networkPolicies = depNode.data.networkPolicies || [];
+                depNode.data.networkPolicies.push(np.metadata.name);
+              }
+            }
+          }
+        }
+
+        console.log(`[topology] nodes=${nodes.length} edges=${edges.length} role=${user.role}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ nodes, edges, timestamp: Date.now() }));
+      } catch (err) {
+        console.error("[error] /api/topology:", err.message);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      }
+    });
+    return;
+  }
+
+  // ── Arquivos estáticos ─────────────────────────────────────────────────────────────────────────────
   let filePath = path.join(
     __dirname, "public",
     url.pathname === "/" ? "index.html" : url.pathname

@@ -2284,15 +2284,20 @@ const server = http.createServer(async (req, res) => {
         const user = req.user;
         const isFullAccess = ["sre", "admin"].includes(user.role);
         const allowedNs = isFullAccess ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
-        // Busca Ingresses de todos os namespaces
+        // Busca Ingresses — k8sGet retorna body diretamente (não { body: ... })
+        // Tenta networking.k8s.io/v1 (Kubernetes >= 1.19) e extensions/v1beta1 (legado)
         const [netV1, extV1] = await Promise.allSettled([
-          k8sGet("/apis/networking.k8s.io/v1/ingresses"),
-          k8sGet("/apis/extensions/v1beta1/ingresses"),
+          k8sRequest("/apis/networking.k8s.io/v1/ingresses"),
+          k8sRequest("/apis/extensions/v1beta1/ingresses"),
         ]);
-        const rawItems = [
-          ...(netV1.status === "fulfilled" && netV1.value?.body?.items ? netV1.value.body.items : []),
-          ...(extV1.status === "fulfilled" && extV1.value?.body?.items ? extV1.value.body.items : []),
-        ];
+        const netV1Items = netV1.status === "fulfilled" && netV1.value?.status === 200 && netV1.value?.body?.items
+          ? netV1.value.body.items : [];
+        const extV1Items = extV1.status === "fulfilled" && extV1.value?.status === 200 && extV1.value?.body?.items
+          ? extV1.value.body.items : [];
+        console.log(`[app-access] ingresses: netV1=${netV1Items.length} extV1=${extV1Items.length} netV1Status=${netV1.value?.status} extV1Status=${extV1.value?.status}`);
+        if (netV1.status === "rejected") console.error("[app-access] netV1 error:", netV1.reason?.message);
+        if (extV1.status === "rejected") console.error("[app-access] extV1 error:", extV1.reason?.message);
+        const rawItems = [...netV1Items, ...extV1Items];
         const ingresses = rawItems
           .filter(ing => allowedNs === null || allowedNs.includes(ing.metadata?.namespace))
           .map(ing => {
@@ -2344,8 +2349,9 @@ const server = http.createServer(async (req, res) => {
         const path = nsParam
           ? `/api/v1/namespaces/${nsParam}/services`
           : "/api/v1/services";
-        const result = await k8sGet(path);
+        const result = await k8sRequest(path);
         const allSvcs = result?.body?.items || [];
+        console.log(`[app-access] services: status=${result?.status} count=${allSvcs.length}`);
         const svcs = allSvcs
           .filter(svc => allowedNs === null || allowedNs.includes(svc.metadata?.namespace))
           .filter(svc => svc.spec?.type !== "ExternalName")
@@ -2376,6 +2382,31 @@ const server = http.createServer(async (req, res) => {
   // ── /api/app-access/portforward — Gerencia port-forwards ativos ──────────────
   // Mapa de port-forwards ativos: id -> { process, localPort, namespace, service, remotePort, startedAt, user }
   if (!global._portForwards) global._portForwards = new Map();
+
+  // ── /api/app-access/debug — Diagnóstico (SRE/Admin only) ────────────────────
+  if (url.pathname === "/api/app-access/debug" && req.method === "GET") {
+    requireAuth(req, res, async () => {
+      const user = req.user;
+      if (!["sre", "admin"].includes(user.role)) {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Apenas SRE/Admin" }));
+        return;
+      }
+      const [netV1, extV1, svcs] = await Promise.allSettled([
+        k8sRequest("/apis/networking.k8s.io/v1/ingresses"),
+        k8sRequest("/apis/extensions/v1beta1/ingresses"),
+        k8sRequest("/api/v1/services"),
+      ]);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        netV1: { status: netV1.value?.status, count: netV1.value?.body?.items?.length ?? 0, error: netV1.reason?.message },
+        extV1: { status: extV1.value?.status, count: extV1.value?.body?.items?.length ?? 0, error: extV1.reason?.message },
+        services: { status: svcs.value?.status, count: svcs.value?.body?.items?.length ?? 0, error: svcs.reason?.message },
+        user: { username: user.username, role: user.role, namespaces: user.namespaces },
+      }));
+    });
+    return;
+  }
 
   if (url.pathname === "/api/app-access/portforward" && req.method === "GET") {
     requireAuth(req, res, () => {

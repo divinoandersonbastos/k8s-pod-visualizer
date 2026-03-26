@@ -1,5 +1,24 @@
 {{- if .Values.rbac.create }}
 ---
+# ─────────────────────────────────────────────────────────────────────────────
+# K8s Pod Visualizer — Helm RBAC
+#
+# Permissões cobertas:
+#   ✅ Pods, Nodes, Namespaces, Events          → Dashboard principal
+#   ✅ Pods/log                                  → Aba de Logs
+#   ✅ Pods/exec, Pods/portforward               → Resource Editor (SRE) + Port-Forward
+#   ✅ Deployments, ReplicaSets, StatefulSets    → Deploy Monitor
+#   ✅ DaemonSets, Jobs, CronJobs                → Deploy Monitor
+#   ✅ Services, Endpoints, ConfigMaps           → Painel de rede / Resource Editor
+#   ✅ Secrets (read-only)                       → Módulo de segurança
+#   ✅ PV, PVC, ResourceQuotas, LimitRanges      → Capacity Planning
+#   ✅ Ingresses, NetworkPolicies                → Painel de Acesso / Segurança
+#   ✅ RBAC (read-only)                          → Módulo de segurança
+#   ✅ HPA, PDB                                  → Deploy Monitor
+#   ✅ StorageClasses                            → Capacity Planning
+#   ✅ Metrics Server                            → CPU/Mem em tempo real
+#   ✅ Trivy Operator (opcional)                 → Módulo de vulnerabilidades
+# ─────────────────────────────────────────────────────────────────────────────
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -15,30 +34,123 @@ metadata:
   labels:
     {{- include "k8s-pod-visualizer.labels" . | nindent 4 }}
 rules:
-  # Pods e logs
+  # ── Core (v1) — leitura ──────────────────────────────────────────────────
   - apiGroups: [""]
-    resources: ["pods", "pods/log"]
+    resources:
+      - pods
+      - nodes
+      - namespaces
+      - events
+      - services
+      - endpoints
+      - configmaps
+      - persistentvolumes
+      - persistentvolumeclaims
+      - resourcequotas
+      - limitranges
+      - serviceaccounts
     verbs: ["get", "list", "watch"]
-  # Nodes
+
+  # Pods — delete (restart = delete pod, o Deployment recria automaticamente)
   - apiGroups: [""]
-    resources: ["nodes"]
-    verbs: ["get", "list", "watch"]
-  # Namespaces
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["get", "list"]
-  # Eventos (OOMKill, Spot Eviction, etc.)
-  - apiGroups: [""]
-    resources: ["events"]
-    verbs: ["get", "list", "watch"]
-  # Metrics Server — pods
-  - apiGroups: ["metrics.k8s.io"]
     resources: ["pods"]
+    verbs: ["delete"]
+
+  # Pods — logs (streaming em tempo real)
+  - apiGroups: [""]
+    resources: ["pods/log"]
     verbs: ["get", "list"]
-  # Metrics Server — nodes
+
+  # Pods — exec e port-forward (Resource Editor + Painel de Acesso às Aplicações)
+  # Controlado por role SRE/Admin na aplicação
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create", "get"]
+
+  # Secrets — somente leitura (módulo de segurança)
+  # O acesso é filtrado por namespace no código: Squad vê apenas seus namespaces
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch"]
+
+  # Node metrics (kube-state-metrics / Azure Monitor)
+  - apiGroups: [""]
+    resources: ["nodes/metrics", "nodes/stats", "nodes/proxy"]
+    verbs: ["get"]
+
+  # ── Apps (v1) ─────────────────────────────────────────────────────────────
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+
+  # Deployments — escrita (scale, restart, update-image — SRE/Admin only via RBAC da app)
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["patch", "update"]
+
+  # Scale horizontal
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+
+  # ── Batch ─────────────────────────────────────────────────────────────────
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Networking ────────────────────────────────────────────────────────────
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies", "ingresses", "ingressclasses"]
+    verbs: ["get", "list", "watch"]
+
+  # ── RBAC — leitura (módulo de segurança) ──────────────────────────────────
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources:
+      - clusterroles
+      - clusterrolebindings
+      - roles
+      - rolebindings
+    verbs: ["get", "list", "watch"]
+
+  # ── Autoscaling ───────────────────────────────────────────────────────────
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Policy ────────────────────────────────────────────────────────────────
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Storage ───────────────────────────────────────────────────────────────
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses", "volumeattachments"]
+    verbs: ["get", "list", "watch"]
+
+  # ── Metrics Server ────────────────────────────────────────────────────────
   - apiGroups: ["metrics.k8s.io"]
-    resources: ["nodes"]
+    resources: ["pods", "nodes"]
     verbs: ["get", "list"]
+
+  # ── Trivy Operator (aquasecurity.github.io) — opcional ───────────────────
+  # Instale o Trivy Operator para habilitar o módulo de vulnerabilidades:
+  #   helm install trivy-operator aqua/trivy-operator \
+  #     --namespace trivy-system --create-namespace
+  - apiGroups: ["aquasecurity.github.io"]
+    resources:
+      - vulnerabilityreports
+      - exposedsecretreports
+      - configauditreports
+      - rbacassessmentreports
+      - clusterrbacassessmentreports
+      - clusterconfigauditreports
+      - infraassessmentreports
+      - clusterinfraassessmentreports
+    verbs: ["get", "list", "watch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

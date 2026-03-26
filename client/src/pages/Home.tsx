@@ -152,8 +152,15 @@ export default function Home() {
         });
         if (r.ok) {
           const data = await r.json();
+          // Sempre atualiza a lista — mesmo que venha vazia (não usar guard names.length > 0
+          // pois isso impedia atualização quando o cluster retornava lista reduzida)
           const names = (data.items ?? []).map((ns: { name: string }) => ns.name).sort();
-          if (names.length > 0) setAllNamespaces(names);
+          setAllNamespaces(names);
+        } else if (r.status === 401) {
+          // Token expirado: limpar sessão local para forçar re-login
+          console.warn("[namespaces] sessão expirada (401) — redirecionando para login");
+          localStorage.removeItem("k8s-viz-token");
+          window.location.reload();
         } else {
           console.warn("[namespaces] endpoint retornou", r.status);
         }
@@ -162,7 +169,8 @@ export default function Home() {
       }
     };
     fetchNamespaces();
-    const interval = setInterval(fetchNamespaces, 60_000); // a cada 1 min
+    // Polling a cada 30s (era 60s) para detectar novos namespaces mais rápido
+    const interval = setInterval(fetchNamespaces, 30_000);
     return () => clearInterval(interval);
   }, [inCluster, apiUrl]);
 

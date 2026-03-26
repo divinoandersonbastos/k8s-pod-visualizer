@@ -117,11 +117,14 @@ export function ClusterSidebar({
   const criticalColor = statusColorSet(sc.criticalHue, "critical").stroke;
 
   // Namespaces filtrados pela busca
-  // Usa allNamespaces (lista completa do cluster) quando disponível,
-  // com fallback para stats.namespaces (apenas namespaces com pods Running)
+  // Prioridade 1: allNamespaces (lista completa via /api/namespaces — inclui ns sem pods Running)
+  // Prioridade 2: stats.namespaces (derivado dos pods — apenas ns com pods Running)
+  // allNamespaces pode ser [] no primeiro render antes do fetch completar
   const filteredNamespaces = useMemo(() => {
-    if (!stats && !allNamespaces) return [];
-    const nsList = (allNamespaces && allNamespaces.length > 0) ? allNamespaces : (stats?.namespaces ?? []);
+    const nsList = (allNamespaces && allNamespaces.length > 0)
+      ? allNamespaces
+      : (stats?.namespaces ?? []);
+    if (nsList.length === 0) return [];
     const q = nsSearch.trim().toLowerCase();
     if (!q) return nsList;
     return nsList.filter((ns) => ns.toLowerCase().includes(q));

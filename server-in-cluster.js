@@ -949,8 +949,17 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const nsData = await k8sGet("/api/v1/namespaces");
-        const allNs = (nsData?.items ?? []).map((ns) => ({
+        // Usa k8sRequest (retorna { status, body }) para ter acesso ao status HTTP
+        // e poder diferenciar erro 403 (RBAC) de erro 500 (rede/timeout)
+        const nsRes = await k8sRequest("/api/v1/namespaces");
+        if (nsRes.status >= 400) {
+          const msg = nsRes.body?.message || `HTTP ${nsRes.status}`;
+          console.error(`[error] /api/namespaces: k8s API retornou ${nsRes.status} - ${msg}`);
+          res.writeHead(502, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `K8s API error ${nsRes.status}: ${msg}` }));
+          return;
+        }
+        const allNs = (nsRes.body?.items ?? []).map((ns) => ({
           name: ns.metadata.name,
           status: ns.status?.phase ?? "Active",
           labels: ns.metadata.labels ?? {},
@@ -963,6 +972,7 @@ const server = http.createServer(async (req, res) => {
               const allowed = Array.isArray(user.namespaces) ? user.namespaces : [];
               return allowed.length === 0 || allowed.includes(ns.name);
             });
+        console.log(`[info] /api/namespaces: ${filtered.length} ns retornados para role=${user.role} user=${user.username}`);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ items: filtered, timestamp: Date.now() }));
       } catch (err) {

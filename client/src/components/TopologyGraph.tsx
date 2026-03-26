@@ -1,7 +1,14 @@
 /**
  * TopologyGraph — Grafo interativo de topologia do cluster Kubernetes
- * Design: Terminal Dark / Ops Dashboard
- * Usa @xyflow/react para renderização do grafo com nós customizados
+ * Design: Terminal Dark / Ops Dashboard — Space Grotesk + OKLCH
+ *
+ * Três visões:
+ *  1. Funcional  — Ingress → Service → Deployment (visão simplificada)
+ *  2. Operacional — Deployment → Pods com réplicas, restarts, readiness
+ *  3. Tráfego    — Somente comunicação real entre serviços (edges)
+ *
+ * Layout: colunas por aplicação (agrupamento por nome base), linhas por camada
+ * Focus mode: clique em nó → mostra só dependências diretas
  */
 
 import { useCallback, useEffect, useRef, useState, useMemo } from "react";
@@ -12,7 +19,6 @@ import {
   MiniMap,
   useNodesState,
   useEdgesState,
-  addEdge,
   MarkerType,
   Position,
   Handle,
@@ -26,8 +32,9 @@ import "@xyflow/react/dist/style.css";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, RefreshCw, Globe, Box, Layers, Server, Network,
-  AlertTriangle, CheckCircle, Clock, Shield, ChevronDown,
-  ChevronRight, Filter, Maximize2, Minimize2, Info,
+  AlertTriangle, CheckCircle, Clock, Shield, Filter,
+  Maximize2, Minimize2, GitBranch, Activity, Eye,
+  ZoomIn, Search,
 } from "lucide-react";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
@@ -60,58 +67,93 @@ interface TopologyGraphProps {
   selectedNamespace?: string;
 }
 
-// ── Cores por tipo de nó ──────────────────────────────────────────────────────
-const NODE_COLORS = {
-  namespace: { bg: "oklch(0.18 0.03 260)", border: "oklch(0.45 0.15 260)", text: "oklch(0.72 0.18 200)", icon: Globe },
-  deployment: { bg: "oklch(0.16 0.04 200)", border: "oklch(0.55 0.22 200)", text: "oklch(0.72 0.18 200)", icon: Layers },
-  service:    { bg: "oklch(0.16 0.04 142)", border: "oklch(0.55 0.22 142)", text: "oklch(0.72 0.18 142)", icon: Network },
-  pod:        { bg: "oklch(0.16 0.03 250)", border: "oklch(0.45 0.12 250)", text: "oklch(0.65 0.12 250)", icon: Box },
-  ingress:    { bg: "oklch(0.16 0.04 30)",  border: "oklch(0.55 0.22 30)",  text: "oklch(0.72 0.18 30)",  icon: Globe },
+type ViewMode = "functional" | "operational" | "traffic";
+
+// ── Paleta de cores ───────────────────────────────────────────────────────────
+const C = {
+  ingress:    { bg: "oklch(0.14 0.04 30)",  border: "oklch(0.52 0.20 30)",  text: "oklch(0.78 0.18 30)",  glow: "oklch(0.52 0.20 30 / 0.35)" },
+  service:    { bg: "oklch(0.14 0.04 142)", border: "oklch(0.52 0.20 142)", text: "oklch(0.78 0.18 142)", glow: "oklch(0.52 0.20 142 / 0.35)" },
+  deployment: { bg: "oklch(0.14 0.04 200)", border: "oklch(0.52 0.22 200)", text: "oklch(0.78 0.18 200)", glow: "oklch(0.52 0.22 200 / 0.35)" },
+  pod:        { bg: "oklch(0.14 0.03 270)", border: "oklch(0.42 0.14 270)", text: "oklch(0.68 0.14 270)", glow: "oklch(0.42 0.14 270 / 0.35)" },
+  namespace:  { bg: "oklch(0.12 0.02 250)", border: "oklch(0.35 0.10 250)", text: "oklch(0.65 0.15 200)", glow: "" },
+  focused:    { border: "oklch(0.85 0.25 55)", glow: "oklch(0.85 0.25 55 / 0.5)" },
+  dimmed:     { opacity: 0.18 },
 };
 
-const EDGE_COLORS = {
-  "ingress-to-service":    "oklch(0.72 0.18 30)",
-  "service-to-deployment": "oklch(0.72 0.18 142)",
-  "pod-to-deployment":     "oklch(0.55 0.12 250)",
-  default:                 "oklch(0.45 0.08 250)",
-};
-
-// ── Nó de Namespace ───────────────────────────────────────────────────────────
-function NamespaceNode({ data }: NodeProps) {
-  const d = data as { label: string; podCount?: number; svcCount?: number };
+// ── Nó de Ingress ─────────────────────────────────────────────────────────────
+function IngressNode({ data, selected }: NodeProps) {
+  const d = data as { label: string; namespace: string; hosts: string[]; tls: boolean; focused?: boolean; dimmed?: boolean };
+  const col = C.ingress;
+  const isFocused = d.focused;
+  const isDimmed = d.dimmed;
   return (
-    <div
-      style={{
-        background: NODE_COLORS.namespace.bg,
-        border: `2px solid ${NODE_COLORS.namespace.border}`,
-        borderRadius: 12,
-        padding: "10px 16px",
-        minWidth: 160,
-        fontFamily: "'Space Grotesk', sans-serif",
-      }}
-    >
-      <Handle type="target" position={Position.Top} style={{ opacity: 0 }} />
-      <div className="flex items-center gap-2">
-        <Globe size={14} style={{ color: NODE_COLORS.namespace.text }} />
-        <span style={{ color: NODE_COLORS.namespace.text, fontSize: 13, fontWeight: 700 }}>
-          {d.label as string}
-        </span>
+    <div style={{
+      background: col.bg,
+      border: `2px solid ${isFocused ? C.focused.border : col.border}`,
+      borderRadius: 10,
+      padding: "10px 14px",
+      minWidth: 170,
+      maxWidth: 220,
+      boxShadow: selected || isFocused ? `0 0 18px ${isFocused ? C.focused.glow : col.glow}` : "none",
+      opacity: isDimmed ? C.dimmed.opacity : 1,
+      transition: "all 0.25s",
+      fontFamily: "'Space Grotesk', sans-serif",
+    }}>
+      <Handle type="source" position={Position.Bottom} style={{ background: col.border, width: 8, height: 8 }} />
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="flex items-center gap-1.5">
+          <Globe size={12} style={{ color: col.text }} />
+          <span style={{ color: col.text, fontSize: 11, fontWeight: 700, maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {d.label as string}
+          </span>
+        </div>
+        {d.tls && <span style={{ background: "oklch(0.52 0.20 142 / 0.2)", border: "1px solid oklch(0.52 0.20 142)", borderRadius: 4, padding: "1px 5px", fontSize: 8, color: "oklch(0.78 0.18 142)", fontFamily: "monospace", fontWeight: 700 }}>TLS</span>}
       </div>
-      {(d.podCount !== undefined || d.svcCount !== undefined) && (
-        <div className="flex gap-3 mt-1.5">
-          {d.podCount !== undefined && (
-            <span style={{ color: "oklch(0.55 0.015 250)", fontSize: 10, fontFamily: "monospace" }}>
-              {d.podCount} pods
-            </span>
-          )}
-          {d.svcCount !== undefined && (
-            <span style={{ color: "oklch(0.55 0.015 250)", fontSize: 10, fontFamily: "monospace" }}>
-              {d.svcCount} svcs
-            </span>
-          )}
+      <div style={{ color: "oklch(0.38 0.01 250)", fontSize: 8, fontFamily: "monospace" }}>INGRESS</div>
+      {(d.hosts as string[]).slice(0, 1).map((h, i) => (
+        <div key={i} style={{ color: "oklch(0.62 0.12 30)", fontSize: 8, fontFamily: "monospace", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{h}</div>
+      ))}
+    </div>
+  );
+}
+
+// ── Nó de Service ─────────────────────────────────────────────────────────────
+function ServiceNode({ data, selected }: NodeProps) {
+  const d = data as { label: string; namespace: string; svcType: string; ports: string[]; hasEndpoints?: boolean; focused?: boolean; dimmed?: boolean };
+  const col = C.service;
+  const isFocused = d.focused;
+  const isDimmed = d.dimmed;
+  const noEndpoints = d.hasEndpoints === false;
+  return (
+    <div style={{
+      background: col.bg,
+      border: `2px solid ${isFocused ? C.focused.border : noEndpoints ? "oklch(0.52 0.20 25)" : col.border}`,
+      borderRadius: 10,
+      padding: "10px 14px",
+      minWidth: 160,
+      maxWidth: 210,
+      boxShadow: selected || isFocused ? `0 0 18px ${isFocused ? C.focused.glow : col.glow}` : "none",
+      opacity: isDimmed ? C.dimmed.opacity : 1,
+      transition: "all 0.25s",
+      fontFamily: "'Space Grotesk', sans-serif",
+    }}>
+      <Handle type="target" position={Position.Top} style={{ background: col.border, width: 8, height: 8 }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: col.border, width: 8, height: 8 }} />
+      <div className="flex items-center justify-between gap-2 mb-1">
+        <div className="flex items-center gap-1.5">
+          <Network size={12} style={{ color: col.text }} />
+          <span style={{ color: col.text, fontSize: 11, fontWeight: 700, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {d.label as string}
+          </span>
+        </div>
+        {noEndpoints && <span style={{ background: "oklch(0.52 0.20 25 / 0.2)", border: "1px solid oklch(0.52 0.20 25)", borderRadius: 4, padding: "1px 5px", fontSize: 8, color: "oklch(0.72 0.18 25)", fontFamily: "monospace" }}>NO EP</span>}
+      </div>
+      <div style={{ color: "oklch(0.38 0.01 250)", fontSize: 8, fontFamily: "monospace" }}>SERVICE · {d.svcType as string}</div>
+      {(d.ports as string[]).length > 0 && (
+        <div style={{ color: "oklch(0.55 0.12 142)", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>
+          :{(d.ports as string[]).slice(0, 3).join(", :")}
         </div>
       )}
-      <Handle type="source" position={Position.Bottom} style={{ opacity: 0 }} />
     </div>
   );
 }
@@ -120,294 +162,294 @@ function NamespaceNode({ data }: NodeProps) {
 function DeploymentNode({ data, selected }: NodeProps) {
   const d = data as {
     label: string; namespace: string; ready: number; desired: number;
-    version: string; image: string; networkPolicies?: string[];
+    version: string; networkPolicies?: string[]; focused?: boolean; dimmed?: boolean;
   };
+  const col = C.deployment;
+  const isFocused = d.focused;
+  const isDimmed = d.dimmed;
   const healthy = d.ready >= d.desired && d.desired > 0;
   const degraded = d.ready < d.desired && d.ready > 0;
-  const statusColor = healthy ? "oklch(0.72 0.18 142)" : degraded ? "oklch(0.72 0.18 60)" : "oklch(0.72 0.18 25)";
-
+  const down = d.desired > 0 && d.ready === 0;
+  const statusColor = healthy ? "oklch(0.72 0.18 142)" : degraded ? "oklch(0.72 0.18 60)" : down ? "oklch(0.72 0.18 25)" : "oklch(0.45 0.08 250)";
+  const statusLabel = healthy ? "OK" : degraded ? "DEGRADED" : down ? "DOWN" : "IDLE";
   return (
-    <div
-      style={{
-        background: NODE_COLORS.deployment.bg,
-        border: `2px solid ${selected ? "oklch(0.72 0.18 200)" : NODE_COLORS.deployment.border}`,
-        borderRadius: 10,
-        padding: "10px 14px",
-        minWidth: 180,
-        boxShadow: selected ? `0 0 16px oklch(0.72 0.18 200 / 0.4)` : "none",
-        fontFamily: "'Space Grotesk', sans-serif",
-        transition: "box-shadow 0.2s",
-      }}
-    >
-      <Handle type="target" position={Position.Left} style={{ background: NODE_COLORS.deployment.border, width: 8, height: 8 }} />
-      <div className="flex items-center justify-between gap-2 mb-1.5">
+    <div style={{
+      background: col.bg,
+      border: `2px solid ${isFocused ? C.focused.border : col.border}`,
+      borderRadius: 10,
+      padding: "10px 14px",
+      minWidth: 175,
+      maxWidth: 225,
+      boxShadow: selected || isFocused ? `0 0 18px ${isFocused ? C.focused.glow : col.glow}` : "none",
+      opacity: isDimmed ? C.dimmed.opacity : 1,
+      transition: "all 0.25s",
+      fontFamily: "'Space Grotesk', sans-serif",
+    }}>
+      <Handle type="target" position={Position.Top} style={{ background: col.border, width: 8, height: 8 }} />
+      <Handle type="source" position={Position.Bottom} style={{ background: col.border, width: 8, height: 8 }} />
+      <div className="flex items-center justify-between gap-2 mb-1">
         <div className="flex items-center gap-1.5">
-          <Layers size={13} style={{ color: NODE_COLORS.deployment.text }} />
-          <span style={{ color: NODE_COLORS.deployment.text, fontSize: 12, fontWeight: 700 }}>
+          <Layers size={12} style={{ color: col.text }} />
+          <span style={{ color: col.text, fontSize: 11, fontWeight: 700, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {d.label as string}
           </span>
         </div>
-        <div
-          style={{
-            background: `${statusColor}22`,
-            border: `1px solid ${statusColor}66`,
-            borderRadius: 4,
-            padding: "1px 6px",
-            fontSize: 9,
-            color: statusColor,
-            fontFamily: "monospace",
-            fontWeight: 700,
-          }}
-        >
-          {d.ready}/{d.desired}
+        <div style={{ background: `${statusColor}22`, border: `1px solid ${statusColor}66`, borderRadius: 4, padding: "1px 6px", fontSize: 8, color: statusColor, fontFamily: "monospace", fontWeight: 700 }}>
+          {statusLabel}
         </div>
       </div>
-      <div style={{ color: "oklch(0.45 0.015 250)", fontSize: 9, fontFamily: "monospace" }}>
-        {d.namespace as string}
+      <div style={{ color: "oklch(0.38 0.01 250)", fontSize: 8, fontFamily: "monospace" }}>DEPLOYMENT</div>
+      <div style={{ color: "oklch(0.55 0.08 250)", fontSize: 9, fontFamily: "monospace", marginTop: 3 }}>
+        <span style={{ color: statusColor }}>{d.ready}</span>
+        <span style={{ color: "oklch(0.38 0.01 250)" }}>/{d.desired} réplicas</span>
       </div>
       {d.version && d.version !== "latest" && (
-        <div style={{ color: "oklch(0.65 0.12 200)", fontSize: 9, fontFamily: "monospace", marginTop: 3 }}>
-          v{d.version as string}
-        </div>
+        <div style={{ color: "oklch(0.58 0.10 200)", fontSize: 8, fontFamily: "monospace", marginTop: 2 }}>v{d.version as string}</div>
       )}
       {d.networkPolicies && (d.networkPolicies as string[]).length > 0 && (
         <div className="flex items-center gap-1 mt-1.5">
-          <Shield size={9} style={{ color: "oklch(0.72 0.18 60)" }} />
-          <span style={{ color: "oklch(0.72 0.18 60)", fontSize: 9, fontFamily: "monospace" }}>
-            {(d.networkPolicies as string[]).length} netpol
-          </span>
+          <Shield size={8} style={{ color: "oklch(0.72 0.18 60)" }} />
+          <span style={{ color: "oklch(0.72 0.18 60)", fontSize: 8, fontFamily: "monospace" }}>{(d.networkPolicies as string[]).length} netpol</span>
         </div>
       )}
-      <Handle type="source" position={Position.Right} style={{ background: NODE_COLORS.deployment.border, width: 8, height: 8 }} />
-    </div>
-  );
-}
-
-// ── Nó de Service ─────────────────────────────────────────────────────────────
-function ServiceNode({ data, selected }: NodeProps) {
-  const d = data as { label: string; namespace: string; svcType: string; ports: string[]; clusterIP: string };
-  const typeColor = d.svcType === "LoadBalancer" ? "oklch(0.72 0.18 30)" :
-                    d.svcType === "NodePort"      ? "oklch(0.72 0.18 60)" : "oklch(0.72 0.18 142)";
-  return (
-    <div
-      style={{
-        background: NODE_COLORS.service.bg,
-        border: `2px solid ${selected ? "oklch(0.72 0.18 142)" : NODE_COLORS.service.border}`,
-        borderRadius: 10,
-        padding: "10px 14px",
-        minWidth: 160,
-        boxShadow: selected ? `0 0 16px oklch(0.72 0.18 142 / 0.4)` : "none",
-        fontFamily: "'Space Grotesk', sans-serif",
-        transition: "box-shadow 0.2s",
-      }}
-    >
-      <Handle type="target" position={Position.Left} style={{ background: NODE_COLORS.service.border, width: 8, height: 8 }} />
-      <div className="flex items-center justify-between gap-2 mb-1.5">
-        <div className="flex items-center gap-1.5">
-          <Network size={13} style={{ color: NODE_COLORS.service.text }} />
-          <span style={{ color: NODE_COLORS.service.text, fontSize: 12, fontWeight: 700 }}>
-            {d.label as string}
-          </span>
-        </div>
-        <span style={{ color: typeColor, fontSize: 9, fontFamily: "monospace", fontWeight: 700 }}>
-          {d.svcType as string}
-        </span>
-      </div>
-      <div style={{ color: "oklch(0.45 0.015 250)", fontSize: 9, fontFamily: "monospace" }}>
-        {d.namespace as string}
-      </div>
-      {(d.ports as string[]).length > 0 && (
-        <div style={{ color: "oklch(0.55 0.12 142)", fontSize: 9, fontFamily: "monospace", marginTop: 3 }}>
-          :{(d.ports as string[]).join(", :")}
-        </div>
-      )}
-      <Handle type="source" position={Position.Right} style={{ background: NODE_COLORS.service.border, width: 8, height: 8 }} />
     </div>
   );
 }
 
 // ── Nó de Pod ─────────────────────────────────────────────────────────────────
 function PodNode({ data, selected }: NodeProps) {
-  const d = data as { label: string; namespace: string; phase: string; restarts: number; deployment: string; nodeName: string };
-  const hasRestarts = (d.restarts as number) > 0;
+  const d = data as { label: string; phase: string; restarts: number; nodeName: string; focused?: boolean; dimmed?: boolean };
+  const col = C.pod;
+  const isFocused = d.focused;
+  const isDimmed = d.dimmed;
+  const phaseColor = d.phase === "Running" ? "oklch(0.72 0.18 142)" : d.phase === "Pending" ? "oklch(0.72 0.18 60)" : "oklch(0.72 0.18 25)";
   return (
-    <div
-      style={{
-        background: NODE_COLORS.pod.bg,
-        border: `1px solid ${selected ? "oklch(0.65 0.12 250)" : NODE_COLORS.pod.border}`,
-        borderRadius: 8,
-        padding: "7px 12px",
-        minWidth: 140,
-        opacity: 0.9,
-        fontFamily: "'Space Grotesk', sans-serif",
-        transition: "box-shadow 0.2s",
-      }}
-    >
-      <Handle type="target" position={Position.Left} style={{ background: NODE_COLORS.pod.border, width: 6, height: 6 }} />
+    <div style={{
+      background: col.bg,
+      border: `1px solid ${isFocused ? C.focused.border : col.border}`,
+      borderRadius: 8,
+      padding: "7px 11px",
+      minWidth: 140,
+      maxWidth: 185,
+      boxShadow: selected || isFocused ? `0 0 14px ${isFocused ? C.focused.glow : col.glow}` : "none",
+      opacity: isDimmed ? C.dimmed.opacity : 1,
+      transition: "all 0.25s",
+      fontFamily: "'Space Grotesk', sans-serif",
+    }}>
+      <Handle type="target" position={Position.Top} style={{ background: col.border, width: 6, height: 6 }} />
       <div className="flex items-center gap-1.5">
-        <Box size={11} style={{ color: NODE_COLORS.pod.text }} />
-        <span style={{ color: NODE_COLORS.pod.text, fontSize: 10, fontWeight: 600, maxWidth: 110, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <div style={{ width: 7, height: 7, borderRadius: "50%", background: phaseColor, flexShrink: 0 }} />
+        <span style={{ color: col.text, fontSize: 10, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {d.label as string}
         </span>
       </div>
-      {hasRestarts && (
+      <div style={{ color: "oklch(0.38 0.01 250)", fontSize: 7, fontFamily: "monospace", marginTop: 2 }}>POD · {d.phase as string}</div>
+      {(d.restarts as number) > 0 && (
         <div className="flex items-center gap-1 mt-1">
-          <AlertTriangle size={9} style={{ color: "oklch(0.72 0.18 60)" }} />
-          <span style={{ color: "oklch(0.72 0.18 60)", fontSize: 9, fontFamily: "monospace" }}>
-            {d.restarts as number} restarts
-          </span>
+          <AlertTriangle size={8} style={{ color: "oklch(0.72 0.18 60)" }} />
+          <span style={{ color: "oklch(0.72 0.18 60)", fontSize: 8, fontFamily: "monospace" }}>{d.restarts as number} restarts</span>
         </div>
       )}
-      <Handle type="source" position={Position.Right} style={{ background: NODE_COLORS.pod.border, width: 6, height: 6 }} />
     </div>
   );
 }
 
-// ── Nó de Ingress ─────────────────────────────────────────────────────────────
-function IngressNode({ data, selected }: NodeProps) {
-  const d = data as { label: string; namespace: string; hosts: string[]; tls: boolean; ingressClass: string };
+// ── Nó de Namespace (separador visual) ────────────────────────────────────────
+function NamespaceGroupNode({ data }: NodeProps) {
+  const d = data as { label: string; appCount: number; podCount: number };
   return (
-    <div
-      style={{
-        background: NODE_COLORS.ingress.bg,
-        border: `2px solid ${selected ? "oklch(0.72 0.18 30)" : NODE_COLORS.ingress.border}`,
-        borderRadius: 10,
-        padding: "10px 14px",
-        minWidth: 160,
-        boxShadow: selected ? `0 0 16px oklch(0.72 0.18 30 / 0.4)` : "none",
-        fontFamily: "'Space Grotesk', sans-serif",
-        transition: "box-shadow 0.2s",
-      }}
-    >
-      <div className="flex items-center justify-between gap-2 mb-1.5">
-        <div className="flex items-center gap-1.5">
-          <Globe size={13} style={{ color: NODE_COLORS.ingress.text }} />
-          <span style={{ color: NODE_COLORS.ingress.text, fontSize: 12, fontWeight: 700 }}>
-            {d.label as string}
-          </span>
-        </div>
-        {d.tls && (
-          <span style={{ color: "oklch(0.72 0.18 142)", fontSize: 9, fontFamily: "monospace", fontWeight: 700 }}>
-            TLS
-          </span>
-        )}
+    <div style={{
+      background: "oklch(0.10 0.015 250 / 0.7)",
+      border: "1px dashed oklch(0.30 0.08 250)",
+      borderRadius: 14,
+      padding: "10px 16px 8px",
+      minWidth: 200,
+      fontFamily: "'Space Grotesk', sans-serif",
+      backdropFilter: "blur(4px)",
+    }}>
+      <div className="flex items-center gap-2">
+        <Server size={12} style={{ color: "oklch(0.65 0.15 200)" }} />
+        <span style={{ color: "oklch(0.65 0.15 200)", fontSize: 12, fontWeight: 700, letterSpacing: "0.05em" }}>
+          {d.label as string}
+        </span>
       </div>
-      <div style={{ color: "oklch(0.45 0.015 250)", fontSize: 9, fontFamily: "monospace" }}>
-        {d.namespace as string}
+      <div style={{ color: "oklch(0.38 0.01 250)", fontSize: 8, fontFamily: "monospace", marginTop: 3 }}>
+        {d.appCount} apps · {d.podCount} pods
       </div>
-      {(d.hosts as string[]).slice(0, 2).map((h, i) => (
-        <div key={i} style={{ color: "oklch(0.65 0.12 30)", fontSize: 9, fontFamily: "monospace", marginTop: 2 }}>
-          {h}
-        </div>
-      ))}
-      <Handle type="source" position={Position.Right} style={{ background: NODE_COLORS.ingress.border, width: 8, height: 8 }} />
     </div>
   );
 }
 
 const nodeTypes = {
-  namespace:  NamespaceNode,
+  namespace:  NamespaceGroupNode,
   deployment: DeploymentNode,
   service:    ServiceNode,
   pod:        PodNode,
   ingress:    IngressNode,
 };
 
-// ── Layout automático em camadas ──────────────────────────────────────────────
-function computeLayout(topoNodes: TopologyNode[], topoEdges: TopologyEdge[], showPods: boolean): { nodes: Node[]; edges: Edge[] } {
-  // Agrupa por namespace
-  const nsByName: Record<string, TopologyNode[]> = {};
-  for (const n of topoNodes) {
-    if (n.type === "namespace") continue;
-    if (!nsByName[n.namespace]) nsByName[n.namespace] = [];
-    nsByName[n.namespace].push(n);
+// ── Algoritmo de layout hierárquico por aplicação ─────────────────────────────
+// Cada aplicação (nome base) ocupa uma coluna vertical com camadas fixas:
+//   Y=0    → Ingress
+//   Y=130  → Service
+//   Y=260  → Deployment
+//   Y=390+ → Pods
+function computeLayout(
+  topoNodes: TopologyNode[],
+  topoEdges: TopologyEdge[],
+  viewMode: ViewMode,
+  focusedId: string | null,
+): { nodes: Node[]; edges: Edge[] } {
+
+  // ── 1. Determinar quais nós são relevantes para o modo de visão ──────────────
+  const relevantTypes: Set<string> = new Set();
+  if (viewMode === "functional") {
+    relevantTypes.add("ingress"); relevantTypes.add("service"); relevantTypes.add("deployment");
+  } else if (viewMode === "operational") {
+    relevantTypes.add("deployment"); relevantTypes.add("pod");
+  } else {
+    // traffic: apenas serviços com edges entre si
+    relevantTypes.add("ingress"); relevantTypes.add("service"); relevantTypes.add("deployment");
   }
+
+  const visibleNodes = topoNodes.filter(n => relevantTypes.has(n.type));
+
+  // ── 2. Agrupar por namespace → depois por "app base" (nome sem sufixo) ───────
+  // App base = primeiras 2 partes do nome separado por "-"
+  const getAppBase = (label: string) => label.split("-").slice(0, 2).join("-");
+
+  // Namespace → Map<appBase, nodes>
+  const nsMap: Record<string, Map<string, TopologyNode[]>> = {};
+  for (const n of visibleNodes) {
+    if (!nsMap[n.namespace]) nsMap[n.namespace] = new Map();
+    const base = getAppBase(n.label);
+    if (!nsMap[n.namespace].has(base)) nsMap[n.namespace].set(base, []);
+    nsMap[n.namespace].get(base)!.push(n);
+  }
+
+  // ── 3. Calcular posições ─────────────────────────────────────────────────────
+  const LAYER_Y: Record<string, number> = {
+    ingress:    0,
+    service:    150,
+    deployment: 300,
+    pod:        450,
+  };
+  const COL_W = 240;   // largura de cada coluna de app
+  const NS_GAP = 60;   // espaço extra entre namespaces
+  const NS_HEADER_H = 50;
 
   const flowNodes: Node[] = [];
   const flowEdges: Edge[] = [];
 
-  // Posiciona namespaces em colunas
-  const nsNames = Object.keys(nsByName).sort();
-  const COL_WIDTH  = 520;
-  const ROW_HEIGHT = 110;
+  // Determinar nós conectados ao foco
+  let focusedNeighbors: Set<string> = new Set();
+  if (focusedId) {
+    focusedNeighbors.add(focusedId);
+    for (const e of topoEdges) {
+      if (e.source === focusedId) focusedNeighbors.add(e.target);
+      if (e.target === focusedId) focusedNeighbors.add(e.source);
+    }
+  }
 
-  nsNames.forEach((ns, nsIdx) => {
-    const nsX = nsIdx * COL_WIDTH;
-    const nsItems = nsByName[ns];
+  let globalColX = 0;
 
-    // Namespace label no topo
+  const nsNames = Object.keys(nsMap).sort();
+  for (const ns of nsNames) {
+    const appMap = nsMap[ns];
+    const appBases = Array.from(appMap.keys()).sort();
+    const nsWidth = appBases.length * COL_W;
+
+    // Namespace header
+    const podCount = Array.from(appMap.values()).flat().filter(n => n.type === "pod").length;
+    const appCount = appBases.length;
     flowNodes.push({
       id: `ns:${ns}`,
       type: "namespace",
-      position: { x: nsX + 20, y: 0 },
-      data: {
-        label: ns,
-        podCount: nsItems.filter(n => n.type === "pod").length,
-        svcCount: nsItems.filter(n => n.type === "service").length,
-      },
-      draggable: true,
+      position: { x: globalColX, y: -NS_HEADER_H },
+      data: { label: ns, appCount, podCount },
+      draggable: false,
+      selectable: false,
+      style: { width: nsWidth, zIndex: -1 },
     });
 
-    // Ingresses na linha 1
-    const ings = nsItems.filter(n => n.type === "ingress");
-    ings.forEach((n, i) => {
-      flowNodes.push({
-        id: n.id, type: n.type,
-        position: { x: nsX + i * 200, y: ROW_HEIGHT },
-        data: { label: n.label, namespace: n.namespace, ...(n.data || {}) },
-        draggable: true,
-      });
-    });
+    // Colunas por app
+    appBases.forEach((base, appIdx) => {
+      const colX = globalColX + appIdx * COL_W + 10;
+      const appNodes = appMap.get(base)!;
 
-    // Services na linha 2
-    const svcs = nsItems.filter(n => n.type === "service");
-    svcs.forEach((n, i) => {
-      flowNodes.push({
-        id: n.id, type: n.type,
-        position: { x: nsX + i * 200, y: ROW_HEIGHT * 2 },
-        data: { label: n.label, namespace: n.namespace, ...(n.data || {}) },
-        draggable: true,
-      });
-    });
+      // Agrupar por tipo dentro da coluna
+      const byType: Record<string, TopologyNode[]> = {};
+      for (const n of appNodes) {
+        if (!byType[n.type]) byType[n.type] = [];
+        byType[n.type].push(n);
+      }
 
-    // Deployments na linha 3
-    const deps = nsItems.filter(n => n.type === "deployment");
-    deps.forEach((n, i) => {
-      flowNodes.push({
-        id: n.id, type: n.type,
-        position: { x: nsX + i * 210, y: ROW_HEIGHT * 3 },
-        data: { label: n.label, namespace: n.namespace, ...(n.data || {}) },
-        draggable: true,
-      });
-    });
-
-    // Pods na linha 4 (opcional)
-    if (showPods) {
-      const pods = nsItems.filter(n => n.type === "pod");
-      pods.forEach((n, i) => {
-        flowNodes.push({
-          id: n.id, type: n.type,
-          position: { x: nsX + (i % 4) * 165, y: ROW_HEIGHT * 4 + Math.floor(i / 4) * 80 },
-          data: { label: n.label, namespace: n.namespace, ...(n.data || {}) },
-          draggable: true,
+      // Posicionar cada nó na camada correta
+      for (const [type, nodes] of Object.entries(byType)) {
+        const layerY = LAYER_Y[type] ?? 450;
+        nodes.forEach((n, i) => {
+          const isFocused = focusedId ? focusedNeighbors.has(n.id) : false;
+          const isDimmed = focusedId ? !focusedNeighbors.has(n.id) : false;
+          flowNodes.push({
+            id: n.id,
+            type: n.type,
+            position: { x: colX + i * 10, y: layerY + i * 8 }, // leve offset para múltiplos do mesmo tipo
+            data: {
+              label: n.label,
+              namespace: n.namespace,
+              focused: isFocused,
+              dimmed: isDimmed,
+              ...(n.data || {}),
+            },
+            draggable: true,
+          });
         });
-      });
-    }
-  });
+      }
+    });
 
-  // Arestas
+    globalColX += nsWidth + NS_GAP;
+  }
+
+  // ── 4. Arestas ───────────────────────────────────────────────────────────────
+  const edgeTypeFilter: Record<ViewMode, string[]> = {
+    functional:   ["ingress-to-service", "service-to-deployment"],
+    operational:  ["pod-to-deployment"],
+    traffic:      ["ingress-to-service", "service-to-deployment", "service-to-service"],
+  };
+  const allowedEdges = new Set(edgeTypeFilter[viewMode]);
+
+  const EDGE_STYLE: Record<string, { color: string; width: number; animated: boolean; dash?: string }> = {
+    "ingress-to-service":    { color: "oklch(0.72 0.18 30)",  width: 2,   animated: true },
+    "service-to-deployment": { color: "oklch(0.72 0.18 142)", width: 2,   animated: true },
+    "pod-to-deployment":     { color: "oklch(0.45 0.12 270)", width: 1.5, animated: false },
+    "service-to-service":    { color: "oklch(0.72 0.18 200)", width: 2,   animated: true, dash: "6,3" },
+  };
+
+  const nodeIds = new Set(flowNodes.map(n => n.id));
+
   for (const e of topoEdges) {
-    if (!showPods && (e.type === "pod-to-deployment")) continue;
-    const color = EDGE_COLORS[e.type as keyof typeof EDGE_COLORS] || EDGE_COLORS.default;
+    if (!allowedEdges.has(e.type)) continue;
+    if (!nodeIds.has(e.source) || !nodeIds.has(e.target)) continue;
+
+    const isDimmedEdge = focusedId
+      ? !focusedNeighbors.has(e.source) && !focusedNeighbors.has(e.target)
+      : false;
+
+    const style = EDGE_STYLE[e.type] || { color: "oklch(0.38 0.01 250)", width: 1.5, animated: false };
     flowEdges.push({
       id: e.id,
       source: e.source,
       target: e.target,
-      label: e.label || undefined,
+      label: viewMode === "traffic" ? (e.label || undefined) : undefined,
       labelStyle: { fill: "oklch(0.55 0.015 250)", fontSize: 9, fontFamily: "monospace" },
-      style: { stroke: color, strokeWidth: e.type === "ingress-to-service" ? 2 : 1.5 },
-      animated: e.type === "ingress-to-service" || e.type === "service-to-deployment",
-      markerEnd: { type: MarkerType.ArrowClosed, color, width: 14, height: 14 },
+      style: {
+        stroke: style.color,
+        strokeWidth: style.width,
+        opacity: isDimmedEdge ? 0.08 : 1,
+        strokeDasharray: style.dash,
+      },
+      animated: style.animated && !isDimmedEdge,
+      markerEnd: { type: MarkerType.ArrowClosed, color: style.color, width: 14, height: 14 },
       type: "smoothstep",
     });
   }
@@ -416,344 +458,308 @@ function computeLayout(topoNodes: TopologyNode[], topoEdges: TopologyEdge[], sho
 }
 
 // ── Painel de detalhes do nó selecionado ──────────────────────────────────────
-function NodeDetailPanel({ node, onClose }: { node: Node | null; onClose: () => void }) {
+function NodeDetailPanel({ node, onClose, onFocus }: { node: Node | null; onClose: () => void; onFocus: (id: string) => void }) {
   if (!node) return null;
   const d = node.data as Record<string, unknown>;
-  const type = node.type as string;
-  const colors = NODE_COLORS[type as keyof typeof NODE_COLORS] || NODE_COLORS.pod;
+  const typeLabel: Record<string, string> = {
+    ingress: "Ingress", service: "Service", deployment: "Deployment", pod: "Pod", namespace: "Namespace",
+  };
+  const typeColor: Record<string, string> = {
+    ingress: C.ingress.text, service: C.service.text, deployment: C.deployment.text,
+    pod: C.pod.text, namespace: C.namespace.text,
+  };
+  const col = typeColor[node.type as string] || "oklch(0.65 0.15 200)";
 
   return (
     <AnimatePresence>
       <motion.div
-        initial={{ opacity: 0, x: 20 }}
+        key="detail"
+        initial={{ opacity: 0, x: 24 }}
         animate={{ opacity: 1, x: 0 }}
-        exit={{ opacity: 0, x: 20 }}
+        exit={{ opacity: 0, x: 24 }}
+        transition={{ duration: 0.2 }}
         style={{
-          position: "absolute", top: 12, right: 12, width: 280, zIndex: 10,
-          background: "oklch(0.13 0.018 250)",
-          border: `1px solid ${colors.border}`,
+          position: "absolute", top: 12, right: 12, zIndex: 50,
+          background: "oklch(0.11 0.02 250 / 0.97)",
+          border: `1px solid ${col}55`,
           borderRadius: 12,
-          padding: 16,
+          padding: "16px 18px",
+          minWidth: 240,
+          maxWidth: 300,
+          boxShadow: `0 4px 32px oklch(0 0 0 / 0.5), 0 0 0 1px ${col}22`,
           fontFamily: "'Space Grotesk', sans-serif",
-          boxShadow: `0 8px 32px oklch(0 0 0 / 0.6)`,
+          backdropFilter: "blur(12px)",
         }}
       >
         <div className="flex items-center justify-between mb-3">
-          <div className="flex items-center gap-2">
-            <span style={{ color: colors.text, fontSize: 11, fontFamily: "monospace", textTransform: "uppercase", letterSpacing: "0.1em" }}>
-              {type}
-            </span>
+          <div>
+            <div style={{ color: col, fontSize: 9, fontFamily: "monospace", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 3 }}>
+              {typeLabel[node.type as string] || node.type}
+            </div>
+            <div style={{ color: "oklch(0.88 0.02 250)", fontSize: 14, fontWeight: 700 }}>
+              {d.label as string}
+            </div>
           </div>
-          <button onClick={onClose} style={{ color: "oklch(0.45 0.015 250)" }}>
-            <X size={14} />
-          </button>
+          <div className="flex gap-1.5">
+            <button
+              onClick={() => onFocus(node.id)}
+              title="Focus mode"
+              style={{ background: "oklch(0.20 0.04 250)", border: "1px solid oklch(0.30 0.08 250)", borderRadius: 6, padding: "4px 8px", cursor: "pointer", color: "oklch(0.65 0.15 200)", fontSize: 10, display: "flex", alignItems: "center", gap: 4 }}
+            >
+              <ZoomIn size={11} /> Focus
+            </button>
+            <button onClick={onClose} style={{ background: "oklch(0.20 0.04 250)", border: "1px solid oklch(0.30 0.08 250)", borderRadius: 6, padding: 4, cursor: "pointer", color: "oklch(0.55 0.015 250)", display: "flex" }}>
+              <X size={13} />
+            </button>
+          </div>
         </div>
-        <div style={{ color: "oklch(0.85 0.008 250)", fontSize: 15, fontWeight: 700, marginBottom: 8 }}>
-          {d.label as string}
-        </div>
-        <div style={{ color: "oklch(0.45 0.015 250)", fontSize: 10, fontFamily: "monospace", marginBottom: 12 }}>
-          ns: {d.namespace as string}
-        </div>
-        <div className="space-y-2">
-          {type === "deployment" && (
-            <>
-              <DetailRow label="Réplicas" value={`${d.ready}/${d.desired}`} />
-              <DetailRow label="Versão" value={(d.version as string) || "latest"} />
-              <DetailRow label="Imagem" value={(d.image as string)?.split("/").pop() || ""} mono />
-              {(d.networkPolicies as string[])?.length > 0 && (
-                <DetailRow label="NetworkPolicies" value={(d.networkPolicies as string[]).join(", ")} mono />
-              )}
-            </>
-          )}
-          {type === "service" && (
-            <>
-              <DetailRow label="Tipo" value={d.svcType as string} />
-              <DetailRow label="Portas" value={(d.ports as string[]).join(", ")} mono />
-              <DetailRow label="ClusterIP" value={d.clusterIP as string} mono />
-            </>
-          )}
-          {type === "pod" && (
-            <>
-              <DetailRow label="Fase" value={d.phase as string} />
-              <DetailRow label="Restarts" value={String(d.restarts)} />
-              <DetailRow label="Node" value={d.nodeName as string} mono />
-              <DetailRow label="IP" value={d.podIP as string} mono />
-              <DetailRow label="Deployment" value={d.deployment as string} />
-            </>
-          )}
-          {type === "ingress" && (
-            <>
-              <DetailRow label="TLS" value={(d.tls as boolean) ? "Sim" : "Não"} />
-              <DetailRow label="Classe" value={(d.ingressClass as string) || "nginx"} />
-              {(d.hosts as string[]).map((h, i) => (
-                <DetailRow key={i} label={`Host ${i + 1}`} value={h} mono />
-              ))}
-            </>
-          )}
-          {type === "namespace" && (
-            <>
-              <DetailRow label="Pods" value={String(d.podCount || 0)} />
-              <DetailRow label="Services" value={String(d.svcCount || 0)} />
-            </>
-          )}
+
+        <div style={{ borderTop: "1px solid oklch(0.20 0.04 250)", paddingTop: 10 }}>
+          {Object.entries(d)
+            .filter(([k]) => !["label", "focused", "dimmed"].includes(k))
+            .map(([k, v]) => {
+              if (v === undefined || v === null || v === "") return null;
+              const display = Array.isArray(v) ? (v as string[]).join(", ") : String(v);
+              return (
+                <div key={k} className="flex justify-between gap-3 mb-1.5">
+                  <span style={{ color: "oklch(0.45 0.015 250)", fontSize: 10, fontFamily: "monospace" }}>{k}</span>
+                  <span style={{ color: "oklch(0.72 0.08 250)", fontSize: 10, fontFamily: "monospace", textAlign: "right", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{display}</span>
+                </div>
+              );
+            })}
         </div>
       </motion.div>
     </AnimatePresence>
   );
 }
 
-function DetailRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+// ── Legenda fixa ──────────────────────────────────────────────────────────────
+function Legend({ viewMode }: { viewMode: ViewMode }) {
+  const items = viewMode === "operational"
+    ? [
+        { color: C.deployment.border, label: "Deployment", sub: "réplicas / status" },
+        { color: C.pod.border, label: "Pod", sub: "fase / restarts" },
+      ]
+    : [
+        { color: C.ingress.border, label: "Ingress", sub: "entrada HTTP/S" },
+        { color: C.service.border, label: "Service", sub: "roteamento interno" },
+        { color: C.deployment.border, label: "Deployment", sub: "workload" },
+        ...(viewMode === "functional" ? [] : [{ color: C.pod.border, label: "Pod", sub: "instância" }]),
+      ];
+
   return (
-    <div className="flex justify-between items-start gap-2">
-      <span style={{ color: "oklch(0.45 0.015 250)", fontSize: 10, flexShrink: 0 }}>{label}</span>
-      <span style={{
-        color: "oklch(0.72 0.08 250)", fontSize: 10,
-        fontFamily: mono ? "monospace" : "inherit",
-        textAlign: "right", wordBreak: "break-all",
-      }}>
-        {value || "—"}
-      </span>
+    <div style={{
+      background: "oklch(0.10 0.02 250 / 0.92)",
+      border: "1px solid oklch(0.22 0.05 250)",
+      borderRadius: 10,
+      padding: "10px 14px",
+      fontFamily: "'Space Grotesk', sans-serif",
+      backdropFilter: "blur(8px)",
+    }}>
+      <div style={{ color: "oklch(0.45 0.015 250)", fontSize: 8, fontFamily: "monospace", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 8 }}>LEGENDA</div>
+      {items.map(item => (
+        <div key={item.label} className="flex items-center gap-2 mb-1.5">
+          <div style={{ width: 10, height: 10, borderRadius: 3, border: `2px solid ${item.color}`, background: `${item.color}22`, flexShrink: 0 }} />
+          <div>
+            <span style={{ color: "oklch(0.75 0.05 250)", fontSize: 10, fontWeight: 600 }}>{item.label}</span>
+            <span style={{ color: "oklch(0.40 0.01 250)", fontSize: 9, marginLeft: 4 }}>{item.sub}</span>
+          </div>
+        </div>
+      ))}
+      <div style={{ borderTop: "1px solid oklch(0.18 0.03 250)", marginTop: 8, paddingTop: 8 }}>
+        <div className="flex items-center gap-2 mb-1">
+          <div style={{ width: 20, height: 2, background: "oklch(0.72 0.18 30)", borderRadius: 1 }} />
+          <span style={{ color: "oklch(0.40 0.01 250)", fontSize: 9 }}>fluxo principal</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div style={{ width: 20, height: 2, background: "oklch(0.72 0.18 200)", borderRadius: 1, opacity: 0.6, borderTop: "1px dashed oklch(0.72 0.18 200)" }} />
+          <span style={{ color: "oklch(0.40 0.01 250)", fontSize: 9 }}>comunicação entre serviços</span>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ── Componente principal ──────────────────────────────────────────────────────
-export function TopologyGraph({ onClose, apiUrl = "", isSRE = false, selectedNamespace = "" }: TopologyGraphProps) {
-  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+export default function TopologyGraph({ onClose, apiUrl = "", isSRE = true, selectedNamespace }: TopologyGraphProps) {
+  const [rawData, setRawData] = useState<TopologyData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("functional");
+  const [nsFilter, setNsFilter] = useState(selectedNamespace || "");
+  const [focusedId, setFocusedId] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<Node | null>(null);
-  const [showPods, setShowPods] = useState(false);
-  const [filterNs, setFilterNs] = useState(selectedNamespace || "");
-  const [rawData, setRawData] = useState<TopologyData | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [fullscreen, setFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [stats, setStats] = useState({ ns: 0, dep: 0, svc: 0, pod: 0, ing: 0 });
 
-  const fetchTopology = useCallback(async () => {
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+
+  const fetchData = useCallback(async () => {
     try {
       setLoading(true);
-      setError(null);
-      const t = localStorage.getItem("k8s-viz-token");
+      const token = localStorage.getItem("k8s-viz-token") || sessionStorage.getItem("k8s-viz-token") || "";
       const r = await fetch(`${apiUrl}/api/topology`, {
-        headers: t ? { Authorization: `Bearer ${t}` } : {},
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data: TopologyData = await r.json();
       setRawData(data);
-      setLastUpdated(new Date());
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Erro ao carregar topologia");
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
     } finally {
       setLoading(false);
     }
   }, [apiUrl]);
 
-  useEffect(() => { fetchTopology(); }, [fetchTopology]);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  // Reconstrói o layout quando os dados ou filtros mudam
+  // Reconstrói o layout quando dados, filtros ou modo mudam
   useEffect(() => {
     if (!rawData) return;
+
     let filteredNodes = rawData.nodes;
     let filteredEdges = rawData.edges;
 
-    if (filterNs) {
-      const nsFilter = filterNs.toLowerCase();
-      filteredNodes = rawData.nodes.filter(n =>
-        n.type === "namespace" ? n.label.toLowerCase().includes(nsFilter) : n.namespace.toLowerCase().includes(nsFilter)
-      );
+    if (nsFilter.trim()) {
+      filteredNodes = rawData.nodes.filter(n => n.namespace.toLowerCase().includes(nsFilter.toLowerCase()));
       const validIds = new Set(filteredNodes.map(n => n.id));
       filteredEdges = rawData.edges.filter(e => validIds.has(e.source) && validIds.has(e.target));
     }
 
-    const { nodes: fn, edges: fe } = computeLayout(filteredNodes, filteredEdges, showPods);
+    const { nodes: fn, edges: fe } = computeLayout(filteredNodes, filteredEdges, viewMode, focusedId);
     setNodes(fn);
     setEdges(fe);
-  }, [rawData, filterNs, showPods, setNodes, setEdges]);
 
-  const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    setSelectedNode(prev => prev?.id === node.id ? null : node);
-  }, []);
-
-  // Contadores para o painel de legenda
-  const counts = useMemo(() => {
-    if (!rawData) return { ns: 0, dep: 0, svc: 0, pod: 0, ing: 0 };
-    return {
+    setStats({
       ns:  rawData.nodes.filter(n => n.type === "namespace").length,
       dep: rawData.nodes.filter(n => n.type === "deployment").length,
       svc: rawData.nodes.filter(n => n.type === "service").length,
       pod: rawData.nodes.filter(n => n.type === "pod").length,
       ing: rawData.nodes.filter(n => n.type === "ingress").length,
-    };
-  }, [rawData]);
+    });
+  }, [rawData, nsFilter, viewMode, focusedId, setNodes, setEdges]);
+
+  const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    if (node.type === "namespace") return;
+    setSelectedNode(node);
+  }, []);
+
+  const handleFocus = useCallback((id: string) => {
+    setFocusedId(prev => prev === id ? null : id);
+    setSelectedNode(null);
+  }, []);
+
+  const VIEW_MODES: { id: ViewMode; label: string; icon: React.ReactNode; desc: string }[] = [
+    { id: "functional",   label: "Funcional",   icon: <GitBranch size={13} />, desc: "Ingress → Service → Deployment" },
+    { id: "operational",  label: "Operacional",  icon: <Activity size={13} />,  desc: "Deployments, pods, réplicas, restarts" },
+    { id: "traffic",      label: "Tráfego",      icon: <Network size={13} />,   desc: "Comunicação real entre serviços" },
+  ];
+
+  const containerStyle: React.CSSProperties = isFullscreen
+    ? { position: "fixed", inset: 0, zIndex: 100, background: "oklch(0.08 0.02 250)" }
+    : { position: "fixed", inset: "12px", zIndex: 50, background: "oklch(0.08 0.02 250)", borderRadius: 16, overflow: "hidden", boxShadow: "0 24px 80px oklch(0 0 0 / 0.7)" };
 
   return (
-    <motion.div
-      initial={{ opacity: 0, scale: 0.97 }}
-      animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.97 }}
-      style={{
-        position: "fixed",
-        inset: fullscreen ? 0 : "auto",
-        top: fullscreen ? 0 : "5vh",
-        left: fullscreen ? 0 : "5vw",
-        right: fullscreen ? 0 : "5vw",
-        bottom: fullscreen ? 0 : "5vh",
-        zIndex: 50,
-        background: "oklch(0.11 0.015 250)",
-        border: "1px solid oklch(0.22 0.03 250)",
-        borderRadius: fullscreen ? 0 : 16,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        boxShadow: "0 24px 80px oklch(0 0 0 / 0.8)",
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          padding: "12px 20px",
-          borderBottom: "1px solid oklch(0.22 0.03 250)",
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          flexShrink: 0,
-        }}
-      >
-        <Network size={18} style={{ color: "oklch(0.72 0.18 200)" }} />
-        <div>
-          <div style={{ color: "oklch(0.85 0.008 250)", fontSize: 15, fontWeight: 700, fontFamily: "'Space Grotesk', sans-serif" }}>
-            Topologia do Cluster
-          </div>
-          <div style={{ color: "oklch(0.45 0.015 250)", fontSize: 10, fontFamily: "monospace" }}>
-            Grafo interativo de serviços, deployments e fluxos de tráfego
+    <div style={containerStyle}>
+      {/* ── Header ── */}
+      <div style={{
+        position: "absolute", top: 0, left: 0, right: 0, zIndex: 10,
+        background: "oklch(0.10 0.02 250 / 0.96)",
+        borderBottom: "1px solid oklch(0.18 0.04 250)",
+        padding: "10px 16px",
+        display: "flex", alignItems: "center", gap: 12,
+        backdropFilter: "blur(12px)",
+        fontFamily: "'Space Grotesk', sans-serif",
+      }}>
+        {/* Título */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginRight: 8 }}>
+          <GitBranch size={16} style={{ color: "oklch(0.65 0.15 200)" }} />
+          <div>
+            <div style={{ color: "oklch(0.88 0.02 250)", fontSize: 13, fontWeight: 700 }}>Topologia do Cluster</div>
+            <div style={{ color: "oklch(0.40 0.01 250)", fontSize: 9, fontFamily: "monospace" }}>
+              {stats.ns} ns · {stats.ing} ing · {stats.svc} svc · {stats.dep} dep · {stats.pod} pod
+            </div>
           </div>
         </div>
 
-        {/* Contadores */}
-        <div className="flex items-center gap-3 ml-4">
-          {[
-            { label: "NS",  count: counts.ns,  color: NODE_COLORS.namespace.text },
-            { label: "DEP", count: counts.dep, color: NODE_COLORS.deployment.text },
-            { label: "SVC", count: counts.svc, color: NODE_COLORS.service.text },
-            { label: "POD", count: counts.pod, color: NODE_COLORS.pod.text },
-            { label: "ING", count: counts.ing, color: NODE_COLORS.ingress.text },
-          ].map(({ label, count, color }) => (
-            <div key={label} style={{ textAlign: "center" }}>
-              <div style={{ color, fontSize: 13, fontWeight: 700, fontFamily: "monospace" }}>{count}</div>
-              <div style={{ color: "oklch(0.35 0.01 250)", fontSize: 9, fontFamily: "monospace" }}>{label}</div>
-            </div>
+        {/* Seletor de visão */}
+        <div style={{ display: "flex", gap: 4, background: "oklch(0.14 0.03 250)", borderRadius: 8, padding: 3 }}>
+          {VIEW_MODES.map(vm => (
+            <button
+              key={vm.id}
+              onClick={() => { setViewMode(vm.id); setFocusedId(null); setSelectedNode(null); }}
+              title={vm.desc}
+              style={{
+                display: "flex", alignItems: "center", gap: 5,
+                padding: "5px 12px",
+                borderRadius: 6,
+                border: "none",
+                cursor: "pointer",
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: "'Space Grotesk', sans-serif",
+                background: viewMode === vm.id ? "oklch(0.52 0.22 200 / 0.25)" : "transparent",
+                color: viewMode === vm.id ? "oklch(0.78 0.18 200)" : "oklch(0.45 0.015 250)",
+                transition: "all 0.15s",
+              }}
+            >
+              {vm.icon} {vm.label}
+            </button>
           ))}
         </div>
 
-        <div className="flex-1" />
-
         {/* Filtro de namespace */}
-        <input
-          type="text"
-          placeholder="Filtrar namespace..."
-          value={filterNs}
-          onChange={e => setFilterNs(e.target.value)}
-          style={{
-            background: "oklch(0.16 0.02 250)",
-            border: "1px solid oklch(0.28 0.04 250)",
-            borderRadius: 8,
-            padding: "5px 10px",
-            color: "oklch(0.72 0.08 250)",
-            fontSize: 11,
-            fontFamily: "monospace",
-            width: 160,
-            outline: "none",
-          }}
-        />
+        <div style={{ display: "flex", alignItems: "center", gap: 6, background: "oklch(0.14 0.03 250)", border: "1px solid oklch(0.22 0.05 250)", borderRadius: 8, padding: "5px 10px", flex: 1, maxWidth: 220 }}>
+          <Search size={12} style={{ color: "oklch(0.45 0.015 250)", flexShrink: 0 }} />
+          <input
+            value={nsFilter}
+            onChange={e => setNsFilter(e.target.value)}
+            placeholder="Filtrar namespace..."
+            style={{ background: "transparent", border: "none", outline: "none", color: "oklch(0.75 0.05 250)", fontSize: 11, fontFamily: "'Space Grotesk', sans-serif", width: "100%" }}
+          />
+          {nsFilter && (
+            <button onClick={() => setNsFilter("")} style={{ background: "none", border: "none", cursor: "pointer", color: "oklch(0.45 0.015 250)", display: "flex", padding: 0 }}>
+              <X size={11} />
+            </button>
+          )}
+        </div>
 
-        {/* Toggle pods */}
-        <button
-          onClick={() => setShowPods(p => !p)}
-          style={{
-            background: showPods ? "oklch(0.55 0.22 260 / 0.2)" : "oklch(0.16 0.02 250)",
-            border: `1px solid ${showPods ? "oklch(0.55 0.22 260 / 0.6)" : "oklch(0.28 0.04 250)"}`,
-            borderRadius: 8,
-            padding: "5px 10px",
-            color: showPods ? "oklch(0.72 0.18 200)" : "oklch(0.45 0.015 250)",
-            fontSize: 11,
-            fontFamily: "monospace",
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: 5,
-          }}
-        >
-          <Box size={11} />
-          Pods
-        </button>
+        {/* Focus mode badge */}
+        {focusedId && (
+          <button
+            onClick={() => setFocusedId(null)}
+            style={{ display: "flex", alignItems: "center", gap: 5, background: "oklch(0.85 0.25 55 / 0.15)", border: "1px solid oklch(0.85 0.25 55 / 0.5)", borderRadius: 6, padding: "4px 10px", cursor: "pointer", color: "oklch(0.85 0.25 55)", fontSize: 10, fontFamily: "monospace", fontWeight: 700 }}
+          >
+            <Eye size={11} /> FOCUS ATIVO · clique para sair
+          </button>
+        )}
 
-        {/* Refresh */}
-        <button
-          onClick={fetchTopology}
-          disabled={loading}
-          style={{
-            background: "oklch(0.16 0.02 250)",
-            border: "1px solid oklch(0.28 0.04 250)",
-            borderRadius: 8,
-            padding: "5px 8px",
-            color: "oklch(0.55 0.015 250)",
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
-        >
-          <RefreshCw size={13} style={{ animation: loading ? "spin 1s linear infinite" : "none" }} />
-        </button>
-
-        {/* Fullscreen */}
-        <button
-          onClick={() => setFullscreen(f => !f)}
-          style={{
-            background: "oklch(0.16 0.02 250)",
-            border: "1px solid oklch(0.28 0.04 250)",
-            borderRadius: 8,
-            padding: "5px 8px",
-            color: "oklch(0.55 0.015 250)",
-            cursor: "pointer",
-          }}
-        >
-          {fullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
-        </button>
-
-        {/* Fechar */}
-        <button
-          onClick={onClose}
-          style={{
-            background: "oklch(0.62 0.22 25 / 0.1)",
-            border: "1px solid oklch(0.62 0.22 25 / 0.3)",
-            borderRadius: 8,
-            padding: "5px 8px",
-            color: "oklch(0.72 0.18 25)",
-            cursor: "pointer",
-          }}
-        >
-          <X size={13} />
-        </button>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <button onClick={fetchData} title="Atualizar" style={{ background: "oklch(0.16 0.04 250)", border: "1px solid oklch(0.25 0.06 250)", borderRadius: 7, padding: "6px 10px", cursor: "pointer", color: "oklch(0.55 0.015 250)", display: "flex", alignItems: "center" }}>
+            <RefreshCw size={13} />
+          </button>
+          <button onClick={() => setIsFullscreen(f => !f)} title="Tela cheia" style={{ background: "oklch(0.16 0.04 250)", border: "1px solid oklch(0.25 0.06 250)", borderRadius: 7, padding: "6px 10px", cursor: "pointer", color: "oklch(0.55 0.015 250)", display: "flex", alignItems: "center" }}>
+            {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+          </button>
+          <button onClick={onClose} title="Fechar" style={{ background: "oklch(0.16 0.04 250)", border: "1px solid oklch(0.25 0.06 250)", borderRadius: 7, padding: "6px 10px", cursor: "pointer", color: "oklch(0.55 0.015 250)", display: "flex", alignItems: "center" }}>
+            <X size={13} />
+          </button>
+        </div>
       </div>
 
-      {/* Canvas do grafo */}
-      <div style={{ flex: 1, position: "relative" }}>
+      {/* ── Grafo ── */}
+      <div style={{ position: "absolute", inset: 0, top: 57 }}>
         {loading && nodes.length === 0 ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", flexDirection: "column", gap: 12 }}>
-            <RefreshCw size={24} style={{ color: "oklch(0.72 0.18 200)", animation: "spin 1s linear infinite" }} />
-            <span style={{ color: "oklch(0.45 0.015 250)", fontSize: 13, fontFamily: "monospace" }}>
-              Carregando topologia do cluster...
-            </span>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "oklch(0.45 0.015 250)", fontFamily: "monospace", fontSize: 13, gap: 10 }}>
+            <RefreshCw size={16} style={{ animation: "spin 1s linear infinite" }} /> Carregando topologia...
           </div>
         ) : error ? (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", flexDirection: "column", gap: 12 }}>
-            <AlertTriangle size={24} style={{ color: "oklch(0.72 0.18 25)" }} />
-            <span style={{ color: "oklch(0.72 0.18 25)", fontSize: 13, fontFamily: "monospace" }}>{error}</span>
-            <button
-              onClick={fetchTopology}
-              style={{ background: "oklch(0.72 0.18 25 / 0.15)", border: "1px solid oklch(0.72 0.18 25 / 0.4)", borderRadius: 8, padding: "6px 14px", color: "oklch(0.72 0.18 25)", fontSize: 12, cursor: "pointer" }}
-            >
-              Tentar novamente
-            </button>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 12 }}>
+            <AlertTriangle size={32} style={{ color: "oklch(0.72 0.18 25)" }} />
+            <div style={{ color: "oklch(0.72 0.18 25)", fontFamily: "monospace", fontSize: 12 }}>{error}</div>
+            <button onClick={fetchData} style={{ background: "oklch(0.52 0.22 200 / 0.2)", border: "1px solid oklch(0.52 0.22 200)", borderRadius: 8, padding: "8px 16px", cursor: "pointer", color: "oklch(0.78 0.18 200)", fontSize: 12, fontFamily: "monospace" }}>Tentar novamente</button>
           </div>
         ) : (
           <ReactFlow
@@ -761,87 +767,50 @@ export function TopologyGraph({ onClose, apiUrl = "", isSRE = false, selectedNam
             edges={edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
-            onNodeClick={onNodeClick}
+            onNodeClick={handleNodeClick}
             nodeTypes={nodeTypes}
             fitView
-            fitViewOptions={{ padding: 0.2 }}
-            minZoom={0.2}
+            fitViewOptions={{ padding: 0.12 }}
+            minZoom={0.1}
             maxZoom={2}
-            style={{ background: "oklch(0.11 0.015 250)" }}
+            style={{ background: "transparent" }}
             proOptions={{ hideAttribution: true }}
           >
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={24}
-              size={1}
-              color="oklch(0.25 0.03 250)"
-            />
-            <Controls
-              style={{
-                background: "oklch(0.16 0.02 250)",
-                border: "1px solid oklch(0.28 0.04 250)",
-                borderRadius: 8,
-              }}
-            />
+            <Background color="oklch(0.22 0.04 250)" gap={28} size={1} variant={BackgroundVariant.Dots} />
+            <Controls style={{ background: "oklch(0.12 0.02 250)", border: "1px solid oklch(0.22 0.05 250)", borderRadius: 8 }} />
             <MiniMap
-              style={{
-                background: "oklch(0.13 0.018 250)",
-                border: "1px solid oklch(0.22 0.03 250)",
-                borderRadius: 8,
-              }}
+              style={{ background: "oklch(0.10 0.02 250)", border: "1px solid oklch(0.22 0.05 250)", borderRadius: 8 }}
               nodeColor={(n) => {
-                const t = n.type as keyof typeof NODE_COLORS;
-                return NODE_COLORS[t]?.border || "oklch(0.35 0.05 250)";
+                const t = n.type as string;
+                return t === "ingress" ? C.ingress.border : t === "service" ? C.service.border : t === "deployment" ? C.deployment.border : t === "pod" ? C.pod.border : "oklch(0.25 0.05 250)";
               }}
-              maskColor="oklch(0.11 0.015 250 / 0.7)"
+              maskColor="oklch(0.08 0.02 250 / 0.7)"
             />
 
             {/* Legenda */}
             <Panel position="bottom-left">
-              <div
-                style={{
-                  background: "oklch(0.13 0.018 250)",
-                  border: "1px solid oklch(0.22 0.03 250)",
-                  borderRadius: 10,
-                  padding: "10px 14px",
-                  display: "flex",
-                  gap: 16,
-                  alignItems: "center",
-                }}
-              >
-                {[
-                  { label: "Ingress",    color: NODE_COLORS.ingress.border },
-                  { label: "Service",    color: NODE_COLORS.service.border },
-                  { label: "Deployment", color: NODE_COLORS.deployment.border },
-                  { label: "Pod",        color: NODE_COLORS.pod.border },
-                ].map(({ label, color }) => (
-                  <div key={label} className="flex items-center gap-1.5">
-                    <div style={{ width: 10, height: 10, borderRadius: 2, background: color }} />
-                    <span style={{ color: "oklch(0.55 0.015 250)", fontSize: 10, fontFamily: "monospace" }}>{label}</span>
-                  </div>
-                ))}
-                {lastUpdated && (
-                  <span style={{ color: "oklch(0.35 0.01 250)", fontSize: 9, fontFamily: "monospace", marginLeft: 8 }}>
-                    atualizado {lastUpdated.toLocaleTimeString("pt-BR")}
-                  </span>
-                )}
-              </div>
+              <Legend viewMode={viewMode} />
             </Panel>
           </ReactFlow>
         )}
-
-        {/* Painel de detalhes do nó selecionado */}
-        {selectedNode && (
-          <NodeDetailPanel node={selectedNode} onClose={() => setSelectedNode(null)} />
-        )}
       </div>
+
+      {/* ── Painel de detalhes ── */}
+      {selectedNode && (
+        <NodeDetailPanel
+          node={selectedNode}
+          onClose={() => setSelectedNode(null)}
+          onFocus={handleFocus}
+        />
+      )}
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .react-flow__controls button { background: oklch(0.16 0.02 250) !important; border-color: oklch(0.28 0.04 250) !important; color: oklch(0.55 0.015 250) !important; }
-        .react-flow__controls button:hover { background: oklch(0.22 0.03 250) !important; }
-        .react-flow__controls button svg { fill: oklch(0.55 0.015 250) !important; }
+        .react-flow__node { cursor: pointer; }
+        .react-flow__controls-button { background: oklch(0.14 0.03 250) !important; border-color: oklch(0.22 0.05 250) !important; color: oklch(0.55 0.015 250) !important; }
+        .react-flow__controls-button:hover { background: oklch(0.20 0.04 250) !important; }
+        .react-flow__edge-path { transition: opacity 0.25s; }
       `}</style>
-    </motion.div>
+    </div>
   );
 }

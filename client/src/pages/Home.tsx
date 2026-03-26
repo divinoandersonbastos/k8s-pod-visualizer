@@ -33,7 +33,7 @@ import UserManagementPanel from "@/components/UserManagementPanel";
 import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
 import { AppAccessPanel } from "@/components/AppAccessPanel";
-import { TopologyGraph } from "@/components/TopologyGraph";
+import TopologyGraph from "@/components/TopologyGraph";
 import { SecurityPanel } from "@/components/SecurityPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";

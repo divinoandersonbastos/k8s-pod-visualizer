@@ -35,7 +35,6 @@ interface ClusterHeaderProps {
   onShowTrace?: () => void;
   onShowAppAccess?: () => void;
   onShowTopology?: () => void;
-  onShowNetworkFlow?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
   isAdmin?: boolean;
@@ -67,7 +66,6 @@ export function ClusterHeader({
   onShowTrace,
   onShowAppAccess,
   onShowTopology,
-  onShowNetworkFlow,
   onLogout,
   isSRE,
   isAdmin,
@@ -458,17 +456,6 @@ export function ClusterHeader({
               <circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/>
               <line x1="12" y1="8" x2="5" y2="16"/><line x1="12" y1="8" x2="19" y2="16"/>
             </svg>
-          </button>
-        )}
-
-        {onShowNetworkFlow && (
-          <button
-            onClick={onShowNetworkFlow}
-            className="p-2 rounded-lg transition-all hover:bg-white/5"
-            title="Mapa de Fluxos de Rede (eBPF)"
-            style={{ color: "oklch(0.65 0.22 145)" }}
-          >
-            <Activity size={14} />
           </button>
         )}
 

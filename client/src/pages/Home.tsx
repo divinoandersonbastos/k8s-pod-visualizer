@@ -143,7 +143,11 @@ export default function Home() {
     const fetchNamespaces = async () => {
       try {
         const base = apiUrl || "";
-        const r = await fetch(`${base}/api/namespaces`, { credentials: "include" });
+        const t = localStorage.getItem("k8s-viz-token");
+        const r = await fetch(`${base}/api/namespaces`, {
+          credentials: "include",
+          headers: t ? { Authorization: `Bearer ${t}` } : {},
+        });
         if (r.ok) {
           const data = await r.json();
           const names = (data.items ?? []).map((ns: { name: string }) => ns.name).sort();

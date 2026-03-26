@@ -924,7 +924,7 @@ const server = http.createServer(async (req, res) => {
         const user = req.user;
         let pods = await getPodsWithMetrics();
         // Filtrar por namespace para usuários Squad
-        if (user.role !== "sre") {
+        if (user.role !== "sre" && user.role !== "admin") {
           const allowedNs = Array.isArray(user.namespaces) ? user.namespaces : [];
           if (allowedNs.length > 0) {
             pods = pods.filter((p) => allowedNs.includes(p.namespace));
@@ -957,7 +957,7 @@ const server = http.createServer(async (req, res) => {
           creationTimestamp: ns.metadata.creationTimestamp,
         }));
         // Filtra por namespaces permitidos para usuários Squad
-        const filtered = user.role === "sre"
+        const filtered = ["sre","admin"].includes(user.role)
           ? allNs
           : allNs.filter((ns) => {
               const allowed = Array.isArray(user.namespaces) ? user.namespaces : [];
@@ -1107,7 +1107,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       // SRE: acesso total | Squad: apenas nos seus namespaces
       const user = req.user;
-      if (user.role !== "sre") {
+      if (user.role !== "sre" && user.role !== "admin") {
         const allowedNs = Array.isArray(user.namespaces) ? user.namespaces : [];
         if (!allowedNs.includes(namespace)) {
           res.writeHead(403, { "Content-Type": "application/json" });
@@ -1444,7 +1444,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const nsParam    = url.searchParams.get("namespace") || null;
         const user       = req.user;
-        const allowedNs  = (user.role !== "sre" && Array.isArray(user.namespaces) && user.namespaces.length > 0)
+        const allowedNs  = (user.role !== "sre" && user.role !== "admin" && Array.isArray(user.namespaces) && user.namespaces.length > 0)
           ? user.namespaces
           : null; // null = sem restrição (SRE)
         // Se Squad filtrou por namespace específico, valida que é permitido
@@ -1526,7 +1526,7 @@ const server = http.createServer(async (req, res) => {
           const eventType = url.searchParams.get("eventType") || null;
           const nsParam   = url.searchParams.get("namespace") || null;
           const user      = req.user;
-          const allowedNs = (user.role !== "sre" && Array.isArray(user.namespaces) && user.namespaces.length > 0)
+          const allowedNs = (user.role !== "sre" && user.role !== "admin" && Array.isArray(user.namespaces) && user.namespaces.length > 0)
             ? user.namespaces : null;
           // Valida namespace específico solicitado
           if (allowedNs && nsParam && !allowedNs.includes(nsParam)) {
@@ -1637,7 +1637,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const allowedNs = ["sre","admin"].includes(user.role) ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
         let pods = podsData.items || [];
@@ -1676,7 +1676,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const allowedNs = ["sre","admin"].includes(user.role) ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
         let pods = podsData.items || [];
@@ -1758,7 +1758,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const allowedNs = ["sre","admin"].includes(user.role) ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         // Para 1 namespace usa fieldSelector (eficiente); para múltiplos busca tudo e filtra
         const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const [podsData, secretsData] = await Promise.all([
@@ -1801,7 +1801,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const allowedNs = ["sre","admin"].includes(user.role) ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const [podsData, npData] = await Promise.all([
         k8sGet(`/api/v1/pods${nsFilter}`),
@@ -1843,7 +1843,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const allowedNs = ["sre","admin"].includes(user.role) ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         const nsFilter = allowedNs && allowedNs.length === 1 ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}` : "";
         const podsData = await k8sGet(`/api/v1/pods${nsFilter}`);
         let pods = podsData.items || [];
@@ -1904,7 +1904,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const allowedNs = ["sre","admin"].includes(user.role) ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         const nsFilter = allowedNs && allowedNs.length === 1
           ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}`
           : "";
@@ -2007,7 +2007,7 @@ const server = http.createServer(async (req, res) => {
     requireAuth(req, res, async () => {
       try {
         const user = req.user;
-        const allowedNs = user.role === "sre" ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
+        const allowedNs = ["sre","admin"].includes(user.role) ? null : (Array.isArray(user.namespaces) ? user.namespaces : []);
         const nsFilter = allowedNs && allowedNs.length === 1
           ? `?fieldSelector=metadata.namespace%3D${encodeURIComponent(allowedNs[0])}`
           : "";

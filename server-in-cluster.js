@@ -2847,7 +2847,8 @@ server.listen(PORT, () => {
                             : upper.includes('WARN')  ? 'WARN'
                             : upper.includes('DEBUG') ? 'DEBUG'
                             : 'INFO';
-              return { pod_name: podName, namespace, container, log_ts: logTs, log_line: logLine.slice(0, 2000), log_level: level };
+              // savePodLogsBatch espera camelCase: podName, logLine, logLevel, logTs
+              return { podName, namespace, container, logTs, logLine: logLine.slice(0, 2000), logLevel: level };
             });
             if (entries.length > 0) savePodLogsBatch(entries);
           } catch { /* silencioso por pod */ }

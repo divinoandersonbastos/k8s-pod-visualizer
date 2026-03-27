@@ -224,10 +224,17 @@ export function PodLogsTab({
       const base = apiUrl || "";
       let url = `${base}/api/logs-history/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}?limit=500`;
       if (historyLevel !== "all") url += `&level=${historyLevel.toUpperCase()}`;
-      const res = await fetch(url, { credentials: "include" });
+      // Envia token JWT via header Authorization (backend não aceita cookie)
+      const token = typeof localStorage !== "undefined" ? localStorage.getItem("k8s-viz-token") : null;
+      const headers: Record<string, string> = { Accept: "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(url, { headers });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      const parsed = (data.logs || []).map((row: { log_line: string; log_ts: string; log_level: string }, i: number) => ({
+      // Backend retorna array direto (rows), não { logs: [] }
+      const rows: { log_line: string; log_ts: string; log_level: string }[] =
+        Array.isArray(data) ? data : (data.logs || []);
+      const parsed = rows.map((row, i: number) => ({
         raw: `${row.log_ts} ${row.log_line}`,
         timestamp: row.log_ts,
         level: (row.log_level?.toLowerCase() || "plain") as LogLevel,

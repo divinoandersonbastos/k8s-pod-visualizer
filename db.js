@@ -699,18 +699,45 @@ export function pruneOldCapacitySnapshots(days = 3) {
   return result.changes;
 }
 
-/** Estatísticas gerais do banco */
+/** Estatísticas gerais do banco — inclui contagens, timestamps e diagnóstico de coleta */
 export function getDbStats() {
+  const logsByLevel = db.prepare(
+    "SELECT log_level, COUNT(*) AS c FROM pod_logs_history GROUP BY log_level"
+  ).all().reduce((acc, r) => { acc[r.log_level] = r.c; return acc; }, {});
+
   return {
+    // ── Contagens por tabela ────────────────────────────────────────────────────
+    podLogsHistory:     db.prepare("SELECT COUNT(*) AS c FROM pod_logs_history").get().c,
     podStatusEvents:    db.prepare("SELECT COUNT(*) AS c FROM pod_status_events").get().c,
     podMetricsHistory:  db.prepare("SELECT COUNT(*) AS c FROM pod_metrics_history").get().c,
     nodeEvents:         db.prepare("SELECT COUNT(*) AS c FROM node_events").get().c,
     nodeTransitions:    db.prepare("SELECT COUNT(*) AS c FROM node_transitions").get().c,
     deploymentEvents:   db.prepare("SELECT COUNT(*) AS c FROM deployment_events").get().c,
     capacitySnapshots:  db.prepare("SELECT COUNT(*) AS c FROM capacity_snapshots").get().c,
-    dbPath:             DB_PATH,
-    dbSizeBytes:        fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,
-    schemaVersion:      db.prepare("SELECT MAX(version) AS v FROM schema_version").get().v,
+    podRestartEvents:   db.prepare("SELECT COUNT(*) AS c FROM pod_restart_events").get().c,
+    // ── Timestamps da última entrada (confirma que a coleta está ativa) ────────
+    lastLogCapturedAt:      db.prepare("SELECT MAX(captured_at) AS t FROM pod_logs_history").get()?.t || null,
+    oldestLogCapturedAt:    db.prepare("SELECT MIN(captured_at) AS t FROM pod_logs_history").get()?.t || null,
+    lastMetricRecordedAt:   db.prepare("SELECT MAX(recorded_at) AS t FROM pod_metrics_history").get()?.t || null,
+    lastStatusEventAt:      db.prepare("SELECT MAX(recorded_at) AS t FROM pod_status_events").get()?.t || null,
+    lastCapacitySnapshotAt: db.prepare("SELECT MAX(recorded_at) AS t FROM capacity_snapshots").get()?.t || null,
+    lastNodeEventAt:        db.prepare("SELECT MAX(recorded_at) AS t FROM node_events").get()?.t || null,
+    lastDeploymentEventAt:  db.prepare("SELECT MAX(recorded_at) AS t FROM deployment_events").get()?.t || null,
+    // ── Distribuição de logs por nível ─────────────────────────────────────────
+    logsByLevel,
+    // ── Metadados do banco ─────────────────────────────────────────────────────
+    dbPath:        DB_PATH,
+    dbSizeBytes:   fs.existsSync(DB_PATH) ? fs.statSync(DB_PATH).size : 0,
+    schemaVersion: db.prepare("SELECT MAX(version) AS v FROM schema_version").get().v,
+    // ── Descrição dos jobs de coleta automática ─────────────────────────────
+    captureJobs: {
+      logsCapture:      { interval: "2min",  scope: "todos namespaces (todos os pods, max 20/ciclo, 2 containers)" },
+      capacitySnapshot: { interval: "5min",  scope: "todos os node-pools" },
+      podMetrics:       { interval: "push",  scope: "frontend envia via POST /api/metrics/pods" },
+      podStatusEvents:  { interval: "push",  scope: "frontend envia via POST /api/events/pods" },
+      nodeEvents:       { interval: "push",  scope: "frontend envia via POST /api/events/nodes" },
+      deploymentEvents: { interval: "push",  scope: "frontend envia via POST /api/events/deployments" },
+    },
   };
 }
 

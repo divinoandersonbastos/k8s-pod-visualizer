@@ -7,7 +7,7 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown, Network } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown, Network, Database } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
@@ -35,6 +35,7 @@ interface ClusterHeaderProps {
   onShowTrace?: () => void;
   onShowAppAccess?: () => void;
   onShowTopology?: () => void;
+  onShowDbStatus?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
   isAdmin?: boolean;
@@ -66,6 +67,7 @@ export function ClusterHeader({
   onShowTrace,
   onShowAppAccess,
   onShowTopology,
+  onShowDbStatus,
   onLogout,
   isSRE,
   isAdmin,
@@ -481,6 +483,16 @@ export function ClusterHeader({
           </button>
         )}
 
+        {isAdmin && onShowDbStatus && (
+          <button
+            onClick={onShowDbStatus}
+            className="p-2 rounded-lg transition-all hover:bg-white/5"
+            title="Diagnóstico do Banco de Dados (Admin)"
+            style={{ color: "oklch(0.65 0.20 180)" }}
+          >
+            <Database size={14} />
+          </button>
+        )}
         {(isSRE || isAdmin) && onShowUserManagement && (
           <button
             onClick={onShowUserManagement}

@@ -1239,16 +1239,40 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── /api/db/stats ────────────────────────────────────────────────────────────
-  if (url.pathname === "/api/db/stats" && req.method === "GET") {
-    try {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(getDbStats()));
-    } catch (err) {
-      res.writeHead(500, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: err.message }));
-    }
-    return;
+  // ── /api/db/stats (alias: /api/db/status) — somente Admin ─────────────────
+  if ((url.pathname === "/api/db/stats" || url.pathname === "/api/db/status") && req.method === "GET") {
+    return requireAdmin(req, res, () => {
+      try {
+        const stats = getDbStats();
+        // Adiciona diagnóstico de servidor
+        const response = {
+          ...stats,
+          serverUptimeSeconds: Math.floor(process.uptime()),
+          serverTime: new Date().toISOString(),
+          nodeVersion: process.version,
+          captureJobsActive: {
+            logsCapture:      process.uptime() > 60,
+            capacitySnapshot: process.uptime() > 30,
+          },
+          healthAlerts: [
+            ...(stats.podLogsHistory === 0 && process.uptime() > 180
+              ? [{ level: 'WARN', msg: 'Nenhum log capturado após 3min de uptime. Verifique permissões RBAC (list pods, get logs).' }]
+              : []),
+            ...(stats.capacitySnapshots === 0 && process.uptime() > 60
+              ? [{ level: 'WARN', msg: 'Nenhum snapshot de capacidade. Verifique permissões RBAC (list nodes, list pods).' }]
+              : []),
+            ...(stats.dbSizeBytes === 0
+              ? [{ level: 'ERROR', msg: 'Banco de dados vazio ou não encontrado em: ' + stats.dbPath }]
+              : []),
+          ],
+        };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(response));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
   }
 
   // ── /api/db/clear ────────────────────────────────────────────────────────
@@ -2787,16 +2811,23 @@ server.listen(PORT, () => {
   setInterval(runCapacitySnapshot, 5 * 60_000);
   console.log("[capacity] Job de snapshot iniciado (intervalo: 5min)");
 
-  // ── Job de captura automática de logs: a cada 2 minutos ─────────────────────
+  // ── Job de captura automática de logs: a cada 2 minutos ─────────────────────────────
   const captureLogsForAllPods = async () => {
     try {
-      const token = getToken();
-      const ca    = getCA();
-      const ns    = getSANamespace();
-      // Lista todos os pods do namespace
-      const result = await k8sRequest(`/api/v1/namespaces/${ns}/pods`);
-      if (result.status !== 200 || !result.body?.items) return;
-      const pods = result.body.items.slice(0, 20); // Limita a 20 pods por ciclo
+      // Tenta buscar pods de TODOS os namespaces (requer ClusterRole com list pods)
+      let allPods = [];
+      const clusterResult = await k8sRequest(`/api/v1/pods?fieldSelector=status.phase%3DRunning&limit=200`);
+      if (clusterResult.status === 200 && clusterResult.body?.items?.length > 0) {
+        allPods = clusterResult.body.items;
+      } else {
+        // Fallback: busca apenas no namespace do SA
+        const ns = getSANamespace();
+        console.warn(`[logs-capture] Sem acesso cluster-scoped (HTTP ${clusterResult.status}), usando namespace: ${ns}`);
+        const nsResult = await k8sRequest(`/api/v1/namespaces/${ns}/pods`);
+        if (nsResult.status !== 200 || !nsResult.body?.items) return;
+        allPods = nsResult.body.items.filter(p => p.status?.phase === 'Running');
+      }
+      const pods = allPods.slice(0, 30); // Limita a 30 pods por ciclo
       for (const pod of pods) {
         const podName   = pod.metadata.name;
         const namespace = pod.metadata.namespace;

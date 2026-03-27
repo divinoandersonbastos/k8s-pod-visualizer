@@ -34,6 +34,7 @@ import ResourceEditorPanel from "@/components/ResourceEditorPanel";
 import TracePanel from "@/components/TracePanel";
 import { AppAccessPanel } from "@/components/AppAccessPanel";
 import TopologyGraph from "@/components/TopologyGraph";
+import { DbStatusPanel } from "@/components/DbStatusPanel";
 import { SecurityPanel } from "@/components/SecurityPanel";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
@@ -63,6 +64,7 @@ export default function Home() {
   const [showSecurity, setShowSecurity] = useState(false);
   const [showAppAccess, setShowAppAccess] = useState(false);
   const [showTopology, setShowTopology] = useState(false);
+  const [showDbStatus, setShowDbStatus] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
   const { user, isSRE, isAdmin, logout } = useAuth();
@@ -325,6 +327,7 @@ export default function Home() {
         onShowTrace={() => setShowTrace(true)}
         onShowAppAccess={() => setShowAppAccess(true)}
         onShowTopology={() => setShowTopology(true)}
+        onShowDbStatus={() => setShowDbStatus(true)}
         onLogout={logout}
         isSRE={isSRE}
         isAdmin={isAdmin}
@@ -736,6 +739,11 @@ export default function Home() {
           isSRE={isSRE}
           selectedNamespace={selectedNamespace}
         />
+      )}
+
+      {/* Painel de Diagnóstico do Banco de Dados */}
+      {showDbStatus && isAdmin && (
+        <DbStatusPanel onClose={() => setShowDbStatus(false)} />
       )}
       {/* Modal de configuração */}
       <ConfigModal

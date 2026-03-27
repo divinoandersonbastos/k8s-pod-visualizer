@@ -105,9 +105,13 @@ export function DbStatusPanel({ onClose }: DbStatusPanelProps) {
     setLoading(true);
     setError(null);
     try {
-      const token = localStorage.getItem("k8s_viz_token");
+      // Usa a mesma chave do AuthContext e do usePodData
+      const token = localStorage.getItem("k8s-viz-token");
       const res = await fetch("/api/db/status", {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        headers: {
+          Accept: "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
       const data = await res.json();

@@ -9,7 +9,8 @@ import {
   RotateCcw, Layers, Minus, Plus, Save, Eye, EyeOff, Search,
   GitCompare, Calendar, ChevronRight, Package, Settings,
   FileText, Zap, Info, Clock, Tag, Box, Cpu,
-  Network, Shield, Database, ArrowRight, Copy, Lock
+  Network, Shield, Database, ArrowRight, Copy, Lock,
+  Pencil, Trash2, Check, SlidersHorizontal
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -19,6 +20,8 @@ type ResourceKind = "deployment" | "statefulset" | "daemonset" | "configmap" | "
 type ActiveTab = "summary" | "yaml" | "events" | "diff";
 
 interface ResourceItem { name: string; namespace: string; labels: Record<string, string>; }
+interface EnvVar { name: string; value: string; }
+interface ContainerInfo { name: string; image: string; envs: EnvVar[]; }
 
 interface ResourceSummary {
   name: string; namespace: string; kind: ResourceKind;
@@ -37,6 +40,8 @@ interface ResourceSummary {
   // configmap/secret
   dataKeys?: string[];
   dataValues?: Record<string, string>; // valores reais (base64 decoded para secret)
+  // containers com envs (deployment/sts/ds)
+  containers?: ContainerInfo[];
 }
 
 interface K8sEvent {
@@ -98,9 +103,14 @@ function extractSummary(data: Record<string, unknown>, kind: ResourceKind, name:
     uid: meta.uid as string,
   };
   if (kind === "deployment" || kind === "statefulset" || kind === "daemonset") {
-    const containers = ((spec.template as Record<string, unknown>)?.spec as Record<string, unknown>)?.containers as { name: string; image: string }[] || [];
+    const containers = ((spec.template as Record<string, unknown>)?.spec as Record<string, unknown>)?.containers as { name: string; image: string; env?: { name: string; value?: string; valueFrom?: unknown }[] }[] || [];
     base.images = containers.map(c => c.image);
     base.image = containers[0]?.image;
+    base.containers = containers.map(c => ({
+      name: c.name,
+      image: c.image || "",
+      envs: (c.env || []).filter(e => e.value !== undefined).map(e => ({ name: e.name, value: e.value! })),
+    }));
     base.replicas = spec.replicas as number || 0;
     base.readyReplicas = (status.readyReplicas as number) || 0;
     base.strategy = (spec.strategy as Record<string, unknown>)?.type as string || (spec.updateStrategy as Record<string, unknown>)?.type as string;
@@ -216,6 +226,12 @@ export default function ResourceEditorPanel({
   const copyToClipboard = useCallback((text: string) => {
     navigator.clipboard.writeText(text).catch(() => {});
   }, []);
+  // ── Edição de Imagem inline (estados) ────────────────────────────────────────
+  const [editingImage, setEditingImage] = useState<Record<string, string>>({});
+  const [imageEditOpen, setImageEditOpen] = useState<string | null>(null);
+  // ── Editor de Envs (estados) ──────────────────────────────────────────────────
+  const [envEditOpen, setEnvEditOpen] = useState<string | null>(null);
+  const [editingEnvs, setEditingEnvs] = useState<Record<string, EnvVar[]>>({});
 
   // ── Busca namespaces ─────────────────────────────────────────────────────────
   // O endpoint retorna { items: [...], timestamp } — igual ao Home.tsx
@@ -231,11 +247,81 @@ export default function ResourceEditorPanel({
   }, [apiBase]);
 
   // ── Helper de headers autenticados ────────────────────────────────────────────────
-  const getAuthHeaders = useCallback((): Record<string, string> => {
+   const getAuthHeaders = useCallback((): Record<string, string> => {
     const t = localStorage.getItem("k8s-viz-token");
     return t ? { Authorization: `Bearer ${t}` } : {};
   }, []);
-
+  // ── Handler: atualizar imagem de container ────────────────────────────────────
+  const handleUpdateImage = useCallback(async (containerName: string) => {
+    const newImage = editingImage[containerName];
+    if (!newImage || !summary) return;
+    setActionLoading(`img-${containerName}`);
+    setError(""); setSuccess("");
+    try {
+      const res = await fetch(`${apiBase}/api/resources/update-image-v2`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ namespace, name, kind, container: containerName, image: newImage }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erro ao atualizar imagem");
+      setSuccess(`Imagem de "${containerName}" atualizada. Pods sendo recriados.`);
+      setSummary(s => s ? { ...s,
+        images: s.images?.map((_img, i) => s.containers?.[i]?.name === containerName ? newImage : _img),
+        containers: s.containers?.map(c => c.name === containerName ? { ...c, image: newImage } : c),
+      } : s);
+      setImageEditOpen(null);
+      setTimeout(() => setSuccess(""), 5000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Erro ao atualizar imagem");
+    } finally { setActionLoading(null); }
+  }, [editingImage, summary, namespace, name, kind, apiBase, getAuthHeaders]);
+  // ── Handlers: editor de envs ─────────────────────────────────────────────────────
+  const openEnvEditor = useCallback((containerName: string, envs: EnvVar[]) => {
+    setEditingEnvs(prev => ({ ...prev, [containerName]: [...envs.map(e => ({ ...e }))] }));
+    setEnvEditOpen(containerName);
+  }, []);
+  const handleEnvChange = useCallback((containerName: string, idx: number, field: "name" | "value", val: string) => {
+    setEditingEnvs(prev => {
+      const arr = [...(prev[containerName] || [])];
+      arr[idx] = { ...arr[idx], [field]: val };
+      return { ...prev, [containerName]: arr };
+    });
+  }, []);
+  const handleEnvAdd = useCallback((containerName: string) => {
+    setEditingEnvs(prev => ({ ...prev, [containerName]: [...(prev[containerName] || []), { name: "", value: "" }] }));
+  }, []);
+  const handleEnvRemove = useCallback((containerName: string, idx: number) => {
+    setEditingEnvs(prev => {
+      const arr = [...(prev[containerName] || [])];
+      arr.splice(idx, 1);
+      return { ...prev, [containerName]: arr };
+    });
+  }, []);
+  const handleSaveEnvs = useCallback(async (containerName: string) => {
+    const envs = editingEnvs[containerName] || [];
+    const valid = envs.filter(e => e.name.trim());
+    if (!summary) return;
+    setActionLoading(`env-${containerName}`);
+    setError(""); setSuccess("");
+    try {
+      const res = await fetch(`${apiBase}/api/resources/update-env`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ namespace, name, kind, container: containerName, envs: valid }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erro ao salvar envs");
+      setSuccess(`Envs de "${containerName}" atualizadas (${data.envCount} variáveis). Pods sendo recriados.`);
+      setSummary(s => s ? { ...s,
+        containers: s.containers?.map(c => c.name === containerName ? { ...c, envs: valid } : c),
+      } : s);
+      setEnvEditOpen(null);
+      setTimeout(() => setSuccess(""), 5000);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Erro ao salvar envs");
+    } finally { setActionLoading(null); }
+  }, [editingEnvs, summary, namespace, name, kind, apiBase, getAuthHeaders]);
   // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────
   useEffect(() => {
     if (!namespace) { setResourceList([]); return; }
@@ -761,16 +847,117 @@ export default function ResourceEditorPanel({
               </div>
             )}
 
-            {/* Imagens */}
-            {summary.images && summary.images.length > 0 && (
+            {/* Containers: Imagens + Edição inline + Envs */}
+            {summary.containers && summary.containers.length > 0 && (kind === "deployment" || kind === "statefulset" || kind === "daemonset") && (
               <div className="rounded-xl p-4" style={{ background: C.bgCard, border: `1px solid ${C.border}` }}>
-                <h3 className="text-xs font-bold uppercase mb-2" style={{ color: C.accent, letterSpacing: "0.08em" }}>
-                  <Box size={11} className="inline mr-1" />Imagens
+                <h3 className="text-xs font-bold uppercase mb-3" style={{ color: C.accent, letterSpacing: "0.08em" }}>
+                  <Box size={11} className="inline mr-1" />Containers
                 </h3>
-                <div className="space-y-1">
-                  {summary.images.map((img, i) => (
-                    <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg" style={{ background: C.bgInput, border: `1px solid ${C.borderSub}` }}>
-                      <span className="text-xs font-mono break-all flex-1" style={{ color: "oklch(0.72 0.12 200)" }}>{img}</span>
+                <div className="space-y-3">
+                  {summary.containers.map((container) => (
+                    <div key={container.name} className="rounded-lg p-3" style={{ background: C.bgInput, border: `1px solid ${C.borderSub}` }}>
+                      {/* Header do container */}
+                      <div className="flex items-center gap-2 mb-2">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded" style={{ background: `${C.accent}20`, color: C.accent }}>{container.name}</span>
+                        <span className="text-xs" style={{ color: C.textMuted }}>{container.envs.length} envs</span>
+                      </div>
+                      {/* Imagem atual */}
+                      {imageEditOpen === container.name ? (
+                        <div className="flex items-center gap-2 mb-2">
+                          <input
+                            autoFocus
+                            className="flex-1 text-xs font-mono px-2 py-1.5 rounded-lg outline-none"
+                            style={{ background: C.bgCard, border: `1px solid ${C.accent}`, color: C.text }}
+                            value={editingImage[container.name] ?? container.image}
+                            onChange={e => setEditingImage(prev => ({ ...prev, [container.name]: e.target.value }))}
+                            onKeyDown={e => { if (e.key === "Enter") handleUpdateImage(container.name); if (e.key === "Escape") setImageEditOpen(null); }}
+                            placeholder="registry/image:tag"
+                          />
+                          <button
+                            onClick={() => handleUpdateImage(container.name)}
+                            disabled={actionLoading === `img-${container.name}`}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold"
+                            style={{ background: `${C.accent}20`, color: C.accent, border: `1px solid ${C.accent}40` }}
+                          >
+                            {actionLoading === `img-${container.name}` ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                            Aplicar
+                          </button>
+                          <button onClick={() => setImageEditOpen(null)} className="px-2 py-1.5 rounded-lg text-xs" style={{ color: C.textMuted }}>
+                            <X size={11} />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-mono break-all flex-1" style={{ color: "oklch(0.72 0.12 200)" }}>{container.image}</span>
+                          <button
+                            onClick={() => { setEditingImage(prev => ({ ...prev, [container.name]: container.image })); setImageEditOpen(container.name); }}
+                            className="flex-shrink-0 flex items-center gap-1 px-2 py-1 rounded text-xs"
+                            style={{ background: `${C.accent}10`, color: C.accent, border: `1px solid ${C.accent}25` }}
+                          >
+                            <Pencil size={10} /> Editar imagem
+                          </button>
+                        </div>
+                      )}
+                      {/* Botão Editar Envs */}
+                      {envEditOpen === container.name ? (
+                        <div className="mt-2">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-semibold" style={{ color: C.textMuted }}>Variáveis de Ambiente</span>
+                            <button onClick={() => handleEnvAdd(container.name)} className="flex items-center gap-1 text-xs px-2 py-0.5 rounded" style={{ background: `${C.accent}15`, color: C.accent }}>
+                              <Plus size={10} /> Adicionar
+                            </button>
+                          </div>
+                          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                            {(editingEnvs[container.name] || []).map((env, idx) => (
+                              <div key={idx} className="flex items-center gap-1.5">
+                                <input
+                                  className="w-36 text-xs font-mono px-2 py-1 rounded outline-none"
+                                  style={{ background: C.bgCard, border: `1px solid ${C.borderSub}`, color: C.text }}
+                                  placeholder="NOME"
+                                  value={env.name}
+                                  onChange={e => handleEnvChange(container.name, idx, "name", e.target.value)}
+                                />
+                                <span className="text-xs" style={{ color: C.textMuted }}>=</span>
+                                <input
+                                  className="flex-1 text-xs font-mono px-2 py-1 rounded outline-none"
+                                  style={{ background: C.bgCard, border: `1px solid ${C.borderSub}`, color: C.text }}
+                                  placeholder="valor"
+                                  value={env.value}
+                                  onChange={e => handleEnvChange(container.name, idx, "value", e.target.value)}
+                                />
+                                <button onClick={() => handleEnvRemove(container.name, idx)} className="p-1 rounded" style={{ color: "oklch(0.65 0.20 25)" }}>
+                                  <Trash2 size={11} />
+                                </button>
+                              </div>
+                            ))}
+                            {(editingEnvs[container.name] || []).length === 0 && (
+                              <p className="text-xs text-center py-2" style={{ color: C.textMuted }}>Nenhuma variável. Clique em Adicionar.</p>
+                            )}
+                          </div>
+                          <div className="flex gap-2 mt-2">
+                            <button
+                              onClick={() => handleSaveEnvs(container.name)}
+                              disabled={actionLoading === `env-${container.name}`}
+                              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold"
+                              style={{ background: `${C.accent}20`, color: C.accent, border: `1px solid ${C.accent}40` }}
+                            >
+                              {actionLoading === `env-${container.name}` ? <Loader2 size={11} className="animate-spin" /> : <Check size={11} />}
+                              Salvar ({(editingEnvs[container.name] || []).filter(e => e.name).length} vars)
+                            </button>
+                            <button onClick={() => setEnvEditOpen(null)} className="px-3 py-1.5 rounded-lg text-xs" style={{ color: C.textMuted, border: `1px solid ${C.borderSub}` }}>
+                              Cancelar
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => openEnvEditor(container.name, container.envs)}
+                          className="flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-lg w-full justify-center mt-1"
+                          style={{ background: "oklch(0.55 0.18 280 / 0.10)", color: "oklch(0.72 0.14 280)", border: "1px solid oklch(0.55 0.18 280 / 0.25)" }}
+                        >
+                          <SlidersHorizontal size={11} /> Editar variáveis de ambiente ({container.envs.length})
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>

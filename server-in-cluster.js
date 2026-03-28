@@ -2315,6 +2315,95 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+
+  // ── /api/resources/update-env — Atualiza envs de um container ──────────────
+  if (url.pathname === "/api/resources/update-env" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      requireSRE(req, res, async () => {
+        const { namespace, name, kind: resKind = "deployment", container, envs } = req.body;
+        if (!namespace || !name || !container || !Array.isArray(envs)) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "namespace, name, container e envs[] são obrigatórios" }));
+        }
+        try {
+          const kindPaths = {
+            deployment:  `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`,
+            statefulset: `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`,
+            daemonset:   `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`,
+          };
+          const k8sPath = kindPaths[resKind] || kindPaths.deployment;
+          const resource = await k8sRequest(k8sPath);
+          const containers = resource.body?.spec?.template?.spec?.containers || [];
+          const idx = containers.findIndex((c) => c.name === container);
+          if (idx === -1) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ error: "Container não encontrado" }));
+          }
+          const existing = containers[idx].env || [];
+          const updated = [...existing];
+          for (const { name: eName, value } of envs) {
+            const ei = updated.findIndex(e => e.name === eName);
+            if (value === null) {
+              if (ei !== -1) updated.splice(ei, 1);
+            } else if (ei !== -1) {
+              updated[ei] = { name: eName, value };
+            } else {
+              updated.push({ name: eName, value });
+            }
+          }
+          containers[idx].env = updated;
+          await k8sPatch(k8sPath, resource.body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, envCount: updated.length }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
+  // ── /api/resources/update-image-v2 — Atualiza imagem (multi-kind) ──────────
+  if (url.pathname === "/api/resources/update-image-v2" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      requireSRE(req, res, async () => {
+        const { namespace, name, kind: resKind = "deployment", container, image } = req.body;
+        if (!namespace || !name || !container || !image) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "namespace, name, container e image são obrigatórios" }));
+        }
+        try {
+          const kindPaths = {
+            deployment:  `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`,
+            statefulset: `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`,
+            daemonset:   `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`,
+          };
+          const k8sPath = kindPaths[resKind] || kindPaths.deployment;
+          const resource = await k8sRequest(k8sPath);
+          const containers = resource.body?.spec?.template?.spec?.containers || [];
+          const idx = containers.findIndex((c) => c.name === container);
+          if (idx === -1) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ error: "Container não encontrado" }));
+          }
+          containers[idx].image = image;
+          await k8sPatch(k8sPath, resource.body);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
   // ── /api/resources/list — Lista recursos por tipo+namespace (autocomplete) ──
   if (url.pathname === "/api/resources/list" && req.method === "GET") {
     requireSRE(req, res, async () => {

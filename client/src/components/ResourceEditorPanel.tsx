@@ -6,10 +6,10 @@ import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Code2, X, RefreshCw, AlertCircle, CheckCircle2, Loader2,
-  RotateCcw, Layers, Minus, Plus, Save, Eye, Search,
+  RotateCcw, Layers, Minus, Plus, Save, Eye, EyeOff, Search,
   GitCompare, Calendar, ChevronRight, Package, Settings,
   FileText, Zap, Info, Clock, Tag, Box, Cpu,
-  Network, Shield, Database, ArrowRight
+  Network, Shield, Database, ArrowRight, Copy, Lock
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -36,6 +36,7 @@ interface ResourceSummary {
   targetRef?: string; metrics?: string[];
   // configmap/secret
   dataKeys?: string[];
+  dataValues?: Record<string, string>; // valores reais (base64 decoded para secret)
 }
 
 interface K8sEvent {
@@ -121,8 +122,17 @@ function extractSummary(data: Record<string, unknown>, kind: ResourceKind, name:
     base.metrics = (mList as { type: string; resource?: { name: string } }[]).map(m => m.resource?.name || m.type);
   }
   if (kind === "configmap" || kind === "secret") {
-    const d = (data.data || {}) as Record<string, unknown>;
+    const d = (data.data || {}) as Record<string, string>;
     base.dataKeys = Object.keys(d);
+    // Para secrets: valores são base64; para configmap: texto direto
+    base.dataValues = Object.fromEntries(
+      Object.entries(d).map(([k, v]) => {
+        if (kind === "secret") {
+          try { return [k, atob(v)]; } catch { return [k, v]; }
+        }
+        return [k, v];
+      })
+    );
   }
   return base;
 }
@@ -188,6 +198,24 @@ export default function ResourceEditorPanel({
   const [activeTab, setActiveTab] = useState<ActiveTab>("summary");
   void Layers; void Eye; void Cpu;
   const [scaleValue, setScaleValue] = useState(1);
+  // ── Máscara de Secret ─────────────────────────────────────────────────────────
+  // Set de chaves cujos valores estão revelados individualmente
+  const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+  // Quando true, todos os valores são visíveis
+  const [allRevealed, setAllRevealed] = useState(false);
+  // Reseta máscara ao trocar de recurso
+  useEffect(() => { setRevealedKeys(new Set()); setAllRevealed(false); }, [namespace, name, kind]);
+  const toggleRevealKey = useCallback((k: string) => {
+    setRevealedKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k); else next.add(k);
+      return next;
+    });
+  }, []);
+  const isKeyRevealed = useCallback((k: string) => allRevealed || revealedKeys.has(k), [allRevealed, revealedKeys]);
+  const copyToClipboard = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+  }, []);
 
   // ── Busca namespaces ─────────────────────────────────────────────────────────
   // O endpoint retorna { items: [...], timestamp } — igual ao Home.tsx
@@ -264,7 +292,16 @@ export default function ResourceEditorPanel({
         delete meta.managedFields; delete meta.resourceVersion;
         delete meta.uid; delete meta.generation;
       }
-      const yaml = Object.entries(cleaned).map(([k, v]) => k + ":" + jsonToYaml(v, 1)).join("\n").trim();
+      // Para secrets: substituir valores de data por placeholder no YAML exibido
+      const yamlData = { ...cleaned };
+      if (targetKind === "secret" && yamlData.data && typeof yamlData.data === "object") {
+        const maskedData: Record<string, string> = {};
+        for (const k of Object.keys(yamlData.data as Record<string, unknown>)) {
+          maskedData[k] = "[REDACTED]";
+        }
+        yamlData.data = maskedData;
+      }
+      const yaml = Object.entries(yamlData).map(([k, v]) => k + ":" + jsonToYaml(v, 1)).join("\n").trim();
       setYamlContent(yaml);
       setOriginalYaml(yaml);
     } catch (err: unknown) {
@@ -796,18 +833,73 @@ export default function ResourceEditorPanel({
               </div>
             )}
 
-            {/* ConfigMap/Secret keys */}
+            {/* ConfigMap/Secret data */}
             {(kind === "configmap" || kind === "secret") && summary.dataKeys && summary.dataKeys.length > 0 && (
               <div className="rounded-xl p-4" style={{ background: C.bgCard, border: `1px solid ${C.border}` }}>
-                <h3 className="text-xs font-bold uppercase mb-2" style={{ color: C.accent, letterSpacing: "0.08em" }}>
-                  Chaves ({summary.dataKeys.length})
-                </h3>
-                <div className="flex flex-wrap gap-1.5">
-                  {summary.dataKeys.map(k => (
-                    <span key={k} className="text-xs px-2 py-0.5 rounded font-mono" style={{ background: C.bgInput, color: C.textSub, border: `1px solid ${C.borderSub}` }}>
-                      {k}
-                    </span>
-                  ))}
+                {/* Header com botão Revelar Todos */}
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-bold uppercase flex items-center gap-1.5" style={{ color: C.accent, letterSpacing: "0.08em" }}>
+                    {kind === "secret" ? <Lock size={11} /> : <FileText size={11} />}
+                    {kind === "secret" ? "Dados Secretos" : "Dados"} ({summary.dataKeys.length})
+                  </h3>
+                  {kind === "secret" && (
+                    <button
+                      onClick={() => setAllRevealed(v => !v)}
+                      className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg font-medium transition-colors"
+                      style={{
+                        background: allRevealed ? "oklch(0.55 0.22 25 / 0.15)" : "oklch(0.55 0.18 250 / 0.12)",
+                        color: allRevealed ? "oklch(0.75 0.18 25)" : "oklch(0.65 0.12 250)",
+                        border: `1px solid ${allRevealed ? "oklch(0.55 0.22 25 / 0.3)" : "oklch(0.55 0.18 250 / 0.25)"}`
+                      }}
+                    >
+                      {allRevealed ? <EyeOff size={10} /> : <Eye size={10} />}
+                      {allRevealed ? "Ocultar todos" : "Revelar todos"}
+                    </button>
+                  )}
+                </div>
+                {/* Lista de chaves com valores */}
+                <div className="flex flex-col gap-2">
+                  {summary.dataKeys.map(k => {
+                    const val = summary.dataValues?.[k] ?? "";
+                    const revealed = kind !== "secret" || isKeyRevealed(k);
+                    return (
+                      <div key={k} className="rounded-lg p-2.5" style={{ background: C.bgInput, border: `1px solid ${C.borderSub}` }}>
+                        {/* Linha da chave */}
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs font-mono font-semibold" style={{ color: C.textSub }}>{k}</span>
+                          <div className="flex items-center gap-1">
+                            {kind === "secret" && (
+                              <button
+                                onClick={() => toggleRevealKey(k)}
+                                className="p-1 rounded opacity-60 hover:opacity-100 transition-opacity"
+                                style={{ color: C.textMuted }}
+                                title={revealed ? "Ocultar" : "Revelar"}
+                              >
+                                {revealed ? <EyeOff size={10} /> : <Eye size={10} />}
+                              </button>
+                            )}
+                            {revealed && (
+                              <button
+                                onClick={() => copyToClipboard(val)}
+                                className="p-1 rounded opacity-60 hover:opacity-100 transition-opacity"
+                                style={{ color: C.textMuted }}
+                                title="Copiar valor"
+                              >
+                                <Copy size={10} />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        {/* Valor */}
+                        <div className="text-xs font-mono break-all" style={{ color: revealed ? C.text : "oklch(0.5 0.0 0)" }}>
+                          {revealed
+                            ? (val.length > 120 ? val.slice(0, 120) + "…" : val || <span style={{ color: C.textMuted }}>(vazio)</span>)
+                            : <span style={{ letterSpacing: "0.15em", color: "oklch(0.55 0.18 25)" }}>••••••••••••</span>
+                          }
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}

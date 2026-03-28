@@ -160,7 +160,7 @@ interface ResourceEditorPanelProps {
 export default function ResourceEditorPanel({
   onClose, initialNamespace, initialName, initialKind = "deployment"
 }: ResourceEditorPanelProps) {
-  const { token } = useAuth();
+  useAuth(); // mantém contexto de autenticação
   const apiBase = getApiBase();
 
   // ── Seleção ──────────────────────────────────────────────────────────────────
@@ -189,28 +189,39 @@ export default function ResourceEditorPanel({
   void Layers; void Eye; void Cpu;
   const [scaleValue, setScaleValue] = useState(1);
 
-  const authHeaders = useMemo(() => ({ Authorization: `Bearer ${token}` }), [token]);
-
   // ── Busca namespaces ─────────────────────────────────────────────────────────
+  // O endpoint retorna { items: [...], timestamp } — igual ao Home.tsx
   useEffect(() => {
-    fetch(`${apiBase}/api/namespaces`, { headers: authHeaders })
-      .then(r => r.json())
-      .then(d => setNamespaces((d || []).map((n: { name: string }) => n.name).sort()))
+    const t = localStorage.getItem("k8s-viz-token");
+    fetch(`${apiBase}/api/namespaces`, {
+      credentials: "include",
+      headers: t ? { Authorization: `Bearer ${t}` } : {},
+    })
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
+      .then(d => setNamespaces((d.items ?? []).map((n: { name: string }) => n.name).sort()))
       .catch(() => {});
-  }, [apiBase, authHeaders]);
+  }, [apiBase]);
+
+  // ── Helper de headers autenticados ────────────────────────────────────────────────
+  const getAuthHeaders = useCallback((): Record<string, string> => {
+    const t = localStorage.getItem("k8s-viz-token");
+    return t ? { Authorization: `Bearer ${t}` } : {};
+  }, []);
 
   // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────
   useEffect(() => {
     if (!namespace) { setResourceList([]); return; }
     const ctrl = new AbortController();
     fetch(`${apiBase}/api/resources/list?kind=${kind}&namespace=${namespace}`, {
-      headers: authHeaders, signal: ctrl.signal
+      credentials: "include",
+      headers: getAuthHeaders(),
+      signal: ctrl.signal
     })
-      .then(r => r.json())
+      .then(r => r.ok ? r.json() : Promise.reject(r.status))
       .then(d => setResourceList(Array.isArray(d) ? d : []))
       .catch(() => {});
     return () => ctrl.abort();
-  }, [kind, namespace, apiBase, authHeaders]);
+  }, [kind, namespace, apiBase, getAuthHeaders]);
 
   // ── Filtro do autocomplete ───────────────────────────────────────────────────
   const filteredResources = useMemo(() =>
@@ -238,7 +249,7 @@ export default function ResourceEditorPanel({
     try {
       const res = await fetch(
         `${apiBase}/api/resources/yaml?kind=${targetKind}&namespace=${targetNs}&name=${targetName}`,
-        { headers: authHeaders }
+        { credentials: "include", headers: getAuthHeaders() }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Erro ao carregar recurso");
@@ -261,7 +272,7 @@ export default function ResourceEditorPanel({
     } finally {
       setLoading(false);
     }
-  }, [namespace, name, kind, apiBase, authHeaders]);
+  }, [namespace, name, kind, apiBase, getAuthHeaders]);
 
   // ── Carrega eventos K8s ──────────────────────────────────────────────────────
   const loadEvents = useCallback(async () => {
@@ -271,7 +282,7 @@ export default function ResourceEditorPanel({
       const kindPath = kind === "deployment" ? "deployments" : kind === "statefulset" ? "statefulsets" : kind;
       const res = await fetch(
         `${apiBase}/api/deployments/${namespace}/${name}/events`,
-        { headers: authHeaders }
+        { credentials: "include", headers: getAuthHeaders() }
       );
       if (res.ok) {
         const data = await res.json();
@@ -280,14 +291,14 @@ export default function ResourceEditorPanel({
         // Fallback: busca eventos genéricos via K8s API
         const res2 = await fetch(
           `${apiBase}/api/resources/yaml?kind=${kind}&namespace=${namespace}&name=${name}`,
-          { headers: authHeaders }
+          { credentials: "include", headers: getAuthHeaders() }
         );
         void res2; void kindPath;
         setEvents([]);
       }
     } catch { setEvents([]); }
     finally { setEventsLoading(false); }
-  }, [namespace, name, kind, apiBase, authHeaders]);
+  }, [namespace, name, kind, apiBase, getAuthHeaders]);
 
   useEffect(() => {
     if (activeTab === "events" && name && namespace) loadEvents();
@@ -305,7 +316,7 @@ export default function ResourceEditorPanel({
     try {
       const res = await fetch(`${apiBase}/api/resources/scale`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ namespace, name, replicas: scaleValue }),
       });
       const data = await res.json();
@@ -324,7 +335,7 @@ export default function ResourceEditorPanel({
     try {
       const res = await fetch(`${apiBase}/api/resources/restart`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ namespace, name }),
       });
       const data = await res.json();

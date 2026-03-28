@@ -2213,9 +2213,13 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         let k8sPath;
-        if (kind === "deployment")     k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
-        else if (kind === "configmap") k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
-        else if (kind === "hpa")       k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
+        if      (kind === "deployment")   k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
+        else if (kind === "statefulset")  k8sPath = `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`;
+        else if (kind === "daemonset")    k8sPath = `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`;
+        else if (kind === "service")      k8sPath = `/api/v1/namespaces/${namespace}/services/${name}`;
+        else if (kind === "secret")       k8sPath = `/api/v1/namespaces/${namespace}/secrets/${name}`;
+        else if (kind === "configmap")    k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
+        else if (kind === "hpa")          k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
         else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
         const data = await k8sRequest(k8sPath);
         res.writeHead(200, { "Content-Type": "application/json" });

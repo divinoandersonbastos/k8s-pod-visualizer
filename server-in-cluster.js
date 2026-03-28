@@ -2311,6 +2311,36 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/resources/list — Lista recursos por tipo+namespace (autocomplete) ──
+  if (url.pathname === "/api/resources/list" && req.method === "GET") {
+    requireSRE(req, res, async () => {
+      const kind = url.searchParams.get("kind") || "deployment";
+      const ns   = url.searchParams.get("namespace") || "";
+      try {
+        let k8sPath;
+        if      (kind === "deployment")   k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/deployments?limit=200`        : `/apis/apps/v1/deployments?limit=200`;
+        else if (kind === "statefulset")  k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/statefulsets?limit=200`       : `/apis/apps/v1/statefulsets?limit=200`;
+        else if (kind === "daemonset")    k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/daemonsets?limit=200`         : `/apis/apps/v1/daemonsets?limit=200`;
+        else if (kind === "configmap")    k8sPath = ns ? `/api/v1/namespaces/${ns}/configmaps?limit=200`               : `/api/v1/configmaps?limit=200`;
+        else if (kind === "secret")       k8sPath = ns ? `/api/v1/namespaces/${ns}/secrets?limit=200`                  : `/api/v1/secrets?limit=200`;
+        else if (kind === "service")      k8sPath = ns ? `/api/v1/namespaces/${ns}/services?limit=200`                 : `/api/v1/services?limit=200`;
+        else if (kind === "hpa")          k8sPath = ns ? `/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=200` : `/apis/autoscaling/v2/horizontalpodautoscalers?limit=200`;
+        else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
+        const data = await k8sRequest(k8sPath);
+        const items = (data.body?.items || []).map(i => ({
+          name:      i.metadata.name,
+          namespace: i.metadata.namespace,
+          labels:    i.metadata.labels || {},
+        }));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(items));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
   // ── /api/app-access/ingresses — Lista Ingresses do cluster ─────────────────
   if (url.pathname === "/api/app-access/ingresses" && req.method === "GET") {
     requireAuth(req, res, async () => {

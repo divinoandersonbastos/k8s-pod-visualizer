@@ -10,14 +10,30 @@ import {
   GitCompare, Calendar, ChevronRight, Package, Settings,
   FileText, Zap, Info, Clock, Tag, Box, Cpu,
   Network, Shield, Database, ArrowRight, Copy, Lock,
-  Pencil, Trash2, Check, SlidersHorizontal
+  Pencil, Trash2, Check, SlidersHorizontal, History, User
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
 type ResourceKind = "deployment" | "statefulset" | "daemonset" | "configmap" | "secret" | "service" | "hpa";
-type ActiveTab = "summary" | "yaml" | "events" | "diff";
+type ActiveTab = "summary" | "yaml" | "events" | "diff" | "history";
+
+interface HistoryEntry {
+  id: number;
+  username: string;
+  action: string;
+  resource_kind: string;
+  resource_name: string;
+  namespace: string;
+  container: string | null;
+  detail: string | null;
+  before_value: string | null;
+  after_value: string | null;
+  result: string;
+  error_msg: string | null;
+  recorded_at: string;
+}
 
 interface ResourceItem { name: string; namespace: string; labels: Record<string, string>; }
 interface EnvVar { name: string; value: string; }
@@ -236,6 +252,9 @@ export default function ResourceEditorPanel({
   const [showApplyModal, setShowApplyModal] = useState(false);
   const [applyLoading, setApplyLoading] = useState(false);
   const [validationWarnings, setValidationWarnings] = useState<{ level: "error" | "warn" | "info"; msg: string }[]>([]);
+  // ── Histórico de edições (P5) ─────────────────────────────────────────────────
+  const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   // ── Busca namespaces ─────────────────────────────────────────────────────────
   // O endpoint retorna { items: [...], timestamp } — igual ao Home.tsx
@@ -521,6 +540,24 @@ export default function ResourceEditorPanel({
     if (activeTab === "events" && name && namespace) loadEvents();
   }, [activeTab, loadEvents, name, namespace]);
 
+  // ── Carrega histórico de edições ──────────────────────────────────────────────────
+  const loadHistory = useCallback(async () => {
+    if (!name || !namespace) return;
+    setHistoryLoading(true);
+    try {
+      const res = await fetch(
+        `${apiBase}/api/resources/history?kind=${kind}&namespace=${namespace}&name=${name}&limit=50`,
+        { credentials: "include", headers: getAuthHeaders() }
+      );
+      const data = await res.json();
+      setHistoryEntries(Array.isArray(data) ? data : []);
+    } catch { setHistoryEntries([]); }
+    finally { setHistoryLoading(false); }
+  }, [namespace, name, kind, apiBase, getAuthHeaders]);
+  useEffect(() => {
+    if (activeTab === "history" && name && namespace) loadHistory();
+  }, [activeTab, loadHistory, name, namespace]);
+
   // Carrega ao inicializar se props fornecidas
   useEffect(() => {
     if (initialNamespace && initialName) loadResource(initialNamespace, initialName, initialKind as ResourceKind);
@@ -609,6 +646,7 @@ export default function ResourceEditorPanel({
     { id: "yaml",    label: "YAML",    icon: <Code2 size={12} /> },
     { id: "events",  label: "Eventos", icon: <Calendar size={12} />, badge: events.filter(e => e.type === "Warning").length || undefined },
     { id: "diff",    label: "Diff",    icon: <GitCompare size={12} />, badge: hasDiff ? diffLines.filter(l => l.type !== "same").length : undefined },
+    { id: "history", label: "Histórico", icon: <Clock size={12} />, badge: historyEntries.length || undefined },
   ];
 
   const KINDS: { id: ResourceKind; label: string }[] = [
@@ -1395,6 +1433,88 @@ export default function ResourceEditorPanel({
         )}
       </div>
 
+      {/* ── Aba Histórico (P5) ─────────────────────────────────────────────────────────── */}
+      {isLoaded && activeTab === "history" && (
+        <div className="p-4 overflow-y-auto" style={{ maxHeight: "calc(100vh - 220px)" }}>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <History size={14} style={{ color: C.accent }} />
+              <span className="text-xs font-semibold" style={{ color: C.text }}>Histórico de Edições</span>
+              <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: C.bgInput, color: C.textMuted }}>{historyEntries.length} registro(s)</span>
+            </div>
+            <button onClick={loadHistory} className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg" style={{ background: C.bgInput, color: C.textSub, border: `1px solid ${C.border}` }}>
+              {historyLoading ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />} Atualizar
+            </button>
+          </div>
+          {historyLoading ? (
+            <div className="flex flex-col gap-2">
+              {[1,2,3].map(i => <div key={i} className="h-16 rounded-xl animate-pulse" style={{ background: C.bgInput }} />)}
+            </div>
+          ) : historyEntries.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12 gap-3">
+              <History size={32} style={{ color: C.textMuted, opacity: 0.4 }} />
+              <p className="text-xs" style={{ color: C.textMuted }}>Nenhuma edição registrada para este recurso</p>
+              <p className="text-xs" style={{ color: C.textMuted, opacity: 0.6 }}>As edições via YAML Apply, Update Image e Update Env aparecem aqui</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {historyEntries.map(entry => {
+                const actionColors: Record<string, string> = {
+                  "apply-yaml":   "oklch(0.65 0.22 280)",
+                  "update-image": "oklch(0.65 0.20 200)",
+                  "update-env":   "oklch(0.65 0.20 80)",
+                };
+                const actionLabels: Record<string, string> = {
+                  "apply-yaml":   "Apply YAML",
+                  "update-image": "Update Image",
+                  "update-env":   "Update Env",
+                };
+                const isError = entry.result === "error";
+                const acColor = isError ? "oklch(0.65 0.22 25)" : (actionColors[entry.action] || C.accent);
+                return (
+                  <div key={entry.id} className="rounded-xl p-3" style={{ background: C.bgInput, border: `1px solid ${isError ? "oklch(0.65 0.22 25 / 0.3)" : C.borderSub}` }}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0" style={{ background: `${acColor}22`, color: acColor, border: `1px solid ${acColor}44` }}>
+                          {actionLabels[entry.action] || entry.action}
+                        </span>
+                        {entry.container && (
+                          <span className="text-xs px-1.5 py-0.5 rounded" style={{ background: C.bgCard, color: C.textMuted, border: `1px solid ${C.border}` }}>
+                            {entry.container}
+                          </span>
+                        )}
+                        {isError && <span className="text-xs" style={{ color: "oklch(0.65 0.22 25)" }}>⛔ Erro</span>}
+                      </div>
+                      <span className="text-xs flex-shrink-0" style={{ color: C.textMuted }}>{timeAgo(entry.recorded_at)}</span>
+                    </div>
+                    {entry.detail && (
+                      <p className="text-xs mt-1.5" style={{ color: C.textSub }}>{entry.detail}</p>
+                    )}
+                    {entry.before_value && entry.after_value && entry.action === "update-image" && (
+                      <div className="flex items-center gap-2 mt-2 font-mono text-xs">
+                        <span className="px-2 py-0.5 rounded" style={{ background: "oklch(0.65 0.22 25 / 0.08)", color: "oklch(0.65 0.22 25)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {entry.before_value}
+                        </span>
+                        <ArrowRight size={10} style={{ color: C.textMuted, flexShrink: 0 }} />
+                        <span className="px-2 py-0.5 rounded" style={{ background: "oklch(0.65 0.22 145 / 0.08)", color: "oklch(0.65 0.22 145)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {entry.after_value}
+                        </span>
+                      </div>
+                    )}
+                    {entry.error_msg && (
+                      <p className="text-xs mt-1.5 font-mono" style={{ color: "oklch(0.65 0.22 25)" }}>{entry.error_msg}</p>
+                    )}
+                    <div className="flex items-center gap-1 mt-2">
+                      <User size={10} style={{ color: C.textMuted }} />
+                      <span className="text-xs" style={{ color: C.textMuted }}>{entry.username}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
       {/* ── Modal de Confirmação de Apply (P4) ─────────────────────────────────────────── */}
       <AnimatePresence>
         {showApplyModal && (

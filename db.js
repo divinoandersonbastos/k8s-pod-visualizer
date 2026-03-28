@@ -277,6 +277,32 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_users_role_admin ON users(role) WHERE role = 'admin';
     `,
   },
+  // v6 — Histórico de edições de recursos do cluster (P5)
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE IF NOT EXISTS resource_edit_history (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id       INTEGER REFERENCES users(id),
+        username      TEXT NOT NULL DEFAULT 'system',
+        action        TEXT NOT NULL,
+        resource_kind TEXT NOT NULL,
+        resource_name TEXT NOT NULL,
+        namespace     TEXT NOT NULL,
+        container     TEXT,
+        detail        TEXT,
+        before_value  TEXT,
+        after_value   TEXT,
+        result        TEXT NOT NULL DEFAULT 'success',
+        error_msg     TEXT,
+        recorded_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_reh_resource ON resource_edit_history(resource_kind, resource_name, namespace, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_reh_user     ON resource_edit_history(user_id, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_reh_ns       ON resource_edit_history(namespace, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_reh_action   ON resource_edit_history(action, recorded_at DESC);
+    `,
+  },
 ];
 
 // Aplicar migrações pendentes dentro de uma transação
@@ -715,6 +741,7 @@ export function getDbStats() {
     deploymentEvents:   db.prepare("SELECT COUNT(*) AS c FROM deployment_events").get().c,
     capacitySnapshots:  db.prepare("SELECT COUNT(*) AS c FROM capacity_snapshots").get().c,
     podRestartEvents:   db.prepare("SELECT COUNT(*) AS c FROM pod_restart_events").get().c,
+    resourceEditHistory: db.prepare("SELECT COUNT(*) AS c FROM resource_edit_history").get().c,
     // ── Timestamps da última entrada (confirma que a coleta está ativa) ────────
     lastLogCapturedAt:      db.prepare("SELECT MAX(captured_at) AS t FROM pod_logs_history").get()?.t || null,
     oldestLogCapturedAt:    db.prepare("SELECT MIN(captured_at) AS t FROM pod_logs_history").get()?.t || null,
@@ -723,6 +750,7 @@ export function getDbStats() {
     lastCapacitySnapshotAt: db.prepare("SELECT MAX(recorded_at) AS t FROM capacity_snapshots").get()?.t || null,
     lastNodeEventAt:        db.prepare("SELECT MAX(recorded_at) AS t FROM node_events").get()?.t || null,
     lastDeploymentEventAt:  db.prepare("SELECT MAX(recorded_at) AS t FROM deployment_events").get()?.t || null,
+    lastResourceEditAt:     db.prepare("SELECT MAX(recorded_at) AS t FROM resource_edit_history").get()?.t || null,
     // ── Distribuição de logs por nível ─────────────────────────────────────────
     logsByLevel,
     // ── Metadados do banco ─────────────────────────────────────────────────────
@@ -1012,6 +1040,75 @@ export function clearAllData() {
     DELETE FROM deployment_events;
   `);
   console.log("[db] Todos os dados foram limpos.");
+}
+
+// ── resource_edit_history ────────────────────────────────────────────────────
+
+const rehStmts = {
+  insert: db.prepare(`
+    INSERT INTO resource_edit_history
+      (user_id, username, action, resource_kind, resource_name, namespace, container, detail, before_value, after_value, result, error_msg)
+    VALUES
+      (@user_id, @username, @action, @resource_kind, @resource_name, @namespace, @container, @detail, @before_value, @after_value, @result, @error_msg)
+  `),
+  getByResource: db.prepare(`
+    SELECT * FROM resource_edit_history
+    WHERE resource_kind = @resource_kind AND resource_name = @resource_name AND namespace = @namespace
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  getByNamespace: db.prepare(`
+    SELECT * FROM resource_edit_history
+    WHERE namespace = @namespace
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  getAll: db.prepare(`
+    SELECT * FROM resource_edit_history
+    ORDER BY recorded_at DESC
+    LIMIT @limit
+  `),
+  prune: db.prepare(`DELETE FROM resource_edit_history WHERE recorded_at < datetime('now', @days)`),
+};
+
+/** Registra uma edição de recurso do cluster */
+export function saveResourceEdit({ userId, username, action, resourceKind, resourceName, namespace, container, detail, beforeValue, afterValue, result = 'success', errorMsg = null }) {
+  return rehStmts.insert.run({
+    user_id:       userId || null,
+    username:      username || 'system',
+    action,
+    resource_kind: resourceKind,
+    resource_name: resourceName,
+    namespace,
+    container:     container || null,
+    detail:        detail || null,
+    before_value:  beforeValue || null,
+    after_value:   afterValue || null,
+    result,
+    error_msg:     errorMsg || null,
+  });
+}
+
+/** Retorna histórico de edições de um recurso específico */
+export function getResourceEditHistory(resourceKind, resourceName, namespace, limit = 50) {
+  return rehStmts.getByResource.all({ resource_kind: resourceKind, resource_name: resourceName, namespace, limit });
+}
+
+/** Retorna histórico de edições de um namespace */
+export function getResourceEditsByNamespace(namespace, limit = 100) {
+  return rehStmts.getByNamespace.all({ namespace, limit });
+}
+
+/** Retorna todo o histórico de edições */
+export function getAllResourceEdits(limit = 200) {
+  return rehStmts.getAll.all({ limit });
+}
+
+/** Remove edições mais antigas que N dias */
+export function pruneOldResourceEdits(days = 90) {
+  const result = rehStmts.prune.run({ days: `-${days} days` });
+  console.log(`[db] Pruned ${result.changes} old resource edits (>${days} days)`);
+  return result.changes;
 }
 
 // ── Manutenção automática ─────────────────────────────────────────────────────

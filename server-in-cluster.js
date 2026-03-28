@@ -30,6 +30,7 @@ import {
   getDbStats, clearAllData,
   savePodLogsBatch, getPodLogsHistory,
   savePodRestartEvent, getPodRestartEvents,
+  saveResourceEdit, getResourceEditHistory,
 } from "./db.js";
 import {
   requireAuth, requireSRE, requireAdmin,
@@ -2359,10 +2360,12 @@ const server = http.createServer(async (req, res) => {
           try {
             const user = req.user?.username || "unknown";
             await insertAuditLog({ user, action: "apply-yaml", resource: `${kind}/${namespace}/${name}`, detail: `${Object.keys(safePatch).join(",")}` });
+            saveResourceEdit({ userId: req.user?.id, username: req.user?.username || "unknown", action: "apply-yaml", resourceKind: kind, resourceName: name, namespace, detail: `Campos: ${Object.keys(safePatch).join(", ")}`, afterValue: JSON.stringify(safePatch), result: "success" });
           } catch { /* audit opcional */ }
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, resourceVersion: result?.metadata?.resourceVersion }));
         } catch (err) {
+          try { saveResourceEdit({ userId: req.user?.id, username: req.user?.username || "unknown", action: "apply-yaml", resourceKind: kind, resourceName: name, namespace, result: "error", errorMsg: err.message }); } catch {}
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));
         }
@@ -2410,9 +2413,11 @@ const server = http.createServer(async (req, res) => {
           }
           containers[idx].env = updated;
           await k8sPatch(k8sPath, resource.body);
+          try { saveResourceEdit({ userId: req.user?.id, username: req.user?.username || "unknown", action: "update-env", resourceKind: resKind || "deployment", resourceName: name, namespace, container, detail: `${envs.length} variavel(is) atualizada(s)`, afterValue: JSON.stringify(envs), result: "success" }); } catch {}
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true, envCount: updated.length }));
         } catch (err) {
+          try { saveResourceEdit({ userId: req.user?.id, username: req.user?.username || "unknown", action: "update-env", resourceKind: resKind || "deployment", resourceName: name, namespace, container, result: "error", errorMsg: err.message }); } catch {}
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));
         }
@@ -2446,11 +2451,14 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(404, { "Content-Type": "application/json" });
             return res.end(JSON.stringify({ error: "Container não encontrado" }));
           }
+          const oldImage = containers[idx].image;
           containers[idx].image = image;
           await k8sPatch(k8sPath, resource.body);
+          try { saveResourceEdit({ userId: req.user?.id, username: req.user?.username || "unknown", action: "update-image", resourceKind: resKind || "deployment", resourceName: name, namespace, container, detail: "Imagem atualizada", beforeValue: oldImage, afterValue: image, result: "success" }); } catch {}
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ ok: true }));
         } catch (err) {
+          try { saveResourceEdit({ userId: req.user?.id, username: req.user?.username || "unknown", action: "update-image", resourceKind: resKind || "deployment", resourceName: name, namespace, container, result: "error", errorMsg: err.message }); } catch {}
           res.writeHead(500, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: err.message }));
         }
@@ -2458,7 +2466,30 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
-  // ── /api/resources/list — Lista recursos por tipo+namespace (autocomplete) ──
+  // ── /api/resources/history — Histórico de edições de recursos ───────────────────────
+  if (url.pathname === "/api/resources/history" && req.method === "GET") {
+    requireSRE(req, res, () => {
+      try {
+        const kind      = url.searchParams.get("kind") || null;
+        const name      = url.searchParams.get("name") || null;
+        const namespace = url.searchParams.get("namespace") || null;
+        const limit     = parseInt(url.searchParams.get("limit") || "50", 10);
+        let rows;
+        if (kind && name && namespace) {
+          rows = getResourceEditHistory(kind, name, namespace, limit);
+        } else {
+          rows = getAllResourceEdits(limit);
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(rows));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+    // ── /api/resources/list — Lista recursos por tipo+namespace (autocomplete) ──
   if (url.pathname === "/api/resources/list" && req.method === "GET") {
     requireSRE(req, res, async () => {
       const kind = url.searchParams.get("kind") || "deployment";

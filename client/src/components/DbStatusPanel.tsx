@@ -28,6 +28,8 @@ interface DbStats {
   deploymentEvents: number;
   capacitySnapshots: number;
   podRestartEvents: number;
+  resourceEditHistory?: number;
+  lastResourceEditAt?: string | null;
   lastLogCapturedAt: string | null;
   oldestLogCapturedAt: string | null;
   lastMetricRecordedAt: string | null;
@@ -212,7 +214,8 @@ export function DbStatusPanel({ onClose }: DbStatusPanelProps) {
   const totalRecords = stats
     ? stats.podLogsHistory + stats.podStatusEvents + stats.podMetricsHistory +
       stats.nodeEvents + stats.nodeTransitions + stats.deploymentEvents +
-      stats.capacitySnapshots + stats.podRestartEvents
+      stats.capacitySnapshots + stats.podRestartEvents +
+      (stats.resourceEditHistory ?? 0)
     : 0;
 
   return (
@@ -455,6 +458,7 @@ export function DbStatusPanel({ onClose }: DbStatusPanelProps) {
                       <TableRow label="node_transitions"    count={stats.nodeTransitions}                                          color="text-blue-300" />
                       <TableRow label="deployment_events"   count={stats.deploymentEvents}  lastAt={stats.lastDeploymentEventAt}  color="text-orange-400" />
                       <TableRow label="pod_restart_events"  count={stats.podRestartEvents}                                         color="text-red-400" />
+                      <TableRow label="resource_edit_history" count={stats.resourceEditHistory ?? 0} lastAt={stats.lastResourceEditAt} color="text-violet-400" />
                     </tbody>
                   </table>
                 </div>

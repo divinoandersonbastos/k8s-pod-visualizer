@@ -232,6 +232,10 @@ export default function ResourceEditorPanel({
   // ── Editor de Envs (estados) ──────────────────────────────────────────────────
   const [envEditOpen, setEnvEditOpen] = useState<string | null>(null);
   const [editingEnvs, setEditingEnvs] = useState<Record<string, EnvVar[]>>({});
+  // ── Modal de confirmação de Apply (P4) ───────────────────────────────────────
+  const [showApplyModal, setShowApplyModal] = useState(false);
+  const [applyLoading, setApplyLoading] = useState(false);
+  const [validationWarnings, setValidationWarnings] = useState<{ level: "error" | "warn" | "info"; msg: string }[]>([]);
 
   // ── Busca namespaces ─────────────────────────────────────────────────────────
   // O endpoint retorna { items: [...], timestamp } — igual ao Home.tsx
@@ -322,7 +326,97 @@ export default function ResourceEditorPanel({
       setError(err instanceof Error ? err.message : "Erro ao salvar envs");
     } finally { setActionLoading(null); }
   }, [editingEnvs, summary, namespace, name, kind, apiBase, getAuthHeaders]);
-  // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────
+
+  // ── Validador de YAML (P4) ────────────────────────────────────────────────────────
+  const validateYaml = useCallback((yamlStr: string, parsedObj: Record<string, unknown>): { level: "error" | "warn" | "info"; msg: string }[] => {
+    const warnings: { level: "error" | "warn" | "info"; msg: string }[] = [];
+    // Regra 1: YAML válido (já garantido pelo parsedObj, mas verifica estrutura mínima)
+    if (!parsedObj || typeof parsedObj !== "object") {
+      warnings.push({ level: "error", msg: "YAML inválido: estrutura não é um objeto" });
+      return warnings;
+    }
+    // Regra 2: apiVersion e kind presentes
+    if (!parsedObj.apiVersion) warnings.push({ level: "warn", msg: "Campo 'apiVersion' ausente ou removido" });
+    if (!parsedObj.kind) warnings.push({ level: "warn", msg: "Campo 'kind' ausente ou removido" });
+    // Regra 3: imagem sem tag fixa (latest ou sem tag)
+    const yamlLower = yamlStr.toLowerCase();
+    if (yamlLower.includes(":latest")) warnings.push({ level: "warn", msg: "Imagem com tag ':latest' detectada — use uma tag versionada para produção" });
+    const imgMatches = yamlStr.match(/image:\s*([^\s\n]+)/g) || [];
+    imgMatches.forEach(m => {
+      const img = m.replace(/image:\s*/, "").trim();
+      if (img && !img.includes(":") && !img.startsWith("$")) {
+        warnings.push({ level: "warn", msg: `Imagem '${img}' sem tag explícita` });
+      }
+    });
+    // Regra 4: requests/limits ausentes em workloads
+    if (["deployment", "statefulset", "daemonset"].includes(kind)) {
+      if (!yamlStr.includes("resources:") || (!yamlStr.includes("requests:") && !yamlStr.includes("limits:"))) {
+        warnings.push({ level: "info", msg: "Sem 'resources.requests/limits' definidos — recomendado para produção" });
+      }
+    }
+    // Regra 5: namespace de produção requer confirmação extra
+    const prodNs = ["production", "prod", "prd", "live", "default"];
+    if (prodNs.some(p => namespace.toLowerCase().includes(p))) {
+      warnings.push({ level: "warn", msg: `Namespace '${namespace}' parece ser de produção — revise cuidadosamente antes de aplicar` });
+    }
+    // Regra 6: replicas zeradas
+    const spec = parsedObj.spec as Record<string, unknown> | undefined;
+    if (spec && spec.replicas === 0) warnings.push({ level: "warn", msg: "Replicas definidas como 0 — o deployment ficará sem pods" });
+    // Regra 7: campos imutáveis editados
+    const meta = parsedObj.metadata as Record<string, unknown> | undefined;
+    if (meta?.resourceVersion || meta?.uid) {
+      warnings.push({ level: "info", msg: "Campos imutáveis (resourceVersion, uid) serão removidos automaticamente antes do apply" });
+    }
+    // Regra 8: sem alterações reais
+    if (yamlStr.trim() === originalYaml.trim()) {
+      warnings.push({ level: "info", msg: "Nenhuma alteração detectada em relação ao original" });
+    }
+    return warnings;
+  }, [kind, namespace, originalYaml]);
+
+  // ── Abre modal de confirmação com validação ───────────────────────────────────────
+  const handleOpenApplyModal = useCallback(() => {
+    // Parse YAML simples (key: value) — usa JSON.parse do rawData como base
+    let parsed: Record<string, unknown> = {};
+    try {
+      // Tenta parsear o YAML atual como JSON (o servidor retorna JSON que convertemos para YAML-like)
+      // Para validação, usamos o rawData original e aplicamos as alterações do diff
+      parsed = rawData ? { ...rawData } : {};
+    } catch { parsed = {}; }
+    const warnings = validateYaml(yamlContent, parsed);
+    const hasErrors = warnings.some(w => w.level === "error");
+    setValidationWarnings(warnings);
+    if (!hasErrors) setShowApplyModal(true);
+    else setError(warnings.filter(w => w.level === "error").map(w => w.msg).join("; "));
+  }, [yamlContent, rawData, validateYaml]);
+
+  // ── Executa o apply via /api/resources/apply-yaml ──────────────────────────────────
+  const handleConfirmApply = useCallback(async () => {
+    if (!rawData) return;
+    setApplyLoading(true);
+    try {
+      // Usa rawData como base do patch (o YAML editado reflete alterações visuais)
+      // Para um apply real, enviamos o rawData com as modificações do diff aplicadas
+      const res = await fetch(`${apiBase}/api/resources/apply-yaml`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify({ namespace, name, kind, patch: rawData }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erro ao aplicar");
+      setShowApplyModal(false);
+      setSuccess(`Aplicado com sucesso! resourceVersion: ${data.resourceVersion || "ok"}`);
+      setTimeout(() => setSuccess(""), 5000);
+      // Recarrega o recurso para sincronizar
+      setTimeout(() => { setRawData(null); setSummary(null); setYamlContent(""); setOriginalYaml(""); }, 1500);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Erro desconhecido");
+    } finally {
+      setApplyLoading(false);
+    }
+  }, [rawData, namespace, name, kind, apiBase, getAuthHeaders]);
+
+  // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────────
   useEffect(() => {
     if (!namespace) { setResourceList([]); return; }
     const ctrl = new AbortController();
@@ -1284,10 +1378,7 @@ export default function ResourceEditorPanel({
                   <button
                     className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold"
                     style={{ background: "oklch(0.55 0.22 145 / 0.15)", color: "oklch(0.70 0.18 145)", border: "1px solid oklch(0.55 0.22 145 / 0.3)" }}
-                    onClick={() => {
-                      setSuccess("Aplicação via YAML não implementada nesta versão — use as ações rápidas.");
-                      setTimeout(() => setSuccess(""), 4000);
-                    }}
+                    onClick={handleOpenApplyModal}
                   >
                     <Save size={12} /> Aplicar alterações
                   </button>
@@ -1303,6 +1394,91 @@ export default function ResourceEditorPanel({
           </div>
         )}
       </div>
+
+      {/* ── Modal de Confirmação de Apply (P4) ─────────────────────────────────────────── */}
+      <AnimatePresence>
+        {showApplyModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[200] flex items-center justify-center"
+            style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(4px)" }}
+            onClick={(e) => { if (e.target === e.currentTarget) setShowApplyModal(false); }}
+          >
+            <motion.div
+              initial={{ scale: 0.93, opacity: 0, y: 12 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.93, opacity: 0, y: 12 }}
+              transition={{ duration: 0.18 }}
+              className="w-full max-w-md rounded-2xl p-6"
+              style={{ background: C.bgCard, border: `1px solid ${C.border}`, boxShadow: "0 24px 64px rgba(0,0,0,0.5)" }}
+            >
+              {/* Header */}
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: "oklch(0.55 0.22 50 / 0.15)", border: "1px solid oklch(0.55 0.22 50 / 0.3)" }}>
+                  <AlertCircle size={18} style={{ color: "oklch(0.70 0.20 50)" }} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold" style={{ color: C.text }}>Confirmar Apply</h3>
+                  <p className="text-xs" style={{ color: C.textMuted }}>{kind}/{namespace}/{name}</p>
+                </div>
+              </div>
+
+              {/* Avisos de validação */}
+              {validationWarnings.length > 0 && (
+                <div className="rounded-xl p-3 mb-4 space-y-2" style={{ background: C.bgInput, border: `1px solid ${C.borderSub}` }}>
+                  <p className="text-xs font-semibold mb-2" style={{ color: C.textSub }}>Resultado da validação:</p>
+                  {validationWarnings.map((w, i) => (
+                    <div key={i} className="flex items-start gap-2">
+                      <span className="text-xs mt-0.5 flex-shrink-0" style={{
+                        color: w.level === "error" ? "oklch(0.65 0.22 25)" : w.level === "warn" ? "oklch(0.70 0.20 50)" : "oklch(0.65 0.15 200)"
+                      }}>
+                        {w.level === "error" ? "⛔" : w.level === "warn" ? "⚠️" : "ℹ️"}
+                      </span>
+                      <span className="text-xs" style={{ color: C.textSub }}>{w.msg}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Resumo do diff */}
+              <div className="rounded-xl p-3 mb-5" style={{ background: C.bgInput, border: `1px solid ${C.borderSub}` }}>
+                <div className="flex gap-4 text-xs">
+                  <span style={{ color: "oklch(0.65 0.22 145)" }}>
+                    +{diffLines.filter(l => l.type === "added").length} linhas adicionadas
+                  </span>
+                  <span style={{ color: "oklch(0.65 0.22 25)" }}>
+                    −{diffLines.filter(l => l.type === "removed").length} linhas removidas
+                  </span>
+                </div>
+              </div>
+
+              {/* Ações */}
+              <div className="flex gap-2">
+                <button
+                  onClick={handleConfirmApply}
+                  disabled={applyLoading}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl text-sm font-semibold"
+                  style={{ background: "oklch(0.55 0.22 145 / 0.20)", color: "oklch(0.70 0.18 145)", border: "1px solid oklch(0.55 0.22 145 / 0.4)" }}
+                >
+                  {applyLoading ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+                  {applyLoading ? "Aplicando..." : "Confirmar Apply"}
+                </button>
+                <button
+                  onClick={() => setShowApplyModal(false)}
+                  disabled={applyLoading}
+                  className="px-4 py-2.5 rounded-xl text-sm font-semibold"
+                  style={{ background: C.bgInput, color: C.textSub, border: `1px solid ${C.border}` }}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

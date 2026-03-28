@@ -2316,6 +2316,60 @@ const server = http.createServer(async (req, res) => {
   }
 
 
+
+  // ── /api/resources/apply-yaml — Aplica YAML editado via strategic merge patch ──
+  if (url.pathname === "/api/resources/apply-yaml" && req.method === "POST") {
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      requireSRE(req, res, async () => {
+        const { namespace, name, kind = "deployment", patch } = req.body;
+        if (!namespace || !name || !patch || typeof patch !== "object") {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          return res.end(JSON.stringify({ error: "namespace, name e patch (object) são obrigatórios" }));
+        }
+        try {
+          const kindPaths = {
+            deployment:  `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`,
+            statefulset: `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`,
+            daemonset:   `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`,
+            service:     `/api/v1/namespaces/${namespace}/services/${name}`,
+            configmap:   `/api/v1/namespaces/${namespace}/configmaps/${name}`,
+            secret:      `/api/v1/namespaces/${namespace}/secrets/${name}`,
+            hpa:         `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`,
+          };
+          const k8sPath = kindPaths[kind];
+          if (!k8sPath) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` }));
+          }
+          // Remove campos imutáveis antes do patch para evitar conflitos
+          const safePatch = JSON.parse(JSON.stringify(patch));
+          if (safePatch.metadata) {
+            delete safePatch.metadata.resourceVersion;
+            delete safePatch.metadata.uid;
+            delete safePatch.metadata.creationTimestamp;
+            delete safePatch.metadata.generation;
+            delete safePatch.metadata.managedFields;
+          }
+          delete safePatch.status;
+          const result = await k8sPatch(k8sPath, safePatch);
+          // Registra no audit log se disponível
+          try {
+            const user = req.user?.username || "unknown";
+            await insertAuditLog({ user, action: "apply-yaml", resource: `${kind}/${namespace}/${name}`, detail: `${Object.keys(safePatch).join(",")}` });
+          } catch { /* audit opcional */ }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true, resourceVersion: result?.metadata?.resourceVersion }));
+        } catch (err) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      });
+    });
+    return;
+  }
   // ── /api/resources/update-env — Atualiza envs de um container ──────────────
   if (url.pathname === "/api/resources/update-env" && req.method === "POST") {
     let body = "";

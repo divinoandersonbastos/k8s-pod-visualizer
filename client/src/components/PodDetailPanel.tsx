@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
-  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2,
+  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
@@ -41,6 +41,8 @@ interface PodDetailPanelProps {
   getEventsForPod?: (podId: string) => StatusEvent[];
   clearEvents?: () => void;
   oomRisk?: OomRiskInfo | null;
+  isSRE?: boolean;
+  isAdmin?: boolean;
 }
 
 const STATUS_CONFIG = {
@@ -173,7 +175,7 @@ const PANEL_WIDTH_KEY = "k8s-viz-detail-panel-width";
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH_RATIO = 0.72; // 72% da largura da janela
 
-export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk }: PodDetailPanelProps) {
+export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk, isSRE = false, isAdmin = false }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [eventCount, setEventCount] = useState(0);
   const [showRestartModal, setShowRestartModal] = useState(false);
@@ -181,6 +183,8 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [restartResult, setRestartResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [logsFullscreen, setLogsFullscreen] = useState(false);
+  const [showExecModal, setShowExecModal] = useState(false);
+  const [execContainer, setExecContainer] = useState("");
 
   // ── Resize drag state ──────────────────────────────────────────────────────
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -300,6 +304,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   }));
 
   return (
+    <>
     <AnimatePresence>
       {pod && (
         <motion.aside
@@ -377,6 +382,20 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               >
                 {copied ? <Check size={13} /> : <Copy size={13} />}
               </button>
+              {/* Botão Entrar no Pod — visível para SRE e SQUAD */}
+              {(isSRE || isAdmin) && (
+                <button
+                  onClick={() => {
+                    setExecContainer(pod.containerNames?.[0] ?? "");
+                    setShowExecModal(true);
+                  }}
+                  className="p-1.5 rounded-md transition-all"
+                  style={{ color: "oklch(0.72 0.18 142)", background: "oklch(0.72 0.18 142 / 0.08)", border: "1px solid oklch(0.72 0.18 142 / 0.25)" }}
+                  title="Entrar no pod (kubectl exec)"
+                >
+                  <Terminal size={13} />
+                </button>
+              )}
               <button
                 onClick={() => setShowRestartModal(true)}
                 className="p-1.5 rounded-md transition-colors"
@@ -798,5 +817,147 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
         </motion.aside>
       )}
     </AnimatePresence>
+
+    {/* Modal: Entrar no Pod (kubectl exec) */}
+    <AnimatePresence>
+      {showExecModal && pod && (
+        <motion.div
+          key="exec-modal"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[200] flex items-center justify-center"
+          style={{ background: "oklch(0.05 0.01 250 / 0.75)", backdropFilter: "blur(4px)" }}
+          onClick={() => setShowExecModal(false)}
+        >
+          <motion.div
+            initial={{ scale: 0.95, y: 10 }}
+            animate={{ scale: 1, y: 0 }}
+            exit={{ scale: 0.95, y: 10 }}
+            transition={{ duration: 0.15 }}
+            className="w-full max-w-lg mx-4 rounded-xl overflow-hidden"
+            style={{
+              background: "oklch(0.12 0.018 250)",
+              border: "1px solid oklch(0.72 0.18 142 / 0.35)",
+              boxShadow: "0 0 40px oklch(0.72 0.18 142 / 0.12)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header do modal */}
+            <div
+              className="flex items-center justify-between px-4 py-3"
+              style={{ background: "oklch(0.15 0.022 250)", borderBottom: "1px solid oklch(0.22 0.03 250)" }}
+            >
+              <div className="flex items-center gap-2">
+                <Terminal size={14} style={{ color: "oklch(0.72 0.18 142)" }} />
+                <span className="text-[12px] font-mono font-semibold" style={{ color: "oklch(0.72 0.18 142)" }}>Entrar no Pod</span>
+                <span
+                  className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                  style={{ background: "oklch(0.72 0.18 142 / 0.12)", border: "1px solid oklch(0.72 0.18 142 / 0.3)", color: "oklch(0.72 0.18 142)" }}
+                >
+                  SRE / SQUAD
+                </span>
+              </div>
+              <button onClick={() => setShowExecModal(false)} style={{ color: "oklch(0.45 0.01 250)" }}>
+                <X size={14} />
+              </button>
+            </div>
+
+            {/* Corpo do modal */}
+            <div className="p-4 space-y-4">
+              {/* Nome do pod */}
+              <div>
+                <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: "oklch(0.45 0.01 250)" }}>Pod</div>
+                <div className="text-[11px] font-mono font-semibold break-all" style={{ color: "oklch(0.80 0.01 250)" }}>{pod.name}</div>
+                <div className="text-[10px] font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>{pod.namespace}</div>
+              </div>
+
+              {/* Seletor de container */}
+              {pod.containerNames && pod.containerNames.length > 1 && (
+                <div>
+                  <div className="text-[10px] font-mono uppercase tracking-widest mb-1.5" style={{ color: "oklch(0.45 0.01 250)" }}>Container</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {pod.containerNames.map((cn) => (
+                      <button
+                        key={cn}
+                        onClick={() => setExecContainer(cn)}
+                        className="text-[10px] font-mono px-2.5 py-1 rounded-md transition-all"
+                        style={{
+                          background: execContainer === cn ? "oklch(0.72 0.18 142 / 0.20)" : "oklch(0.18 0.025 250)",
+                          border: `1px solid ${execContainer === cn ? "oklch(0.72 0.18 142 / 0.60)" : "oklch(0.28 0.04 250)"}`,
+                          color: execContainer === cn ? "oklch(0.72 0.18 142)" : "oklch(0.55 0.01 250)",
+                        }}
+                      >
+                        {cn}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Comando kubectl exec */}
+              <div>
+                <div className="text-[10px] font-mono uppercase tracking-widest mb-1.5" style={{ color: "oklch(0.45 0.01 250)" }}>Comando kubectl</div>
+                <div
+                  className="rounded-lg p-3 font-mono text-[11px] break-all leading-relaxed"
+                  style={{ background: "oklch(0.09 0.012 250)", border: "1px solid oklch(0.22 0.03 250)", color: "oklch(0.72 0.18 142)" }}
+                >
+                  <span style={{ color: "oklch(0.50 0.01 250)" }}>$ </span>
+                  kubectl exec -it {pod.name} -n {pod.namespace}
+                  {execContainer ? ` -c ${execContainer}` : ""} -- /bin/sh
+                </div>
+              </div>
+
+              {/* Dica de shells alternativos */}
+              <div
+                className="rounded-lg p-3 space-y-1.5"
+                style={{ background: "oklch(0.72 0.18 200 / 0.06)", border: "1px solid oklch(0.72 0.18 200 / 0.20)" }}
+              >
+                <div className="text-[10px] font-mono font-semibold" style={{ color: "oklch(0.72 0.18 200)" }}>Shells alternativos</div>
+                {["/bin/bash", "/bin/sh", "sh"].map((sh) => (
+                  <div key={sh} className="text-[10px] font-mono" style={{ color: "oklch(0.55 0.01 250)" }}>
+                    <span style={{ color: "oklch(0.50 0.01 250)" }}>$ </span>
+                    kubectl exec -it {pod.name} -n {pod.namespace}{execContainer ? ` -c ${execContainer}` : ""} -- {sh}
+                  </div>
+                ))}
+              </div>
+
+              {/* Botões de ação */}
+              <div className="flex gap-2 pt-1">
+                <button
+                  onClick={() => {
+                    const cmd = `kubectl exec -it ${pod.name} -n ${pod.namespace}${execContainer ? ` -c ${execContainer}` : ""} -- /bin/sh`;
+                    navigator.clipboard.writeText(cmd).catch(() => {});
+                  }}
+                  className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-[11px] font-mono font-semibold transition-all"
+                  style={{
+                    background: "oklch(0.72 0.18 142 / 0.12)",
+                    border: "1px solid oklch(0.72 0.18 142 / 0.35)",
+                    color: "oklch(0.72 0.18 142)",
+                  }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "oklch(0.72 0.18 142 / 0.22)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "oklch(0.72 0.18 142 / 0.12)"; }}
+                >
+                  <Copy size={12} />
+                  Copiar comando
+                </button>
+                <button
+                  onClick={() => setShowExecModal(false)}
+                  className="px-4 py-2 rounded-lg text-[11px] font-mono transition-all"
+                  style={{
+                    background: "oklch(0.18 0.025 250)",
+                    border: "1px solid oklch(0.28 0.04 250)",
+                    color: "oklch(0.55 0.01 250)",
+                  }}
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+    </>
   );
 }

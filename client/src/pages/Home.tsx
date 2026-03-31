@@ -10,7 +10,7 @@
 
 import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { AlertCircle, AlertTriangle, X } from "lucide-react";
+import { AlertCircle, AlertTriangle, X, Skull } from "lucide-react";
 import { usePodData, useClusterMeta } from "@/hooks/usePodData";
 import { usePodHistory } from "@/hooks/usePodHistory";
 import { usePodStatusEvents } from "@/hooks/usePodStatusEvents";
@@ -229,10 +229,22 @@ export default function Home() {
       result = result.filter((p) => p.status === "warning");
     } else if (statusFilter === "non-healthy") {
       result = result.filter((p) => p.status !== "healthy");
+    } else if (statusFilter === "crash") {
+      result = result.filter((p) => {
+        const hasOom = p.containersDetail?.some((cd) => cd.lastState?.reason === "OOMKilled");
+        return p.restarts > 3 || !!hasOom;
+      });
     }
-
     return result;
   }, [pods, selectedNamespace, selectedNode, searchQuery, statusFilter]);
+
+  // Contagem de pods com crash (restarts > 3 ou OOMKilled) — para o botão no header
+  const crashPodCount = useMemo(() =>
+    pods.filter((p) => {
+      const hasOom = p.containersDetail?.some((cd) => cd.lastState?.reason === "OOMKilled");
+      return p.restarts > 3 || !!hasOom;
+    }).length
+  , [pods]);
 
   // Contagens para o banner de destaque
   const criticalInView  = filteredPods.filter((p) => p.status === "critical").length;
@@ -260,6 +272,13 @@ export default function Home() {
       border: "oklch(0.55 0.22 260 / 0.40)",
       icon: <AlertTriangle size={13} />,
       label: `${filteredPods.length} pod${filteredPods.length !== 1 ? "s" : ""} problemático${filteredPods.length !== 1 ? "s" : ""}`,
+    };
+    if (statusFilter === "crash") return {
+      color: "oklch(0.80 0.20 15)",
+      bg: "oklch(0.55 0.22 0 / 0.12)",
+      border: "oklch(0.65 0.22 0 / 0.40)",
+      icon: <Skull size={13} />,
+      label: `${filteredPods.length} pod${filteredPods.length !== 1 ? "s" : ""} com crash`,
     };
     return null;
   }, [statusFilter, criticalInView, warningInView, filteredPods.length]);
@@ -335,6 +354,7 @@ export default function Home() {
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
         onStatusFilterChange={setStatusFilter}
+        crashPodCount={crashPodCount}
       />
 
       {/* Body */}
@@ -482,7 +502,7 @@ export default function Home() {
                 <div className="text-4xl font-mono text-slate-700">∅</div>
                 <div className="text-sm text-slate-500 font-mono">
                   {statusFilter
-                    ? `Nenhum pod ${statusFilter === "critical" ? "crítico" : statusFilter === "warning" ? "em alerta" : "problemático"} encontrado`
+                    ? `Nenhum pod ${statusFilter === "critical" ? "crítico" : statusFilter === "warning" ? "em alerta" : statusFilter === "crash" ? "com crash" : "problemático"} encontrado`
                     : "Nenhum pod encontrado"}
                 </div>
                 {statusFilter && (
@@ -512,6 +532,8 @@ export default function Home() {
             getEventsForPod={getEventsForPodSync}
             clearEvents={clearEvents}
             oomRisk={selectedPod ? oomRisk.getRiskForPod(selectedPod.id) : null}
+            isSRE={isSRE}
+            isAdmin={isAdmin}
           />
 
           {/* Banner de risco de OOMKill */}

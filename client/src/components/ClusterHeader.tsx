@@ -7,11 +7,11 @@
  */
 
 import { useState } from "react";
-import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown, Network, Database } from "lucide-react";
+import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown, Network, Database, Skull } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
 
-export type StatusFilter = "" | "critical" | "warning" | "non-healthy";
+export type StatusFilter = "" | "critical" | "warning" | "non-healthy" | "crash";
 
 interface ClusterHeaderProps {
   stats: ClusterStats | null;
@@ -43,6 +43,7 @@ interface ClusterHeaderProps {
   clusterName?: string;
   statusFilter: StatusFilter;
   onStatusFilterChange: (f: StatusFilter) => void;
+  crashPodCount?: number;
 }
 
 export function ClusterHeader({
@@ -75,6 +76,7 @@ export function ClusterHeader({
   clusterName,
   statusFilter,
   onStatusFilterChange,
+  crashPodCount = 0,
 }: ClusterHeaderProps) {
   const [showInfo, setShowInfo] = useState(false);
 
@@ -209,6 +211,30 @@ export function ClusterHeader({
             <span className="text-[10px] opacity-70">alertas</span>
             {statusFilter === "warning" && <X size={10} className="ml-0.5 opacity-60" />}
           </button>
+
+          {/* Crash (restarts > 3 ou OOMKilled) */}
+          {crashPodCount > 0 && (
+            <button
+              onClick={() => toggleFilter("crash")}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-mono font-semibold transition-all"
+              style={{
+                background: statusFilter === "crash"
+                  ? "oklch(0.55 0.22 0 / 0.30)"
+                  : "oklch(0.55 0.22 0 / 0.10)",
+                border: `1px solid ${statusFilter === "crash"
+                  ? "oklch(0.65 0.22 0 / 0.80)"
+                  : "oklch(0.65 0.22 0 / 0.30)"}`,
+                color: "oklch(0.80 0.20 15)",
+                boxShadow: statusFilter === "crash" ? "0 0 8px oklch(0.55 0.22 0 / 0.40)" : "none",
+              }}
+              title="Mostrar apenas pods com crash (restarts > 3 ou OOMKilled)"
+            >
+              <Skull size={11} />
+              <span>{crashPodCount}</span>
+              <span className="text-[10px] opacity-70">crash</span>
+              {statusFilter === "crash" && <X size={10} className="ml-0.5 opacity-60" />}
+            </button>
+          )}
 
           {/* Críticos + Alertas */}
           {nonHealthy > 0 && (

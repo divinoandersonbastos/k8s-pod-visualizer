@@ -376,30 +376,34 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                     </span>
                   </div>
 
-                  {/* CPU */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between items-center">
-                      <span className="flex items-center gap-1 text-[10px]" style={{ color: "oklch(0.55 0.01 250)" }}>
-                        <Cpu size={10} /> CPU
-                      </span>
-                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.72 0.18 200)" }}>
-                        {pod.cpuUsage}m / {pod.cpuLimit}m ({pod.cpuPercent.toFixed(0)}%)
-                      </span>
-                    </div>
-                    <MetricBar value={pod.cpuUsage} max={pod.cpuLimit} color="oklch(0.72 0.18 200)" />
-                  </div>
-
-                  {/* Memória */}
-                  <div className="space-y-1">
-                    <div className="flex justify-between items-center">
-                      <span className="flex items-center gap-1 text-[10px]" style={{ color: "oklch(0.55 0.01 250)" }}>
-                        <MemoryStick size={10} /> Memória
-                      </span>
-                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.72 0.18 260)" }}>
-                        {formatMem(pod.memoryUsage)} / {formatMem(pod.memoryLimit)} ({pod.memoryPercent.toFixed(0)}%)
-                      </span>
-                    </div>
-                    <MetricBar value={pod.memoryUsage} max={pod.memoryLimit} color="oklch(0.72 0.18 260)" />
+                   {/* Gauges circulares CPU + MEM */}
+                  <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
+                  <div className="grid grid-cols-2 gap-3">
+                    {[
+                      { label: "CPU", pct: pod.cpuPercent, sub: `${pod.cpuUsage}m / ${pod.cpuLimit}m`, color: "oklch(0.72 0.18 142)" },
+                      { label: "MEM", pct: pod.memoryPercent, sub: `${formatMem(pod.memoryUsage)} / ${formatMem(pod.memoryLimit)}`, color: "oklch(0.72 0.18 50)" },
+                    ].map(({ label, pct, sub, color }) => (
+                      <div key={label} className="flex flex-col items-center gap-1">
+                        <svg width="80" height="80" viewBox="0 0 80 80">
+                          <circle cx="40" cy="40" r="32" fill="none" stroke="oklch(0.22 0.03 250)" strokeWidth="8" />
+                          <circle
+                            cx="40" cy="40" r="32"
+                            fill="none"
+                            stroke={color}
+                            strokeWidth="8"
+                            strokeLinecap="round"
+                            strokeDasharray={`${Math.min(100, pct) / 100 * 201} 201`}
+                            strokeDashoffset="50"
+                            style={{ filter: `drop-shadow(0 0 4px ${color})`, transition: "stroke-dasharray 0.6s ease" }}
+                          />
+                          <text x="40" y="44" textAnchor="middle" fontSize="14" fontWeight="700" fill={color} fontFamily="'JetBrains Mono', monospace">
+                            {Math.round(pct)}%
+                          </text>
+                        </svg>
+                        <span className="text-[10px] uppercase tracking-widest" style={{ color: "oklch(0.55 0.01 250)" }}>{label}</span>
+                        <span className="text-[9px] font-mono text-center" style={{ color: "oklch(0.45 0.01 250)" }}>{sub}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
 

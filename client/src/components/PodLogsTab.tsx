@@ -495,30 +495,46 @@ export function PodLogsTab({
           ))}
         </select>
 
-        {/* Toggle: Execução Anterior */}
-        {hasPreviousTerminated && (
-          <button
-            onClick={() => setShowPrevious((v) => !v)}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] transition-all"
-            style={{
-              background: showPrevious ? "oklch(0.55 0.22 25 / 0.20)" : "oklch(0.16 0.02 250)",
-              border: `1px solid ${showPrevious ? "oklch(0.55 0.22 25 / 0.50)" : "oklch(0.26 0.04 250)"}`,
-              color: showPrevious ? "oklch(0.80 0.22 25)" : "oklch(0.55 0.01 250)",
-            }}
-            title="Mostrar logs da execução anterior (--previous)"
-          >
-            {showPrevious ? <RotateCcw size={10} /> : <SkipBack size={10} />}
-            {showPrevious ? "Atual" : "Anterior"}
-            {!showPrevious && (selectedStatus?.restartCount ?? 0) > 0 && (
-              <span
-                className="ml-1 px-1 rounded-sm text-[9px] font-bold"
-                style={{ background: "oklch(0.55 0.22 25 / 0.30)", color: "oklch(0.80 0.22 25)" }}
-              >
-                {selectedStatus?.restartCount}
-              </span>
-            )}
-          </button>
-        )}
+        {/* Toggle: Execução Anterior — sempre visível */}
+        <button
+          onClick={() => hasPreviousTerminated && setShowPrevious((v) => !v)}
+          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] transition-all"
+          style={{
+            background: showPrevious
+              ? "oklch(0.55 0.22 25 / 0.20)"
+              : hasPreviousTerminated
+                ? "oklch(0.16 0.02 250)"
+                : "oklch(0.13 0.01 250)",
+            border: `1px solid ${
+              showPrevious
+                ? "oklch(0.55 0.22 25 / 0.50)"
+                : hasPreviousTerminated
+                  ? "oklch(0.26 0.04 250)"
+                  : "oklch(0.20 0.02 250)"
+            }`,
+            color: showPrevious
+              ? "oklch(0.80 0.22 25)"
+              : hasPreviousTerminated
+                ? "oklch(0.65 0.01 250)"
+                : "oklch(0.35 0.01 250)",
+            cursor: hasPreviousTerminated ? "pointer" : "not-allowed",
+            opacity: hasPreviousTerminated ? 1 : 0.5,
+          }}
+          title={hasPreviousTerminated
+            ? "Mostrar logs da execução anterior (--previous)"
+            : "Sem execução anterior (container nunca reiniciou)"}
+        >
+          {showPrevious ? <RotateCcw size={10} /> : <SkipBack size={10} />}
+          {showPrevious ? "Atual" : "Anterior"}
+          {!showPrevious && (selectedStatus?.restartCount ?? 0) > 0 && (
+            <span
+              className="ml-1 px-1 rounded-sm text-[9px] font-bold"
+              style={{ background: "oklch(0.55 0.22 25 / 0.30)", color: "oklch(0.80 0.22 25)" }}
+            >
+              {selectedStatus?.restartCount}
+            </span>
+          )}
+        </button>
 
         {/* Auto-refresh toggle */}
         <button

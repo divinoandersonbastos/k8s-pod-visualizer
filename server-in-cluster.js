@@ -3088,12 +3088,13 @@ server.listen(PORT, () => {
 // Estas rotas são registradas via patch no final do arquivo para não quebrar
 // a estrutura existente. O roteamento é feito dentro do createServer handler.
 
-// ── WebSocket Terminal Exec (adicionado em v4.9.0) ────────────────────────────
+// ── WebSocket Terminal Exec via Kubernetes Exec API (v4.9.2) ─────────────────
 // Endpoint: WS /api/exec?pod=<name>&namespace=<ns>&container=<c>
-// Abre um shell interativo dentro do pod via kubectl exec
-// Visível apenas para perfis SRE e ADMIN (controle feito no frontend)
+// Proxy bidirecional entre o browser (xterm.js) e a Kubernetes Exec API.
+// Protocolo: v4.channel.k8s.io — cada mensagem binária tem 1 byte de canal:
+//   0=stdin  1=stdout  2=stderr  3=error  4=resize
+// Não requer kubectl instalado no pod — usa o ServiceAccount token diretamente.
 import { WebSocketServer as _WSSExec, WebSocket as _WSExec } from "ws";
-import { spawn as _spawnExec } from "child_process";
 
 const _wssExec = new _WSSExec({ noServer: true });
 
@@ -3120,56 +3121,106 @@ _wssExec.on("connection", (ws, req) => {
     return;
   }
 
-  const _args = [
-    "exec", "-it",
-    _pod,
-    "-n", _namespace,
-    ...(_container ? ["-c", _container] : []),
-    "--",
-    "/bin/sh", "-c",
-    "TERM=xterm-256color; export TERM; (bash || sh)",
-  ];
+  // ── Monta a URL da Kubernetes Exec API ──────────────────────────────────
+  const _token   = getToken();
+  const _ca      = getCA();
+  const _apiHost = K8S_API.replace(/^https?:\/\//, "");
+  const _isHttps = K8S_API.startsWith("https");
+  const _wsProto = _isHttps ? "wss" : "ws";
 
-  console.log(`[exec] kubectl ${_args.join(" ")}`);
-
-  let _proc = null;
-  try {
-    _proc = _spawnExec("kubectl", _args, {
-      env: { ...process.env, TERM: "xterm-256color" },
-    });
-  } catch (err) {
-    ws.send(JSON.stringify({ type: "error", message: `Falha ao iniciar kubectl: ${err}` }));
-    ws.close();
-    return;
-  }
-
-  _proc.stdout?.on("data", (chunk) => {
-    if (ws.readyState === _WSExec.OPEN) ws.send(chunk);
+  const _execParams = new URLSearchParams({
+    stdin:   "true",
+    stdout:  "true",
+    stderr:  "true",
+    tty:     "true",
+    command: "/bin/sh",
+    command: "-c",
   });
-  _proc.stderr?.on("data", (chunk) => {
-    if (ws.readyState === _WSExec.OPEN) ws.send(chunk);
+  // Kubernetes aceita múltiplos valores "command" para o array de args
+  const _cmdParts = ["/bin/sh", "-c", "TERM=xterm-256color; export TERM; (bash || sh)"];
+  const _cmdQuery = _cmdParts.map(c => `command=${encodeURIComponent(c)}`).join("&");
+  const _containerQuery = _container ? `&container=${encodeURIComponent(_container)}` : "";
+  const _k8sExecUrl = `${_wsProto}://${_apiHost}/api/v1/namespaces/${encodeURIComponent(_namespace)}/pods/${encodeURIComponent(_pod)}/exec?stdin=true&stdout=true&stderr=true&tty=true&${_cmdQuery}${_containerQuery}`;
+
+  console.log(`[exec] K8s Exec API: ${_k8sExecUrl}`);
+
+  // ── Abre WebSocket para a Kubernetes API ────────────────────────────────
+  const _k8sWs = new _WSExec(_k8sExecUrl, ["v4.channel.k8s.io"], {
+    headers: {
+      ..._token ? { Authorization: `Bearer ${_token}` } : {},
+    },
+    ...(_ca ? { ca: _ca } : { rejectUnauthorized: false }),
   });
-  _proc.on("error", (err) => {
+
+  _k8sWs.binaryType = "nodebuffer";
+
+  _k8sWs.on("open", () => {
+    console.log(`[exec] Conectado à K8s Exec API para pod ${_pod}`);
+  });
+
+  // Encaminha stdout (canal 1) e stderr (canal 2) para o browser
+  _k8sWs.on("message", (data) => {
+    if (!Buffer.isBuffer(data) || data.length < 1) return;
+    const channel = data[0];
+    const payload = data.slice(1);
+    if (channel === 1 || channel === 2) {
+      // stdout / stderr → envia como binário para o xterm.js
+      if (ws.readyState === _WSExec.OPEN) ws.send(payload);
+    } else if (channel === 3) {
+      // canal de erro do K8s
+      const errMsg = payload.toString("utf8");
+      if (errMsg.trim()) {
+        if (ws.readyState === _WSExec.OPEN) {
+          ws.send(JSON.stringify({ type: "error", message: errMsg }));
+        }
+      }
+    }
+  });
+
+  _k8sWs.on("error", (err) => {
+    console.error(`[exec] Erro K8s WebSocket: ${err.message}`);
     if (ws.readyState === _WSExec.OPEN) {
-      ws.send(JSON.stringify({ type: "error", message: `Erro no processo: ${err.message}` }));
+      ws.send(JSON.stringify({ type: "error", message: `Erro na conexão com a API do Kubernetes: ${err.message}` }));
       ws.close();
     }
   });
-  _proc.on("close", (code) => {
-    console.log(`[exec] processo encerrado com código ${code}`);
+
+  _k8sWs.on("close", (code, reason) => {
+    console.log(`[exec] K8s WebSocket fechado: ${code} ${reason}`);
     if (ws.readyState === _WSExec.OPEN) ws.close();
   });
 
+  // Recebe input do browser e encaminha para stdin (canal 0) da K8s Exec API
   ws.on("message", (raw) => {
     try {
       const msg = JSON.parse(raw.toString());
-      if (msg.type === "input" && _proc?.stdin) {
-        _proc.stdin.write(msg.data);
-      } else if (msg.type === "resize" && _proc?.stdin) {
-        _proc.stdin.write(`\x1b[8;${msg.rows};${msg.cols}t`);
+      if (msg.type === "input" && _k8sWs.readyState === _WSExec.OPEN) {
+        // Prepend canal 0 (stdin)
+        const inputBuf = Buffer.from(msg.data, "utf8");
+        const frame = Buffer.allocUnsafe(1 + inputBuf.length);
+        frame[0] = 0; // canal stdin
+        inputBuf.copy(frame, 1);
+        _k8sWs.send(frame);
+      } else if (msg.type === "resize" && _k8sWs.readyState === _WSExec.OPEN) {
+        // Canal 4 = resize (TerminalSize JSON)
+        const resizeJson = JSON.stringify({ Width: msg.cols, Height: msg.rows });
+        const resizeBuf  = Buffer.from(resizeJson, "utf8");
+        const frame = Buffer.allocUnsafe(1 + resizeBuf.length);
+        frame[0] = 4; // canal resize
+        resizeBuf.copy(frame, 1);
+        _k8sWs.send(frame);
       }
     } catch { /* mensagem não-JSON ignorada */ }
   });
-  ws.on("close", () => { if (_proc && !_proc.killed) _proc.kill("SIGTERM"); });
-  ws.on("error", () => { if (_proc && !_proc.killed) _proc.kill("SIGTERM"); });
+
+  ws.on("close", () => {
+    if (_k8sWs.readyState === _WSExec.OPEN || _k8sWs.readyState === _WSExec.CONNECTING) {
+      _k8sWs.close();
+    }
+  });
+  ws.on("error", () => {
+    if (_k8sWs.readyState === _WSExec.OPEN || _k8sWs.readyState === _WSExec.CONNECTING) {
+      _k8sWs.close();
+    }
+  });
 });

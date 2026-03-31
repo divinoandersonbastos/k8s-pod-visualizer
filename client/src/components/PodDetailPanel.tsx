@@ -7,7 +7,7 @@
  *  - Logs: terminal com busca, filtro por nível, auto-scroll, download
  */
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
@@ -168,6 +168,11 @@ function countEventsForPod(podId: string, getEventsForPod?: (id: string) => unkn
   return getEventsForPod(podId).length;
 }
 
+// ── Constantes de resize ─────────────────────────────────────────────────────
+const PANEL_WIDTH_KEY = "k8s-viz-detail-panel-width";
+const MIN_PANEL_WIDTH = 280;
+const MAX_PANEL_WIDTH_RATIO = 0.72; // 72% da largura da janela
+
 export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [eventCount, setEventCount] = useState(0);
@@ -175,6 +180,53 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [restartLoading, setRestartLoading] = useState(false);
   const [restartResult, setRestartResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // ── Resize drag state ──────────────────────────────────────────────────────
+  const [panelWidth, setPanelWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem(PANEL_WIDTH_KEY);
+      if (saved) {
+        const n = parseInt(saved, 10);
+        if (!isNaN(n) && n >= MIN_PANEL_WIDTH) return n;
+      }
+    } catch {}
+    return 320; // w-80 padrão
+  });
+  const isResizingRef = useRef(false);
+  const startXRef = useRef(0);
+  const startWidthRef = useRef(0);
+
+  const handleResizeMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingRef.current = true;
+    startXRef.current = e.clientX;
+    startWidthRef.current = panelWidth;
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!isResizingRef.current) return;
+      const delta = startXRef.current - ev.clientX; // arrastar para esquerda = aumentar
+      const maxW = Math.floor(window.innerWidth * MAX_PANEL_WIDTH_RATIO);
+      const newW = Math.max(MIN_PANEL_WIDTH, Math.min(maxW, startWidthRef.current + delta));
+      setPanelWidth(newW);
+    };
+
+    const onMouseUp = () => {
+      isResizingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setPanelWidth((w) => {
+        try { localStorage.setItem(PANEL_WIDTH_KEY, String(w)); } catch {}
+        return w;
+      });
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  }, [panelWidth]);
 
   const handleCopyName = useCallback(() => {
     if (!pod) return;
@@ -248,13 +300,42 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
           animate={{ x: 0, opacity: 1 }}
           exit={{ x: "100%", opacity: 0 }}
           transition={{ type: "spring", stiffness: 300, damping: 30 }}
-          className="absolute right-0 top-0 bottom-0 w-80 z-40 flex flex-col"
+          className="absolute right-0 top-0 bottom-0 z-40 flex flex-col"
           style={{
+            width: panelWidth,
             background: "oklch(0.13 0.018 250 / 0.97)",
             borderLeft: "1px solid oklch(0.28 0.04 250)",
             backdropFilter: "blur(12px)",
           }}
         >
+          {/* ── Handle de resize (borda esquerda arrável) ──────────────────────── */}
+          <div
+            onMouseDown={handleResizeMouseDown}
+            className="absolute left-0 top-0 bottom-0 z-50 group"
+            style={{ width: 6, cursor: "ew-resize" }}
+            title="Arraste para redimensionar o painel"
+          >
+            {/* Linha visível ao hover */}
+            <div
+              className="absolute inset-y-0 left-0 transition-all duration-150"
+              style={{
+                width: 2,
+                background: "oklch(0.72 0.18 200 / 0)",
+                transition: "background 0.15s",
+              }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.background = "oklch(0.72 0.18 200 / 0.6)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = "oklch(0.72 0.18 200 / 0)"; }}
+            />
+            {/* Grip dots no centro */}
+            <div
+              className="absolute top-1/2 -translate-y-1/2 flex flex-col gap-[3px] opacity-0 group-hover:opacity-100 transition-opacity"
+              style={{ left: 1 }}
+            >
+              {[0,1,2,3,4].map((i) => (
+                <div key={i} style={{ width: 3, height: 3, borderRadius: "50%", background: "oklch(0.72 0.18 200 / 0.7)" }} />
+              ))}
+            </div>
+          </div>
           {/* ── Header ──────────────────────────────────────────────────────── */}
           <div
             className="shrink-0 p-4 flex items-start justify-between gap-2"

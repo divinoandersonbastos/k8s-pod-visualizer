@@ -752,6 +752,42 @@ export function BubbleCanvas({
               <circle r={node.radius + 3} fill="none" stroke={nsRingColor} strokeWidth="1.5" strokeOpacity="0.45" />
             );
 
+            // ── Badge de crash: restarts > 3 ou qualquer container com OOMKilled ──────────
+            const isOomKilled = (node as PodMetrics).containersDetail?.some(
+              (cd) => cd.lastState?.reason === "OOMKilled"
+            ) ?? false;
+            const hasCrashBadge = (node as PodMetrics).restarts > 3 || isOomKilled;
+            const crashLabel = isOomKilled ? "OOM" : `×${(node as PodMetrics).restarts}`;
+            // Posição do badge: canto superior direito da bolha
+            const badgeR = Math.max(7, node.radius * 0.22);
+            const badgeCx = node.radius * 0.68;
+            const badgeCy = -(node.radius * 0.68);
+            const crashBadge = hasCrashBadge && (
+              <g style={{ pointerEvents: "none" }}>
+                {/* Halo pulsante vermelho */}
+                <circle cx={badgeCx} cy={badgeCy} r={badgeR + 3} fill="oklch(0.50 0.28 25 / 0.35)">
+                  <animate attributeName="r" values={`${badgeR + 2};${badgeR + 7};${badgeR + 2}`} dur="1.4s" repeatCount="indefinite" />
+                  <animate attributeName="opacity" values="0.5;0.15;0.5" dur="1.4s" repeatCount="indefinite" />
+                </circle>
+                {/* Disco vermelho sólido */}
+                <circle cx={badgeCx} cy={badgeCy} r={badgeR}
+                  fill="oklch(0.42 0.28 25)"
+                  stroke="oklch(0.72 0.28 25)"
+                  strokeWidth="1"
+                />
+                {/* Texto do badge */}
+                <text
+                  x={badgeCx} y={badgeCy}
+                  textAnchor="middle" dominantBaseline="central"
+                  fontSize={Math.max(5.5, badgeR * 0.72)}
+                  fontFamily="'JetBrains Mono', monospace" fontWeight="700"
+                  fill="oklch(0.96 0.05 25)"
+                >
+                  {crashLabel}
+                </text>
+              </g>
+            );
+
             // ──────────────────────────────────────────────────────────────────────────────
             // ESTILO: BOLHA — reflexo 3D aprimorado com múltiplos highlights
             // ──────────────────────────────────────────────────────────────────────────────
@@ -779,6 +815,7 @@ export function BubbleCanvas({
                 {/* Anel interno de borda */}
                 <circle r={node.radius - 2} fill="none" stroke="white" strokeWidth="0.8" strokeOpacity="0.12" />
                 {labelNodes}
+                {crashBadge}
               </g>
             );
 
@@ -836,6 +873,7 @@ export function BubbleCanvas({
                   <ellipse cx={-node.radius * 0.2} cy={-node.radius * 0.25} rx={node.radius * 0.3} ry={node.radius * 0.18} fill="white" opacity="0.45" />
                   <circle cx={-node.radius * 0.15} cy={-node.radius * 0.18} r={node.radius * 0.08} fill="white" opacity="0.7" />
                   {labelNodes}
+                  {crashBadge}
                 </g>
               );
             }
@@ -878,6 +916,7 @@ export function BubbleCanvas({
                   </circle>
                 )}
                 {labelNodes}
+                {crashBadge}
               </g>
             );
           })}
@@ -950,10 +989,15 @@ export function BubbleCanvas({
                   ? theme.statusColors.warningHue
                   : theme.statusColors.criticalHue;
                 const isSelected = pod.id === selectedPodId;
+                const podIsOom = pod.containersDetail?.some(
+                  (cd) => cd.lastState?.reason === "OOMKilled"
+                ) ?? false;
+                const podHasCrash = pod.restarts > 3 || podIsOom;
+                const podCrashLabel = podIsOom ? "OOM" : `×${pod.restarts}`;
                 return (
                   <div
                     key={pod.id}
-                    title={`${pod.name}\n${pod.namespace}\nCPU: ${pod.cpuPercent?.toFixed(1)}%  MEM: ${pod.memoryPercent?.toFixed(1)}%\nStatus: ${pod.status}`}
+                    title={`${pod.name}\n${pod.namespace}\nCPU: ${pod.cpuPercent?.toFixed(1)}%  MEM: ${pod.memoryPercent?.toFixed(1)}%\nStatus: ${pod.status}${podHasCrash ? `\n⚠ Crash: ${podCrashLabel}` : ""}`}
                     onClick={() => onSelectPod(isSelected ? null : pod)}
                     style={{
                       width: tileSize,
@@ -1007,6 +1051,34 @@ export function BubbleCanvas({
                         }}
                       >
                         {pod.name.length > Math.floor(tileSize / 7) ? pod.name.substring(0, Math.floor(tileSize / 7)) + "…" : pod.name}
+                      </span>
+                    )}
+                    {/* Badge de crash no canto superior direito do tile */}
+                    {podHasCrash && (
+                      <span
+                        style={{
+                          position: "absolute",
+                          top: 1,
+                          right: 1,
+                          width: Math.max(6, Math.round(tileSize * 0.28)),
+                          height: Math.max(6, Math.round(tileSize * 0.28)),
+                          borderRadius: "50%",
+                          background: "oklch(0.42 0.28 25)",
+                          border: "1px solid oklch(0.72 0.28 25)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: Math.max(4, Math.round(tileSize * 0.16)),
+                          fontFamily: "'JetBrains Mono', monospace",
+                          fontWeight: 700,
+                          color: "oklch(0.96 0.05 25)",
+                          pointerEvents: "none",
+                          userSelect: "none",
+                          animation: "crash-pulse 1.4s ease-in-out infinite",
+                          zIndex: 2,
+                        }}
+                      >
+                        {tileSize >= 20 ? podCrashLabel : ""}
                       </span>
                     )}
                   </div>
@@ -1188,11 +1260,20 @@ export function BubbleCanvas({
                     : `${tooltip.pod.memoryLimit}Mi`}
                 </span>
                 <span className="text-slate-400">Restarts</span>
-                <span className="text-slate-200">{tooltip.pod.restarts}</span>
+                <span style={{ color: tooltip.pod.restarts > 3 ? "oklch(0.75 0.25 25)" : "oklch(0.85 0.01 250)" }}>
+                  {tooltip.pod.restarts}
+                  {tooltip.pod.restarts > 3 && " ⚠"}
+                </span>
                 <span className="text-slate-400">Status</span>
                 <span style={{ color: STATUS_COLORS[tooltip.pod.status].label }}>
                   {tooltip.pod.status === "healthy" ? "Saudável" : tooltip.pod.status === "warning" ? "Atenção" : "Crítico"}
                 </span>
+                {tooltip.pod.containersDetail?.some((cd) => cd.lastState?.reason === "OOMKilled") && (
+                  <>
+                    <span className="text-slate-400">OOMKilled</span>
+                    <span style={{ color: "oklch(0.75 0.25 25)", fontWeight: 700 }}>Sim ☠</span>
+                  </>
+                )}
               </div>
               <div className="mt-2 text-slate-500 text-[10px]">Clique para detalhes</div>
             </div>

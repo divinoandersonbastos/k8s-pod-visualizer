@@ -214,4 +214,16 @@
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
   }
+
+  /* Badge de crash nos tiles do mapa de calor */
+  @keyframes crash-pulse {
+    0%, 100% {
+      box-shadow: 0 0 0 0 oklch(0.62 0.28 25 / 0.7);
+      opacity: 1;
+    }
+    50% {
+      box-shadow: 0 0 0 4px oklch(0.62 0.28 25 / 0);
+      opacity: 0.85;
+    }
+  }
 }

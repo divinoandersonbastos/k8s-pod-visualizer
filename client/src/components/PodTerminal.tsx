@@ -1,7 +1,10 @@
 /**
  * PodTerminal — Terminal interativo xterm.js conectado via WebSocket ao backend
- * Abre um shell dentro do pod/container selecionado via kubectl exec
- * Visível apenas para perfis SRE e ADMIN
+ *
+ * Lógica de URL do WebSocket:
+ *  - inCluster=true  → usa rota relativa /api/exec (mesmo host do frontend)
+ *  - apiUrl definido → usa apiUrl como base (servidor externo do cluster)
+ *  - nenhum dos dois → exibe mensagem de erro orientando a configurar o servidor
  */
 import { useEffect, useRef, useCallback } from "react";
 import { Terminal as XTerm } from "@xterm/xterm";
@@ -14,7 +17,6 @@ interface PodTerminalProps {
   container?: string;
   apiUrl?: string;
   inCluster?: boolean;
-  onClose?: () => void;
 }
 
 export function PodTerminal({
@@ -76,22 +78,42 @@ export function PodTerminal({
     if (container) term.writeln(`\x1b[32m  Container: \x1b[1m${container}\x1b[0m`);
     term.writeln(`\x1b[90m  Aguardando shell...\x1b[0m\r\n`);
 
-    // Constrói a URL do WebSocket
-    // Em produção (in-cluster), usa o mesmo host; em dev usa o apiUrl configurado
-    let wsBase: string;
-    if (inCluster || !apiUrl) {
+    // ── Constrói a URL do WebSocket ──────────────────────────────────────────
+    // Cenário 1: in-cluster → usa rota relativa (mesmo host do servidor)
+    // Cenário 2: apiUrl definido → usa o servidor externo do cluster
+    // Cenário 3: nenhum → erro orientativo
+    let wsUrl: string;
+
+    if (inCluster) {
+      // In-cluster: o servidor Node.js serve o frontend E expõe /api/exec
       const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      wsBase = `${proto}//${window.location.host}`;
+      const params = new URLSearchParams({
+        pod: podName,
+        namespace,
+        ...(container ? { container } : {}),
+      });
+      wsUrl = `${proto}//${window.location.host}/api/exec?${params.toString()}`;
+    } else if (apiUrl) {
+      // Servidor externo: converte http(s) → ws(s)
+      const wsBase = apiUrl
+        .replace(/^https:\/\//, "wss://")
+        .replace(/^http:\/\//, "ws://")
+        .replace(/\/$/, "");
+      const params = new URLSearchParams({
+        pod: podName,
+        namespace,
+        ...(container ? { container } : {}),
+      });
+      wsUrl = `${wsBase}/api/exec?${params.toString()}`;
     } else {
-      wsBase = apiUrl.replace(/^http/, "ws");
+      // Sem servidor configurado
+      term.writeln(`\r\n\x1b[31m✖ Servidor não configurado.\x1b[0m`);
+      term.writeln(`\x1b[90m  Configure a URL do servidor em Configurações ou instale o`);
+      term.writeln(`  server-in-cluster.js no cluster para usar esta funcionalidade.\x1b[0m`);
+      return;
     }
 
-    const params = new URLSearchParams({
-      pod: podName,
-      namespace,
-      ...(container ? { container } : {}),
-    });
-    const wsUrl = `${wsBase}/api/exec?${params.toString()}`;
+    term.writeln(`\x1b[90m  → ${wsUrl}\x1b[0m\r\n`);
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
@@ -100,8 +122,7 @@ export function PodTerminal({
     ws.onopen = () => {
       term.clear();
       // Envia dimensões iniciais
-      const dims = { cols: term.cols, rows: term.rows };
-      ws.send(JSON.stringify({ type: "resize", ...dims }));
+      ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
     };
 
     ws.onmessage = (event) => {
@@ -112,8 +133,9 @@ export function PodTerminal({
             term.writeln(`\r\n\x1b[31m✖ Erro: ${msg.message}\x1b[0m`);
             return;
           }
+          // string normal do terminal
+          term.write(event.data);
         } catch {
-          // não é JSON, é dado do terminal
           term.write(event.data);
         }
       } else {
@@ -125,10 +147,13 @@ export function PodTerminal({
     ws.onerror = () => {
       term.writeln(`\r\n\x1b[31m✖ Falha na conexão WebSocket.\x1b[0m`);
       term.writeln(`\x1b[90m  Verifique se o servidor está acessível e se kubectl está configurado.\x1b[0m`);
+      term.writeln(`\x1b[90m  URL tentada: ${wsUrl}\x1b[0m`);
     };
 
     ws.onclose = (e) => {
-      term.writeln(`\r\n\x1b[33m⚡ Sessão encerrada (código ${e.code}).\x1b[0m`);
+      if (e.code !== 1000) {
+        term.writeln(`\r\n\x1b[33m⚡ Sessão encerrada (código ${e.code}).\x1b[0m`);
+      }
     };
 
     // Envia input do usuário para o WebSocket

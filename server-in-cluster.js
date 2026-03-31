@@ -3087,3 +3087,89 @@ server.listen(PORT, () => {
 // ── Rotas de Autenticação e Gestão de Usuários (adicionadas em v3.0) ──────────
 // Estas rotas são registradas via patch no final do arquivo para não quebrar
 // a estrutura existente. O roteamento é feito dentro do createServer handler.
+
+// ── WebSocket Terminal Exec (adicionado em v4.9.0) ────────────────────────────
+// Endpoint: WS /api/exec?pod=<name>&namespace=<ns>&container=<c>
+// Abre um shell interativo dentro do pod via kubectl exec
+// Visível apenas para perfis SRE e ADMIN (controle feito no frontend)
+import { WebSocketServer as _WSSExec, WebSocket as _WSExec } from "ws";
+import { spawn as _spawnExec } from "child_process";
+
+const _wssExec = new _WSSExec({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  const _url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  if (_url.pathname === "/api/exec") {
+    _wssExec.handleUpgrade(req, socket, head, (ws) => {
+      _wssExec.emit("connection", ws, req);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+_wssExec.on("connection", (ws, req) => {
+  const _url = new URL(req.url ?? "/", `http://${req.headers.host}`);
+  const _pod       = _url.searchParams.get("pod")       ?? "";
+  const _namespace = _url.searchParams.get("namespace") ?? "default";
+  const _container = _url.searchParams.get("container") ?? "";
+
+  if (!_pod) {
+    ws.send(JSON.stringify({ type: "error", message: "Parâmetro 'pod' é obrigatório." }));
+    ws.close();
+    return;
+  }
+
+  const _args = [
+    "exec", "-it",
+    _pod,
+    "-n", _namespace,
+    ...(_container ? ["-c", _container] : []),
+    "--",
+    "/bin/sh", "-c",
+    "TERM=xterm-256color; export TERM; (bash || sh)",
+  ];
+
+  console.log(`[exec] kubectl ${_args.join(" ")}`);
+
+  let _proc = null;
+  try {
+    _proc = _spawnExec("kubectl", _args, {
+      env: { ...process.env, TERM: "xterm-256color" },
+    });
+  } catch (err) {
+    ws.send(JSON.stringify({ type: "error", message: `Falha ao iniciar kubectl: ${err}` }));
+    ws.close();
+    return;
+  }
+
+  _proc.stdout?.on("data", (chunk) => {
+    if (ws.readyState === _WSExec.OPEN) ws.send(chunk);
+  });
+  _proc.stderr?.on("data", (chunk) => {
+    if (ws.readyState === _WSExec.OPEN) ws.send(chunk);
+  });
+  _proc.on("error", (err) => {
+    if (ws.readyState === _WSExec.OPEN) {
+      ws.send(JSON.stringify({ type: "error", message: `Erro no processo: ${err.message}` }));
+      ws.close();
+    }
+  });
+  _proc.on("close", (code) => {
+    console.log(`[exec] processo encerrado com código ${code}`);
+    if (ws.readyState === _WSExec.OPEN) ws.close();
+  });
+
+  ws.on("message", (raw) => {
+    try {
+      const msg = JSON.parse(raw.toString());
+      if (msg.type === "input" && _proc?.stdin) {
+        _proc.stdin.write(msg.data);
+      } else if (msg.type === "resize" && _proc?.stdin) {
+        _proc.stdin.write(`\x1b[8;${msg.rows};${msg.cols}t`);
+      }
+    } catch { /* mensagem não-JSON ignorada */ }
+  });
+  ws.on("close", () => { if (_proc && !_proc.killed) _proc.kill("SIGTERM"); });
+  ws.on("error", () => { if (_proc && !_proc.killed) _proc.kill("SIGTERM"); });
+});

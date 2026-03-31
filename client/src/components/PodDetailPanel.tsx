@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
-  RotateCcw, Copy, Check, Network, Shield,
+  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
@@ -180,6 +180,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [restartLoading, setRestartLoading] = useState(false);
   const [restartResult, setRestartResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [logsFullscreen, setLogsFullscreen] = useState(false);
 
   // ── Resize drag state ──────────────────────────────────────────────────────
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -274,6 +275,13 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
     const interval = setInterval(update, 3000);
     return () => clearInterval(interval);
   }, [pod, getEventsForPod]);
+
+  // Fechar fullscreen com Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setLogsFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Deriva containerStatuses a partir de containersDetail para passar ao PodLogsTab
   const containerStatuses = pod?.containersDetail?.map((cd) => ({
@@ -429,240 +437,270 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
           {/* ── Conteúdo das tabs ────────────────────────────────────────────── */}
           <div className="flex-1 relative overflow-hidden">
 
-            {/* Tab: Detalhes */}
+            {/* Tab: Detalhes — layout baseado na imagem de referência */}
             {activeTab === "details" && (
-              <div className="absolute inset-0 overflow-y-auto p-4 space-y-4">
+              <div className="absolute inset-0 overflow-y-auto">
+                <div className="p-3 space-y-3">
 
-                {/* OOM Risk Summary (se houver risco) */}
-                {oomRisk && oomRisk.riskLevel !== "none" && (
-                  <OomRiskSummary risk={oomRisk} pod={pod} />
-                )}
-
-                {/* Status + métricas */}
-                <div
-                  className="rounded-xl p-3 space-y-3"
-                  style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                >
+                  {/* ── Badge de status ─────────────────────────────────────── */}
                   <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>Status</span>
                     <span
-                      className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                      className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full"
                       style={{
                         background: STATUS_CONFIG[pod.status].bg,
                         border: `1px solid ${STATUS_CONFIG[pod.status].border}`,
                         color: STATUS_CONFIG[pod.status].color,
                       }}
                     >
+                      <span style={{ width: 6, height: 6, borderRadius: "50%", background: STATUS_CONFIG[pod.status].color, display: "inline-block", boxShadow: `0 0 6px ${STATUS_CONFIG[pod.status].color}` }} />
                       {STATUS_CONFIG[pod.status].label}
                     </span>
+                    {oomRisk && oomRisk.riskLevel !== "none" && <OomRiskBadge risk={oomRisk} />}
                   </div>
 
-                   {/* Gauges circulares CPU + MEM */}
-                  <div style={{ borderTop: "1px solid oklch(0.22 0.03 250)" }} />
-                  <div className="grid grid-cols-2 gap-3">
-                    {[
-                      { label: "CPU", pct: pod.cpuPercent, sub: `${pod.cpuUsage}m / ${pod.cpuLimit}m`, color: "oklch(0.72 0.18 142)" },
-                      { label: "MEM", pct: pod.memoryPercent, sub: `${formatMem(pod.memoryUsage)} / ${formatMem(pod.memoryLimit)}`, color: "oklch(0.72 0.18 50)" },
-                    ].map(({ label, pct, sub, color }) => (
-                      <div key={label} className="flex flex-col items-center gap-1">
-                        <svg width="80" height="80" viewBox="0 0 80 80">
-                          <circle cx="40" cy="40" r="32" fill="none" stroke="oklch(0.22 0.03 250)" strokeWidth="8" />
-                          <circle
-                            cx="40" cy="40" r="32"
-                            fill="none"
-                            stroke={color}
-                            strokeWidth="8"
-                            strokeLinecap="round"
-                            strokeDasharray={`${Math.min(100, pct) / 100 * 201} 201`}
-                            strokeDashoffset="50"
-                            style={{ filter: `drop-shadow(0 0 4px ${color})`, transition: "stroke-dasharray 0.6s ease" }}
-                          />
-                          <text x="40" y="44" textAnchor="middle" fontSize="14" fontWeight="700" fill={color} fontFamily="'JetBrains Mono', monospace">
-                            {Math.round(pct)}%
-                          </text>
-                        </svg>
-                        <span className="text-[10px] uppercase tracking-widest" style={{ color: "oklch(0.55 0.01 250)" }}>{label}</span>
-                        <span className="text-[9px] font-mono text-center" style={{ color: "oklch(0.45 0.01 250)" }}>{sub}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Informações do pod */}
-                <div
-                  className="rounded-xl p-3 space-y-2"
-                  style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                >
-                  <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>Info</div>
-                  {[
-                    { icon: <Server size={10} />,  label: "Node",       value: pod.node },
-                    { icon: <Box size={13} />,      label: "Containers", value: `${pod.ready}/${pod.containers} prontos` },
-                    { icon: <RotateCcw size={10} />, label: "Restarts",  value: String(pod.restarts) },
-                    { icon: <Clock size={10} />,    label: "Start",      value: pod.startTime ? new Date(pod.startTime).toLocaleString("pt-BR") : "—" },
-                    { icon: <Network size={10} />,  label: "Pod IP",     value: pod.podIP || "—" },
-                  ].map(({ icon, label, value }) => (
-                    <div key={label} className="flex items-start justify-between gap-2">
-                      <span className="flex items-center gap-1 text-[10px] shrink-0" style={{ color: "oklch(0.45 0.01 250)" }}>
-                        {icon} {label}
+                  {/* ── CPU ─────────────────────────────────────────────────── */}
+                  <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Cpu size={11} style={{ color: "oklch(0.72 0.18 142)" }} />
+                      <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.50 0.01 250)" }}>CPU</span>
+                    </div>
+                    <div className="flex items-end justify-between mb-1.5">
+                      <span className="text-2xl font-bold font-mono leading-none" style={{ color: "oklch(0.72 0.18 142)", textShadow: "0 0 12px oklch(0.72 0.18 142 / 0.4)" }}>
+                        {pod.cpuUsage}m
                       </span>
-                      <span className="text-[10px] font-mono text-right break-all" style={{ color: "oklch(0.70 0.01 250)" }}>
-                        {value}
+                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>
+                        / {pod.cpuLimit}m ({Math.round(pod.cpuPercent)}%)
                       </span>
                     </div>
-                  ))}
-                </div>
+                    <MetricBar value={pod.cpuPercent} max={100} color="oklch(0.72 0.18 142)" />
+                  </div>
 
-                {/* Containers detail */}
-                {pod.containersDetail && pod.containersDetail.length > 0 && (
-                  <div
-                    className="rounded-xl p-3 space-y-2"
-                    style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                  >
-                    <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>Containers</div>
-                    {pod.containersDetail.map((cd) => (
-                      <div key={cd.name} className="space-y-1">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="text-[10px] font-mono font-semibold truncate" style={{ color: "oklch(0.75 0.01 250)" }}>{cd.name}</span>
-                          <span
-                            className="text-[9px] px-1.5 py-0.5 rounded font-mono shrink-0"
+                  {/* ── MEMÓRIA ─────────────────────────────────────────────── */}
+                  <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <MemoryStick size={11} style={{ color: "oklch(0.72 0.18 50)" }} />
+                      <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.50 0.01 250)" }}>MEMÓRIA</span>
+                    </div>
+                    <div className="flex items-end justify-between mb-1.5">
+                      <span className="text-2xl font-bold font-mono leading-none" style={{ color: "oklch(0.72 0.18 50)", textShadow: "0 0 12px oklch(0.72 0.18 50 / 0.4)" }}>
+                        {formatMem(pod.memoryUsage)}
+                      </span>
+                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>
+                        / {formatMem(pod.memoryLimit)} ({Math.round(pod.memoryPercent)}%)
+                      </span>
+                    </div>
+                    <MetricBar value={pod.memoryPercent} max={100} color="oklch(0.72 0.18 50)" />
+                  </div>
+
+                  {/* ── Histórico (últimos 5 min) ────────────────────────────── */}
+                  {getHistory && (
+                    <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                      <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>
+                        Histórico (últimos 5 min)
+                      </div>
+                      <PodHistoryChart history={getHistory(pod.id)} />
+                    </div>
+                  )}
+
+                  {/* ── Recursos do Deployment ──────────────────────────────── */}
+                  <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                    <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>Recursos do Deployment</div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { label: "CPU Request", value: pod.resources.requests.cpu != null ? `${pod.resources.requests.cpu}m` : null, color: "oklch(0.72 0.18 142)" },
+                        { label: "CPU Limit",   value: pod.resources.limits.cpu   != null ? `${pod.resources.limits.cpu}m`   : null, color: "oklch(0.72 0.18 142)" },
+                        { label: "MEM Request", value: pod.resources.requests.memory != null ? formatMem(pod.resources.requests.memory) : null, color: "oklch(0.72 0.18 50)" },
+                        { label: "MEM Limit",   value: pod.resources.limits.memory   != null ? formatMem(pod.resources.limits.memory)   : null, color: "oklch(0.72 0.18 50)" },
+                      ].map(({ label, value, color }) => (
+                        <div
+                          key={label}
+                          className="rounded-lg p-2.5"
+                          style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+                        >
+                          <div className="text-[9px] font-mono uppercase tracking-wider mb-1" style={{ color: "oklch(0.45 0.01 250)" }}>{label}</div>
+                          {value ? (
+                            <div className="text-sm font-bold font-mono" style={{ color }}>{value}</div>
+                          ) : (
+                            <div className="text-[10px] font-mono" style={{ color: "oklch(0.38 0.01 250)" }}>Não definido</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* ── Alertas Ativos ──────────────────────────────────────── */}
+                  {pod.alerts.length > 0 && (
+                    <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                      <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>
+                        Alertas Ativos ({pod.alerts.length})
+                      </div>
+                      <div className="space-y-2">
+                        {pod.alerts.map((alert, i) => (
+                          <div
+                            key={i}
+                            className="rounded-lg p-2.5 flex items-start gap-2"
                             style={{
-                              background: cd.ready ? "oklch(0.72 0.18 142 / 0.12)" : "oklch(0.62 0.22 25 / 0.12)",
-                              color: cd.ready ? "oklch(0.72 0.18 142)" : "oklch(0.72 0.22 25)",
-                              border: `1px solid ${cd.ready ? "oklch(0.72 0.18 142 / 0.3)" : "oklch(0.62 0.22 25 / 0.3)"}`,
+                              background: alert.severity === "critical" ? "oklch(0.62 0.22 25 / 0.08)" : "oklch(0.72 0.18 50 / 0.08)",
+                              border: `1px solid ${alert.severity === "critical" ? "oklch(0.62 0.22 25 / 0.35)" : "oklch(0.72 0.18 50 / 0.35)"}`,
                             }}
                           >
-                            {cd.stateReason || cd.state}
+                            {alert.severity === "critical" ? (
+                              <AlertCircle size={11} className="shrink-0 mt-0.5" style={{ color: "oklch(0.72 0.22 25)" }} />
+                            ) : (
+                              <AlertTriangle size={11} className="shrink-0 mt-0.5" style={{ color: "oklch(0.80 0.18 50)" }} />
+                            )}
+                            <span className="text-[10px] leading-relaxed" style={{ color: "oklch(0.72 0.01 250)" }}>
+                              {alert.message}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── OOM Risk Summary ────────────────────────────────────── */}
+                  {oomRisk && oomRisk.riskLevel !== "none" && (
+                    <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                      <OomRiskSummary risk={oomRisk} pod={pod} />
+                    </div>
+                  )}
+
+                  {/* ── Informações ─────────────────────────────────────────── */}
+                  <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                    <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>Informações</div>
+                    <div className="space-y-1.5">
+                      {[
+                        { icon: <Box size={10} />,       label: "Namespace",  value: pod.namespace },
+                        { icon: <Server size={10} />,    label: "Node",       value: pod.node },
+                        { icon: <RotateCcw size={10} />, label: "Restarts",   value: String(pod.restarts) },
+                        { icon: <Clock size={10} />,     label: "Idade",      value: pod.startTime ? new Date(pod.startTime).toLocaleString("pt-BR") : "—" },
+                        { icon: <Network size={10} />,   label: "Pod IP",     value: pod.podIP || "—" },
+                        { icon: <Box size={10} />,       label: "Containers", value: `${pod.ready}/${pod.containers} prontos` },
+                      ].map(({ icon, label, value }) => (
+                        <div key={label} className="flex items-start justify-between gap-2">
+                          <span className="flex items-center gap-1.5 text-[10px] shrink-0" style={{ color: "oklch(0.45 0.01 250)" }}>
+                            {icon} {label}
+                          </span>
+                          <span className="text-[10px] font-mono text-right break-all" style={{ color: "oklch(0.72 0.01 250)" }}>
+                            {value}
                           </span>
                         </div>
-                        <div className="text-[9px] font-mono truncate" style={{ color: "oklch(0.40 0.01 250)" }}>{cd.image}</div>
-                        {cd.restarts > 0 && (
-                          <div className="text-[9px]" style={{ color: "oklch(0.65 0.18 50)" }}>
-                            {cd.restarts} restart{cd.restarts > 1 ? "s" : ""}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Security Risk */}
-                {pod.securityRisk && pod.securityRisk !== "OK" && (
-                  <div
-                    className="rounded-xl p-3"
-                    style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                  >
-                    <div className="flex items-center gap-2 mb-2">
-                      <Shield size={11} style={{ color: "oklch(0.72 0.22 25)" }} />
-                      <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>Segurança</span>
-                      <span
-                        className="ml-auto text-[9px] px-1.5 py-0.5 rounded font-mono font-bold"
-                        style={{
-                          background: "oklch(0.62 0.22 25 / 0.15)",
-                          border: "1px solid oklch(0.62 0.22 25 / 0.4)",
-                          color: "oklch(0.80 0.22 25)",
-                        }}
-                      >
-                        {pod.securityRisk}
-                      </span>
+                      ))}
                     </div>
-                    <div className="space-y-1">
-                      {(pod.securityIssues || []).map((issue) => (
-                        <div key={issue} className="flex items-center gap-1.5 text-[10px]" style={{ color: "oklch(0.65 0.18 50)" }}>
-                          <AlertTriangle size={9} />
-                          {issue}
+                  </div>
+
+                  {/* ── Security Risk ───────────────────────────────────────── */}
+                  {pod.securityRisk && pod.securityRisk !== "OK" && (
+                    <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                      <div className="flex items-center gap-2 mb-2">
+                        <Shield size={11} style={{ color: "oklch(0.72 0.22 25)" }} />
+                        <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>Segurança</span>
+                        <span
+                          className="ml-auto text-[9px] px-1.5 py-0.5 rounded font-mono font-bold"
+                          style={{ background: "oklch(0.62 0.22 25 / 0.15)", border: "1px solid oklch(0.62 0.22 25 / 0.4)", color: "oklch(0.80 0.22 25)" }}
+                        >
+                          {pod.securityRisk}
+                        </span>
+                      </div>
+                      <div className="space-y-1">
+                        {(pod.securityIssues || []).map((issue) => (
+                          <div key={issue} className="flex items-center gap-1.5 text-[10px]" style={{ color: "oklch(0.65 0.18 50)" }}>
+                            <AlertTriangle size={9} /> {issue}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Labels ──────────────────────────────────────────────── */}
+                  {Object.keys(pod.labels).length > 0 && (
+                    <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                      <div className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>
+                        <Tag size={9} /> Labels
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(pod.labels).map(([k, v]) => (
+                          <span
+                            key={k}
+                            className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                            style={{ background: "oklch(0.20 0.03 250)", color: "oklch(0.60 0.01 250)", border: "1px solid oklch(0.26 0.04 250)" }}
+                          >
+                            {k}={v}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Gauges circulares CPU + MEM (rodapé) ────────────────── */}
+                  <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      {[
+                        { label: "CPU", pct: pod.cpuPercent, color: "oklch(0.72 0.18 142)" },
+                        { label: "MEM", pct: pod.memoryPercent, color: "oklch(0.72 0.18 50)" },
+                      ].map(({ label, pct, color }) => (
+                        <div key={label} className="flex flex-col items-center gap-1">
+                          <svg width="72" height="72" viewBox="0 0 80 80">
+                            <circle cx="40" cy="40" r="32" fill="none" stroke="oklch(0.22 0.03 250)" strokeWidth="8" />
+                            <circle
+                              cx="40" cy="40" r="32"
+                              fill="none" stroke={color} strokeWidth="8" strokeLinecap="round"
+                              strokeDasharray={`${Math.min(100, pct) / 100 * 201} 201`}
+                              strokeDashoffset="50"
+                              style={{ filter: `drop-shadow(0 0 4px ${color})`, transition: "stroke-dasharray 0.6s ease" }}
+                            />
+                            <text x="40" y="44" textAnchor="middle" fontSize="13" fontWeight="700" fill={color} fontFamily="'JetBrains Mono', monospace">
+                              {Math.round(pct)}%
+                            </text>
+                          </svg>
+                          <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.55 0.01 250)" }}>{label}</span>
                         </div>
                       ))}
                     </div>
                   </div>
-                )}
 
-                {/* Resources */}
-                <div
-                  className="rounded-xl p-3 space-y-2"
-                  style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                >
-                  <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>Resources</div>
-                  {[
-                    { label: "CPU Request",    value: pod.resources.requests.cpu    != null ? `${pod.resources.requests.cpu}m`    : "—" },
-                    { label: "CPU Limit",      value: pod.resources.limits.cpu      != null ? `${pod.resources.limits.cpu}m`      : "—" },
-                    { label: "Mem Request",    value: pod.resources.requests.memory != null ? formatMem(pod.resources.requests.memory) : "—" },
-                    { label: "Mem Limit",      value: pod.resources.limits.memory   != null ? formatMem(pod.resources.limits.memory)   : "—" },
-                  ].map(({ label, value }) => (
-                    <div key={label} className="flex justify-between">
-                      <span className="text-[10px]" style={{ color: "oklch(0.45 0.01 250)" }}>{label}</span>
-                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.70 0.01 250)" }}>{value}</span>
-                    </div>
-                  ))}
+                  {/* ── Botão Ver logs do pod ────────────────────────────────── */}
+                  <div className="pt-1 pb-2">
+                    <button
+                      onClick={() => setActiveTab("logs")}
+                      className="w-full py-2.5 rounded-lg text-[11px] font-semibold flex items-center justify-center gap-2 transition-all"
+                      style={{
+                        background: "oklch(0.72 0.18 200 / 0.10)",
+                        border: "1px solid oklch(0.72 0.18 200 / 0.35)",
+                        color: "oklch(0.72 0.18 200)",
+                      }}
+                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "oklch(0.72 0.18 200 / 0.18)"; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "oklch(0.72 0.18 200 / 0.10)"; }}
+                    >
+                      <ScrollText size={13} />
+                      Ver logs do pod
+                    </button>
+                  </div>
+
                 </div>
-
-                {/* Alertas */}
-                {pod.alerts.length > 0 && (
-                  <div
-                    className="rounded-xl p-3 space-y-2"
-                    style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                  >
-                    <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>
-                      Alertas ({pod.alerts.length})
-                    </div>
-                    {pod.alerts.map((alert, i) => (
-                      <div key={i} className="flex items-start gap-2">
-                        {alert.severity === "critical" ? (
-                          <AlertCircle size={11} className="shrink-0 mt-0.5" style={{ color: "oklch(0.62 0.22 25)" }} />
-                        ) : alert.severity === "warning" ? (
-                          <AlertTriangle size={11} className="shrink-0 mt-0.5" style={{ color: "oklch(0.72 0.18 50)" }} />
-                        ) : (
-                          <Info size={11} className="shrink-0 mt-0.5" style={{ color: "oklch(0.72 0.18 200)" }} />
-                        )}
-                        <span className="text-[10px] leading-relaxed" style={{ color: "oklch(0.65 0.01 250)" }}>
-                          {alert.message}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {/* Labels */}
-                {Object.keys(pod.labels).length > 0 && (
-                  <div
-                    className="rounded-xl p-3"
-                    style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                  >
-                    <div className="flex items-center gap-1 text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>
-                      <Tag size={9} /> Labels
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {Object.entries(pod.labels).map(([k, v]) => (
-                        <span
-                          key={k}
-                          className="text-[9px] font-mono px-1.5 py-0.5 rounded"
-                          style={{ background: "oklch(0.20 0.03 250)", color: "oklch(0.55 0.01 250)", border: "1px solid oklch(0.26 0.04 250)" }}
-                        >
-                          {k}={v}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Histórico de CPU/MEM */}
-                {getHistory && (
-                  <div
-                    className="rounded-xl p-3"
-                    style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.24 0.035 250)" }}
-                  >
-                    <div className="text-[10px] font-mono uppercase tracking-widest mb-2" style={{ color: "oklch(0.45 0.01 250)" }}>
-                      Histórico
-                    </div>
-                    <PodHistoryChart history={getHistory(pod.id)} />
-                  </div>
-                )}
-
               </div>
             )}
 
             {/* Tab: Logs */}
             {activeTab === "logs" && (
               <div className="absolute inset-0 flex flex-col">
+                {/* Botão de fullscreen flutuante no canto superior direito */}
+                <div className="absolute top-2 right-2 z-20">
+                  <button
+                    onClick={() => setLogsFullscreen(true)}
+                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-mono transition-all"
+                    style={{
+                      background: "oklch(0.18 0.025 250 / 0.9)",
+                      border: "1px solid oklch(0.72 0.18 200 / 0.35)",
+                      color: "oklch(0.72 0.18 200)",
+                      backdropFilter: "blur(4px)",
+                    }}
+                    title="Expandir logs em tela cheia"
+                  >
+                    <Maximize2 size={11} />
+                    Expandir
+                  </button>
+                </div>
                 <PodLogsTab
                   podName={pod.name}
                   namespace={pod.namespace}
@@ -673,6 +711,69 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                 />
               </div>
             )}
+
+            {/* ── Overlay fullscreen de logs ──────────────────────────────── */}
+            <AnimatePresence>
+              {logsFullscreen && (
+                <motion.div
+                  key="logs-fullscreen"
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  transition={{ duration: 0.18, ease: "easeOut" }}
+                  className="fixed inset-0 z-[100] flex flex-col"
+                  style={{
+                    background: "oklch(0.09 0.015 250)",
+                    borderTop: "2px solid oklch(0.72 0.18 200 / 0.4)",
+                  }}
+                >
+                  {/* Header do fullscreen */}
+                  <div
+                    className="shrink-0 flex items-center justify-between px-4 py-2.5"
+                    style={{
+                      background: "oklch(0.12 0.018 250)",
+                      borderBottom: "1px solid oklch(0.22 0.03 250)",
+                    }}
+                  >
+                    <div className="flex items-center gap-2">
+                      <ScrollText size={14} style={{ color: "oklch(0.72 0.18 200)" }} />
+                      <span className="text-[11px] font-mono font-semibold" style={{ color: "oklch(0.72 0.18 200)" }}>Logs</span>
+                      <span className="text-[10px] font-mono" style={{ color: "oklch(0.45 0.01 250)" }}>— {pod.name}</span>
+                      <span
+                        className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                        style={{ background: "oklch(0.72 0.18 200 / 0.12)", border: "1px solid oklch(0.72 0.18 200 / 0.3)", color: "oklch(0.72 0.18 200)" }}
+                      >
+                        {pod.namespace}
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => setLogsFullscreen(false)}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[10px] font-mono transition-all"
+                      style={{
+                        background: "oklch(0.18 0.025 250)",
+                        border: "1px solid oklch(0.30 0.04 250)",
+                        color: "oklch(0.60 0.01 250)",
+                      }}
+                      title="Sair do modo tela cheia (Esc)"
+                    >
+                      <Minimize2 size={11} />
+                      Minimizar
+                    </button>
+                  </div>
+                  {/* Conteúdo fullscreen */}
+                  <div className="flex-1 relative overflow-hidden">
+                    <PodLogsTab
+                      podName={pod.name}
+                      namespace={pod.namespace}
+                      containerNames={pod.containerNames}
+                      containerStatuses={containerStatuses}
+                      apiUrl={apiUrl}
+                      inCluster={inCluster}
+                    />
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Tab: Eventos */}
             {activeTab === "events" && (

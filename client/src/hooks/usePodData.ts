@@ -55,6 +55,14 @@ export interface ContainerProbe {
   periodSeconds: number;
 }
 
+export interface ContainerLastState {
+  state: string;
+  reason: string | null;
+  exitCode: number | null;
+  finishedAt: string | null;
+  startedAt: string | null;
+}
+
 export interface ContainerDetail {
   name: string;
   image: string;
@@ -64,6 +72,7 @@ export interface ContainerDetail {
   stateReason: string;
   readinessProbe: ContainerProbe | null;
   livenessProbe: ContainerProbe | null;
+  lastState?: ContainerLastState | null;
 }
 
 export interface PodMetrics {

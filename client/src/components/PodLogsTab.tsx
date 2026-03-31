@@ -18,13 +18,31 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import {
   RefreshCw, Download, Search, X, ChevronDown,
   AlertTriangle, Info, Bug, Terminal, Loader2, WifiOff, Layers,
-  History, Radio,
+  History, Radio, SkipBack, Skull, RotateCcw,
 } from "lucide-react";
+
+// Estado de um container (para detectar CrashLoopBackOff / terminated)
+export interface ContainerStatus {
+  name: string;
+  ready: boolean;
+  restartCount: number;
+  state: "running" | "waiting" | "terminated";
+  reason?: string;        // CrashLoopBackOff, OOMKilled, Error, Completed...
+  exitCode?: number;
+  lastState?: {
+    state: "terminated" | "running" | "waiting";
+    reason?: string;
+    exitCode?: number;
+    finishedAt?: string;
+    startedAt?: string;
+  };
+}
 
 interface PodLogsTabProps {
   podName: string;
   namespace: string;
   containerNames?: string[];  // Lista de containers do pod
+  containerStatuses?: ContainerStatus[]; // Status dos containers (para detectar crash)
   apiUrl?: string;            // URL base da API (ex: http://localhost:8001). Vazio = in-cluster
   inCluster?: boolean;
 }
@@ -84,6 +102,7 @@ export function PodLogsTab({
   podName,
   namespace,
   containerNames = [],
+  containerStatuses = [],
   apiUrl = "",
   inCluster = false,
 }: PodLogsTabProps) {
@@ -100,6 +119,24 @@ export function PodLogsTab({
   const [selectedContainer, setSelectedContainer] = useState<string>(() =>
     containerNames.length > 0 ? containerNames[0] : ""
   );
+
+  // ── Previous terminated container ──────────────────────────────────────────
+  const [showPrevious, setShowPrevious] = useState(false);
+
+  // Status do container selecionado
+  const selectedStatus = containerStatuses.find((c) => c.name === selectedContainer)
+    ?? containerStatuses[0];
+
+  // Pode mostrar execução anterior se houver lastState terminated
+  const hasPreviousTerminated = !!(
+    selectedStatus?.lastState?.state === "terminated" ||
+    (selectedStatus?.restartCount ?? 0) > 0
+  );
+
+  // Ao trocar container, resetar showPrevious
+  useEffect(() => {
+    setShowPrevious(false);
+  }, [selectedContainer, podName]);
 
   // Quando o pod muda, resetar o container selecionado
   const prevPodRef = useRef<string>("");
@@ -127,10 +164,12 @@ export function PodLogsTab({
         // In-cluster: usa o endpoint do server-in-cluster.js
         url = `/api/logs/${encodeURIComponent(namespace)}/${encodeURIComponent(podName)}?tail=${tail}&timestamps=true`;
         if (selectedContainer) url += `&container=${encodeURIComponent(selectedContainer)}`;
+        if (showPrevious)      url += `&previous=true`;
       } else {
         // Via kubectl proxy
         url = `${apiUrl}/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}/log?tailLines=${tail}&timestamps=true`;
         if (selectedContainer) url += `&container=${encodeURIComponent(selectedContainer)}`;
+        if (showPrevious)      url += `&previous=true`;
       }
 
       const res = await fetch(url);
@@ -151,7 +190,7 @@ export function PodLogsTab({
     } finally {
       setLoading(false);
     }
-  }, [podName, namespace, apiUrl, inCluster, tail, selectedContainer]);
+  }, [podName, namespace, apiUrl, inCluster, tail, selectedContainer, showPrevious]);
 
   // Fetch inicial e ao mudar pod/tail/container
   useEffect(() => {
@@ -285,6 +324,70 @@ export function PodLogsTab({
       {/* ── Conteúdo da aba Ao Vivo ─────────────────────────────────────────────────── */}
       {logsTab === "live" && <>
 
+      {/* ── Banner de contexto: execução anterior ───────────────────────────────── */}
+      {showPrevious && (
+        <div
+          className="flex items-center gap-2 px-3 py-2 text-[11px] shrink-0"
+          style={{
+            background: "oklch(0.55 0.22 25 / 0.10)",
+            borderBottom: "1px solid oklch(0.55 0.22 25 / 0.30)",
+          }}
+        >
+          <SkipBack size={12} style={{ color: "oklch(0.70 0.22 25)", flexShrink: 0 }} />
+          <span style={{ color: "oklch(0.80 0.15 25)" }}>
+            <strong>Execução anterior</strong> — logs do container antes do último restart
+          </span>
+          {selectedStatus?.lastState?.reason && (
+            <span
+              className="ml-auto px-2 py-0.5 rounded font-mono text-[10px] font-bold"
+              style={{
+                background: "oklch(0.55 0.22 25 / 0.20)",
+                border: "1px solid oklch(0.55 0.22 25 / 0.40)",
+                color: "oklch(0.80 0.22 25)",
+              }}
+            >
+              {selectedStatus.lastState.reason}
+              {selectedStatus.lastState.exitCode !== undefined && ` (exit ${selectedStatus.lastState.exitCode})`}
+            </span>
+          )}
+          {selectedStatus?.lastState?.finishedAt && (
+            <span className="text-[10px]" style={{ color: "oklch(0.55 0.15 25)" }}>
+              terminou {new Date(selectedStatus.lastState.finishedAt).toLocaleString("pt-BR")}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* ── Banner de alerta: CrashLoopBackOff / OOMKilled ─────────────────────── */}
+      {!showPrevious && selectedStatus && (
+        (selectedStatus.reason === "CrashLoopBackOff" ||
+         selectedStatus.reason === "OOMKilled" ||
+         selectedStatus.reason === "Error" ||
+         selectedStatus.lastState?.reason === "OOMKilled" ||
+         (selectedStatus.restartCount ?? 0) >= 3) && (
+          <div
+            className="flex items-center gap-2 px-3 py-1.5 text-[10px] shrink-0 cursor-pointer"
+            style={{
+              background: "oklch(0.55 0.22 25 / 0.07)",
+              borderBottom: "1px solid oklch(0.55 0.22 25 / 0.20)",
+            }}
+            onClick={() => setShowPrevious(true)}
+          >
+            <Skull size={11} style={{ color: "oklch(0.70 0.22 25)", flexShrink: 0 }} />
+            <span style={{ color: "oklch(0.70 0.22 25)" }}>
+              {selectedStatus.reason === "CrashLoopBackOff" ? (
+                <><strong>CrashLoopBackOff</strong> — container reiniciou {selectedStatus.restartCount}x. </>
+              ) : selectedStatus.reason === "OOMKilled" || selectedStatus.lastState?.reason === "OOMKilled" ? (
+                <><strong>OOMKilled</strong> — container morreu por falta de memória. </>
+              ) : (
+                <><strong>{selectedStatus.restartCount} restarts</strong> detectados. </>
+              )}
+              <span className="underline">Ver logs da execução anterior →</span>
+            </span>
+          </div>
+        )
+      )}
+
       {/* ── Seletor de container (apenas para multi-container) ───────────────────── */}
       {isMultiContainer && (
         <div
@@ -392,6 +495,31 @@ export function PodLogsTab({
           ))}
         </select>
 
+        {/* Toggle: Execução Anterior */}
+        {hasPreviousTerminated && (
+          <button
+            onClick={() => setShowPrevious((v) => !v)}
+            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] transition-all"
+            style={{
+              background: showPrevious ? "oklch(0.55 0.22 25 / 0.20)" : "oklch(0.16 0.02 250)",
+              border: `1px solid ${showPrevious ? "oklch(0.55 0.22 25 / 0.50)" : "oklch(0.26 0.04 250)"}`,
+              color: showPrevious ? "oklch(0.80 0.22 25)" : "oklch(0.55 0.01 250)",
+            }}
+            title="Mostrar logs da execução anterior (--previous)"
+          >
+            {showPrevious ? <RotateCcw size={10} /> : <SkipBack size={10} />}
+            {showPrevious ? "Atual" : "Anterior"}
+            {!showPrevious && (selectedStatus?.restartCount ?? 0) > 0 && (
+              <span
+                className="ml-1 px-1 rounded-sm text-[9px] font-bold"
+                style={{ background: "oklch(0.55 0.22 25 / 0.30)", color: "oklch(0.80 0.22 25)" }}
+              >
+                {selectedStatus?.restartCount}
+              </span>
+            )}
+          </button>
+        )}
+
         {/* Auto-refresh toggle */}
         <button
           onClick={() => setAutoRefresh((v) => !v)}
@@ -454,6 +582,18 @@ export function PodLogsTab({
           {selectedContainer && isMultiContainer && (
             <span style={{ color: "oklch(0.65 0.15 260)" }}>
               [{selectedContainer}]
+            </span>
+          )}
+          {showPrevious && (
+            <span
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold"
+              style={{
+                background: "oklch(0.55 0.22 25 / 0.20)",
+                border: "1px solid oklch(0.55 0.22 25 / 0.40)",
+                color: "oklch(0.80 0.22 25)",
+              }}
+            >
+              <SkipBack size={8} /> EXECUÇÃO ANTERIOR
             </span>
           )}
           <span>{namespace}</span>

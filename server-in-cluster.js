@@ -286,13 +286,24 @@ async function getPodsWithMetrics() {
         const stateObj = cs.state || {};
         const stateKey = Object.keys(stateObj)[0] || "unknown";
         const stateReason = stateObj[stateKey]?.reason || stateKey;
+        // Captura lastState para suporte ao --previous (CrashLoopBackOff, OOMKilled)
+        const lastStateObj = cs.lastState || {};
+        const lastStateKey = Object.keys(lastStateObj)[0] || null;
+        const lastStateData = lastStateKey ? lastStateObj[lastStateKey] : null;
         return {
-          name:     c.name,
-          image:    c.image || "",
-          ready:    cs.ready || false,
-          restarts: cs.restartCount || 0,
-          state:    stateKey,
+          name:       c.name,
+          image:      c.image || "",
+          ready:      cs.ready || false,
+          restarts:   cs.restartCount || 0,
+          state:      stateKey,
           stateReason,
+          lastState:  lastStateKey ? {
+            state:      lastStateKey,
+            reason:     lastStateData?.reason || null,
+            exitCode:   lastStateData?.exitCode ?? null,
+            finishedAt: lastStateData?.finishedAt || null,
+            startedAt:  lastStateData?.startedAt  || null,
+          } : null,
         };
       });
       const mainImage = allContainers[0]?.image || "";

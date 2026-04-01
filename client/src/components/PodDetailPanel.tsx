@@ -23,6 +23,8 @@ import { PodHistoryChart } from "./PodHistoryChart";
 import { PodStatusTimeline } from "./PodStatusTimeline";
 import { OomRiskBadge, OomRiskSummary } from "./OomRiskPanel";
 import type { OomRiskInfo } from "@/hooks/usePodOomRisk";
+import { runSecurityRules } from "@/lib/securityRules";
+import type { SecurityFinding } from "@/lib/securityRules";
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 const TOKEN_KEY = "k8s-viz-token";
@@ -72,7 +74,7 @@ function formatMem(mib: number): string {
   return `${mib} MiB`;
 }
 
-type Tab = "details" | "logs" | "events";
+type Tab = "details" | "logs" | "events" | "security";
 
 // ── Modal de Confirmação de Restart ──────────────────────────────────────────
 function RestartConfirmModal({
@@ -187,6 +189,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [showExecModal, setShowExecModal] = useState(false);
   const [showContainerPicker, setShowContainerPicker] = useState(false);
   const [execContainer, setExecContainer] = useState("");
+  const [selectedFinding, setSelectedFinding] = useState<SecurityFinding | null>(null);
 
   // ── Resize drag state ──────────────────────────────────────────────────────
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -430,9 +433,10 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
             style={{ borderColor: "oklch(0.28 0.04 250)", background: "oklch(0.13 0.018 250)" }}
           >
             {([
-              { id: "details", label: "Detalhes", icon: <BarChart2 size={11} /> },
-              { id: "logs",    label: "Logs",     icon: <ScrollText size={11} /> },
-              { id: "events",  label: `Eventos${eventCount > 0 ? ` (${eventCount})` : ""}`, icon: <Activity size={11} /> },
+              { id: "details",  label: "Detalhes",  icon: <BarChart2 size={11} /> },
+              { id: "logs",     label: "Logs",      icon: <ScrollText size={11} /> },
+              { id: "events",   label: `Eventos${eventCount > 0 ? ` (${eventCount})` : ""}`, icon: <Activity size={11} /> },
+              { id: "security", label: "Segurança",  icon: <Shield size={11} /> },
             ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((tab) => (
               <button
                 key={tab.id}
@@ -803,6 +807,140 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                 </motion.div>
               )}
             </AnimatePresence>
+
+            {/* Tab: Segurança */}
+            {activeTab === "security" && pod && (() => {
+              const report = runSecurityRules({
+                name: pod.name,
+                namespace: pod.namespace,
+                mainImage: pod.mainImage,
+                serviceAccountName: (pod as unknown as Record<string, unknown>).serviceAccountName as string | undefined,
+                automountSAToken: (pod as unknown as Record<string, unknown>).automountSAToken as boolean | undefined,
+                securityDetail: (pod as unknown as Record<string, unknown>).securityDetail as Parameters<typeof runSecurityRules>[0]["securityDetail"],
+              });
+              const SEV_COLOR: Record<string, string> = {
+                CRITICAL: "oklch(0.62 0.22 25)",
+                HIGH:     "oklch(0.72 0.22 50)",
+                MEDIUM:   "oklch(0.80 0.18 80)",
+                LOW:      "oklch(0.72 0.18 200)",
+              };
+              const SEV_BG: Record<string, string> = {
+                CRITICAL: "oklch(0.62 0.22 25 / 0.12)",
+                HIGH:     "oklch(0.72 0.22 50 / 0.12)",
+                MEDIUM:   "oklch(0.80 0.18 80 / 0.10)",
+                LOW:      "oklch(0.72 0.18 200 / 0.10)",
+              };
+              return (
+                <div className="absolute inset-0 overflow-y-auto p-4 space-y-4">
+
+                  {/* Score de Hardening */}
+                  <div
+                    className="rounded-xl p-4"
+                    style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Shield size={13} style={{ color: report.gradeColor }} />
+                        <span className="text-[11px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.55 0.01 250)" }}>Score de Hardening</span>
+                      </div>
+                      <span
+                        className="text-[10px] font-mono font-bold px-2 py-0.5 rounded"
+                        style={{ background: `${report.gradeColor}22`, border: `1px solid ${report.gradeColor}55`, color: report.gradeColor }}
+                      >
+                        {report.grade}
+                      </span>
+                    </div>
+                    {/* Score gauge */}
+                    <div className="flex items-end gap-3">
+                      <span className="text-4xl font-bold font-mono leading-none" style={{ color: report.gradeColor, textShadow: `0 0 16px ${report.gradeColor}66` }}>
+                        {report.score}
+                      </span>
+                      <span className="text-sm font-mono mb-1" style={{ color: "oklch(0.40 0.01 250)" }}>/100</span>
+                    </div>
+                    <div className="mt-2 w-full h-2 rounded-full overflow-hidden" style={{ background: "oklch(0.20 0.025 250)" }}>
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${report.score}%`, background: report.gradeColor, boxShadow: `0 0 8px ${report.gradeColor}` }}
+                      />
+                    </div>
+                    {/* Contadores por severidade */}
+                    <div className="grid grid-cols-4 gap-2 mt-3">
+                      {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as const).map((sev) => (
+                        <div key={sev} className="rounded-lg p-2 text-center" style={{ background: SEV_BG[sev], border: `1px solid ${SEV_COLOR[sev]}44` }}>
+                          <div className="text-lg font-bold font-mono leading-none" style={{ color: SEV_COLOR[sev] }}>{report.countBySeverity[sev]}</div>
+                          <div className="text-[8px] font-mono uppercase mt-0.5" style={{ color: SEV_COLOR[sev] }}>{sev}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Lista de Findings */}
+                  {report.findings.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-8 gap-2">
+                      <Shield size={28} style={{ color: "oklch(0.72 0.18 142)" }} />
+                      <span className="text-sm font-semibold" style={{ color: "oklch(0.72 0.18 142)" }}>Nenhum problema encontrado</span>
+                      <span className="text-[11px]" style={{ color: "oklch(0.40 0.01 250)" }}>Este pod atende todas as regras verificadas.</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="text-[10px] font-mono uppercase tracking-widest mb-1" style={{ color: "oklch(0.45 0.01 250)" }}>
+                        Achados ({report.findings.length})
+                      </div>
+                      {report.findings.map((f) => (
+                        <button
+                          key={`${f.id}-${f.container ?? "pod"}`}
+                          onClick={() => setSelectedFinding(selectedFinding?.id === f.id && selectedFinding?.container === f.container ? null : f)}
+                          className="w-full text-left rounded-lg p-3 transition-all"
+                          style={{
+                            background: selectedFinding?.id === f.id && selectedFinding?.container === f.container ? SEV_BG[f.severity] : "oklch(0.13 0.018 250)",
+                            border: `1px solid ${selectedFinding?.id === f.id && selectedFinding?.container === f.container ? SEV_COLOR[f.severity] + "88" : "oklch(0.22 0.03 250)"}`,
+                          }}
+                        >
+                          <div className="flex items-start gap-2">
+                            <span
+                              className="shrink-0 text-[8px] font-mono font-bold px-1.5 py-0.5 rounded mt-0.5"
+                              style={{ background: SEV_BG[f.severity], border: `1px solid ${SEV_COLOR[f.severity]}55`, color: SEV_COLOR[f.severity] }}
+                            >
+                              {f.severity}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] font-mono text-[oklch(0.50_0.01_250)]">{f.id}</span>
+                                <span className="text-[11px] font-semibold" style={{ color: "oklch(0.82 0.01 250)" }}>{f.title}</span>
+                              </div>
+                              {f.container && (
+                                <span className="text-[9px] font-mono" style={{ color: "oklch(0.72 0.18 200 / 0.8)" }}>container: {f.container}</span>
+                              )}
+                              <p className="text-[10px] leading-relaxed mt-0.5" style={{ color: "oklch(0.55 0.01 250)" }}>{f.message}</p>
+                            </div>
+                          </div>
+                          {/* Painel de correção expandido */}
+                          {selectedFinding?.id === f.id && selectedFinding?.container === f.container && (
+                            <div className="mt-3 space-y-2" onClick={(e) => e.stopPropagation()}>
+                              <div
+                                className="rounded-lg p-2.5"
+                                style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.20 0.025 250)" }}
+                              >
+                                <div className="text-[9px] font-mono uppercase tracking-widest mb-1" style={{ color: "oklch(0.45 0.01 250)" }}>Recomendação</div>
+                                <p className="text-[10px] leading-relaxed" style={{ color: "oklch(0.70 0.01 250)" }}>{f.recommendation}</p>
+                              </div>
+                              <div
+                                className="rounded-lg p-2.5"
+                                style={{ background: "oklch(0.08 0.012 250)", border: "1px solid oklch(0.72 0.18 142 / 0.20)" }}
+                              >
+                                <div className="text-[9px] font-mono uppercase tracking-widest mb-1.5" style={{ color: "oklch(0.45 0.01 250)" }}>Exemplo YAML</div>
+                                <pre className="text-[9px] font-mono leading-relaxed overflow-x-auto" style={{ color: "oklch(0.72 0.18 142)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{f.yamlExample}</pre>
+                              </div>
+                            </div>
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                </div>
+              );
+            })()}
 
             {/* Tab: Eventos */}
             {activeTab === "events" && (

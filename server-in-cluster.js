@@ -277,6 +277,32 @@ async function getPodsWithMetrics() {
           secIssues.push("missingLimits");
         }
       }
+      // Monta securityDetail por container (para as regras SEC-001..SEC-025)
+      const podSpecSec = p.spec?.securityContext || {};
+      const securityDetail = allContainers.map((c) => {
+        const cSec = c.securityContext || {};
+        const probe = (pr) => pr ? { type: Object.keys(pr).find(k => ['httpGet','tcpSocket','exec'].includes(k)) || 'unknown' } : null;
+        return {
+          name:                      c.name,
+          image:                     c.image || "",
+          imagePullPolicy:           c.imagePullPolicy || "IfNotPresent",
+          livenessProbe:             c.livenessProbe  ? probe(c.livenessProbe)  : null,
+          readinessProbe:            c.readinessProbe ? probe(c.readinessProbe) : null,
+          hasResourceRequests:       !!(c.resources?.requests?.cpu && c.resources?.requests?.memory),
+          hasResourceLimits:         !!(c.resources?.limits?.cpu   && c.resources?.limits?.memory),
+          privileged:                cSec.privileged === true,
+          runAsNonRoot:              cSec.runAsNonRoot ?? podSpecSec.runAsNonRoot ?? null,
+          runAsUser:                 cSec.runAsUser    ?? podSpecSec.runAsUser    ?? null,
+          allowPrivilegeEscalation:  cSec.allowPrivilegeEscalation ?? null,
+          readOnlyRootFilesystem:    cSec.readOnlyRootFilesystem   ?? null,
+          seccompProfile:            (cSec.seccompProfile || podSpecSec.seccompProfile) ? (cSec.seccompProfile?.type || podSpecSec.seccompProfile?.type || "Custom") : null,
+          capabilitiesDrop:          cSec.capabilities?.drop || [],
+          capabilitiesAdd:           cSec.capabilities?.add  || [],
+        };
+      });
+      const serviceAccountName = p.spec?.serviceAccountName || "default";
+      const automountSAToken   = p.spec?.automountServiceAccountToken ?? true;
+
       // Monta containersDetail com imagem de cada container
       const containerStatuses = p.status?.containerStatuses || [];
       const csMap = {};
@@ -323,6 +349,9 @@ async function getPodsWithMetrics() {
         startTime:      p.status?.startTime || null,
         securityRisk: secRisk,
         securityIssues: [...new Set(secIssues)],
+        securityDetail,
+        serviceAccountName,
+        automountSAToken,
         resources: {
           requests: {
             cpu:    totalCpuReq,

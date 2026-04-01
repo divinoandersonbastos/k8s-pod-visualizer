@@ -13,9 +13,11 @@ import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
   RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal,
+  TrendingUp, TrendingDown, ArrowRight, FileCode2,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
+import type { HistoryWindow } from "@/hooks/usePodHistory";
 import type { StatusEvent } from "@/hooks/usePodStatusEvents";
 import { PodLogsTab } from "./PodLogsTab";
 import { PodTerminal } from "./PodTerminal";
@@ -226,6 +228,8 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [showContainerPicker, setShowContainerPicker] = useState(false);
   const [execContainer, setExecContainer] = useState("");
   const [selectedFinding, setSelectedFinding] = useState<SecurityFinding | null>(null);
+  const [historyWindow, setHistoryWindow] = useState<HistoryWindow>("5m");
+  const [copiedYaml, setCopiedYaml] = useState(false);
 
   // ── Resize drag state ──────────────────────────────────────────────────────
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -660,7 +664,15 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                   {/* ── Levantamento de Consumo Real ───────────────────────────────────────────────────────── */}
                   {(() => {
                     const hist = getHistory ? getHistory(pod.id) : [];
-                    const ins  = calcInsight(hist);
+                    // Filtra pela janela selecionada
+                    const windowMs: Record<HistoryWindow, number> = { "5m": 5*60*1000, "15m": 15*60*1000, "1h": 60*60*1000 };
+                    const cutoff = Date.now() - windowMs[historyWindow];
+                    const filteredHist = hist.filter((p) => {
+                      const ts = p.timestamp instanceof Date ? p.timestamp.getTime() : new Date(p.timestamp).getTime();
+                      return ts >= cutoff;
+                    });
+                    const histForCalc = filteredHist.length >= 2 ? filteredHist : hist;
+                    const ins  = calcInsight(histForCalc);
                     if (!ins) return null;
                     const insWithReplicas: ResourceInsight = { ...ins, replicas: replicaCount };
                     // Sugestões de request/limit baseadas no consumo real
@@ -669,21 +681,79 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                     const sugMemReq  = Math.ceil(insWithReplicas.memAvg  * 1.2);
                     const sugMemLim  = Math.ceil(insWithReplicas.memPeak * 1.5);
                     const formatMem2 = (m: number) => m >= 1024 ? `${(m/1024).toFixed(1)}Gi` : `${m}Mi`;
+                    // Indicadores de comparação consumo vs configurado
+                    const currCpuReq = pod.resources.requests.cpu;
+                    const currCpuLim = pod.resources.limits.cpu;
+                    const currMemReq = pod.resources.requests.memory;
+                    const currMemLim = pod.resources.limits.memory;
+                    type CompDir = "over" | "under" | "ok" | "unset";
+                    const compare = (curr: number | null | undefined, sug: number): CompDir => {
+                      if (curr == null) return "unset";
+                      const ratio = curr / sug;
+                      if (ratio > 1.5) return "over";   // configurado muito acima do sugerido
+                      if (ratio < 0.7) return "under";  // configurado muito abaixo do sugerido
+                      return "ok";
+                    };
+                    const dirCpuReq = compare(currCpuReq, sugCpuReq);
+                    const dirCpuLim = compare(currCpuLim, sugCpuLim);
+                    const dirMemReq = compare(currMemReq, sugMemReq);
+                    const dirMemLim = compare(currMemLim, sugMemLim);
+                    const dirColor = (d: CompDir) => d === "over" ? "oklch(0.80 0.22 50)" : d === "under" ? "oklch(0.72 0.22 25)" : d === "ok" ? "oklch(0.72 0.18 142)" : "oklch(0.38 0.01 250)";
+                    const DirIcon = ({ d }: { d: CompDir }) => {
+                      if (d === "over")  return <TrendingUp  size={9} style={{ color: dirColor(d) }} />;
+                      if (d === "under") return <TrendingDown size={9} style={{ color: dirColor(d) }} />;
+                      if (d === "ok")    return <ArrowRight   size={9} style={{ color: dirColor(d) }} />;
+                      return null;
+                    };
+                    // YAML para copiar
+                    const windowLabel: Record<HistoryWindow, string> = { "5m": "5 min", "15m": "15 min", "1h": "1 hora" };
+                    const yamlBlock = [
+                      `        resources:`,
+                      `          requests:`,
+                      `            cpu: "${sugCpuReq}m"`,
+                      `            memory: "${formatMem2(sugMemReq)}"`,
+                      `          limits:`,
+                      `            cpu: "${sugCpuLim}m"`,
+                      `            memory: "${formatMem2(sugMemLim)}"`,
+                      `        # Gerado por K8s Pod Visualizer`,
+                      `        # Janela: ${windowLabel[historyWindow]} · ${insWithReplicas.sampleCount} amostras`,
+                      `        # Pod: ${pod.name}`,
+                    ].join("\n");
+                    const handleCopyYaml = () => {
+                      navigator.clipboard.writeText(yamlBlock).then(() => {
+                        setCopiedYaml(true);
+                        setTimeout(() => setCopiedYaml(false), 2500);
+                      });
+                    };
                     return (
                       <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
-                        {/* Título */}
-                        <div className="flex items-center gap-1.5 mb-3">
+                        {/* Título + seletor de janela */}
+                        <div className="flex items-center gap-1.5 mb-2">
                           <Activity size={10} style={{ color: "oklch(0.65 0.18 200)" }} />
                           <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
-                            Levantamento de Consumo Real
+                            Consumo Real
                           </span>
-                          <span className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: "oklch(0.65 0.18 200 / 0.12)", color: "oklch(0.65 0.18 200)", border: "1px solid oklch(0.65 0.18 200 / 0.3)" }}>
-                            {insWithReplicas.sampleCount} amostras
-                          </span>
+                          <div className="ml-auto flex items-center gap-0.5">
+                            {(["5m", "15m", "1h"] as HistoryWindow[]).map((w) => (
+                              <button
+                                key={w}
+                                onClick={() => setHistoryWindow(w)}
+                                className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-all"
+                                style={{
+                                  background: historyWindow === w ? "oklch(0.65 0.18 200 / 0.25)" : "oklch(0.16 0.022 250)",
+                                  border: `1px solid ${historyWindow === w ? "oklch(0.65 0.18 200 / 0.6)" : "oklch(0.22 0.03 250)"}`,
+                                  color: historyWindow === w ? "oklch(0.65 0.18 200)" : "oklch(0.45 0.01 250)",
+                                }}
+                              >{w}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="text-[9px] font-mono mb-2" style={{ color: "oklch(0.38 0.01 250)" }}>
+                          {insWithReplicas.sampleCount} amostras · janela {windowLabel[historyWindow]}
                         </div>
 
                         {/* Grid de métricas */}
-                        <div className="grid grid-cols-2 gap-1.5 mb-3">
+                        <div className="grid grid-cols-2 gap-1.5 mb-2">
                           {/* CPU Média */}
                           <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
                             <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>CPU Média</div>
@@ -707,7 +777,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                         </div>
 
                         {/* Horário de maior carga + Réplicas */}
-                        <div className="flex items-center gap-2 mb-3">
+                        <div className="flex items-center gap-2 mb-2">
                           {insWithReplicas.peakTime && (
                             <div className="flex items-center gap-1.5 px-2 py-1 rounded" style={{ background: "oklch(0.80 0.22 50 / 0.08)", border: "1px solid oklch(0.80 0.22 50 / 0.25)" }}>
                               <Clock size={9} style={{ color: "oklch(0.80 0.22 50)" }} />
@@ -722,26 +792,54 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                           )}
                         </div>
 
-                        {/* Sugestões de Request/Limit */}
-                        <div className="rounded-lg p-2.5" style={{ background: "oklch(0.65 0.18 200 / 0.06)", border: "1px solid oklch(0.65 0.18 200 / 0.25)" }}>
+                        {/* Sugestões de Request/Limit + indicadores de comparação */}
+                        <div className="rounded-lg p-2.5 mb-2" style={{ background: "oklch(0.65 0.18 200 / 0.06)", border: "1px solid oklch(0.65 0.18 200 / 0.25)" }}>
                           <div className="flex items-center gap-1.5 mb-2">
                             <Info size={9} style={{ color: "oklch(0.65 0.18 200)" }} />
                             <span className="text-[9px] font-mono uppercase tracking-wider" style={{ color: "oklch(0.65 0.18 200)" }}>Sugestão de Request / Limit</span>
                           </div>
-                          <div className="grid grid-cols-2 gap-1 text-[9px] font-mono">
-                            <div style={{ color: "oklch(0.45 0.01 250)" }}>CPU Request</div>
-                            <div style={{ color: "oklch(0.72 0.18 142)" }}>{sugCpuReq}m</div>
-                            <div style={{ color: "oklch(0.45 0.01 250)" }}>CPU Limit</div>
-                            <div style={{ color: "oklch(0.80 0.22 50)" }}>{sugCpuLim}m</div>
-                            <div style={{ color: "oklch(0.45 0.01 250)" }}>MEM Request</div>
-                            <div style={{ color: "oklch(0.72 0.18 50)" }}>{formatMem2(sugMemReq)}</div>
-                            <div style={{ color: "oklch(0.45 0.01 250)" }}>MEM Limit</div>
-                            <div style={{ color: "oklch(0.80 0.22 25)" }}>{formatMem2(sugMemLim)}</div>
+                          {/* Cabeçalho da tabela */}
+                          <div className="grid gap-1 mb-1" style={{ gridTemplateColumns: "auto 1fr auto auto" }}>
+                            <div />
+                            <div className="text-[8px] font-mono" style={{ color: "oklch(0.35 0.01 250)" }}>Sugerido</div>
+                            <div className="text-[8px] font-mono text-center" style={{ color: "oklch(0.35 0.01 250)" }}>Atual</div>
+                            <div className="text-[8px] font-mono text-center" style={{ color: "oklch(0.35 0.01 250)" }}>Δ</div>
                           </div>
+                          {/* Linhas de dados */}
+                          {[
+                            { label: "CPU Req",  sug: `${sugCpuReq}m`,       curr: currCpuReq != null ? `${currCpuReq}m`     : "—", dir: dirCpuReq, color: "oklch(0.72 0.18 142)" },
+                            { label: "CPU Lim",  sug: `${sugCpuLim}m`,       curr: currCpuLim != null ? `${currCpuLim}m`     : "—", dir: dirCpuLim, color: "oklch(0.80 0.22 50)"  },
+                            { label: "MEM Req",  sug: formatMem2(sugMemReq), curr: currMemReq != null ? formatMem2(currMemReq) : "—", dir: dirMemReq, color: "oklch(0.72 0.18 50)"  },
+                            { label: "MEM Lim",  sug: formatMem2(sugMemLim), curr: currMemLim != null ? formatMem2(currMemLim) : "—", dir: dirMemLim, color: "oklch(0.80 0.22 25)"  },
+                          ].map(({ label, sug, curr, dir, color }) => (
+                            <div key={label} className="grid gap-1 items-center" style={{ gridTemplateColumns: "auto 1fr auto auto" }}>
+                              <span className="text-[9px] font-mono" style={{ color: "oklch(0.45 0.01 250)", minWidth: 44 }}>{label}</span>
+                              <span className="text-[9px] font-mono font-bold" style={{ color }}>{sug}</span>
+                              <span className="text-[9px] font-mono text-center" style={{ color: "oklch(0.55 0.01 250)", minWidth: 40 }}>{curr}</span>
+                              <span className="flex justify-center" style={{ minWidth: 14 }}><DirIcon d={dir} /></span>
+                            </div>
+                          ))}
                           <div className="mt-2 text-[8px] leading-relaxed" style={{ color: "oklch(0.38 0.01 250)" }}>
-                            Request = média × 1.2 · Limit = pico × 1.5 · Baseado em {insWithReplicas.sampleCount} amostras dos últimos ~5 min
+                            Req = média×1.2 · Lim = pico×1.5 · ↑ acima do sugerido · ↓ abaixo
                           </div>
                         </div>
+
+                        {/* Botão Copiar YAML */}
+                        <button
+                          onClick={handleCopyYaml}
+                          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[10px] font-mono font-medium transition-all"
+                          style={{
+                            background: copiedYaml ? "oklch(0.72 0.18 142 / 0.15)" : "oklch(0.16 0.022 250)",
+                            border: `1px solid ${copiedYaml ? "oklch(0.72 0.18 142 / 0.5)" : "oklch(0.28 0.04 250)"}`,
+                            color: copiedYaml ? "oklch(0.72 0.18 142)" : "oklch(0.55 0.01 250)",
+                          }}
+                        >
+                          {copiedYaml ? (
+                            <><Check size={11} /> YAML copiado!</>
+                          ) : (
+                            <><FileCode2 size={11} /> Copiar YAML resources:</>
+                          )}
+                        </button>
                       </div>
                     );
                   })()}

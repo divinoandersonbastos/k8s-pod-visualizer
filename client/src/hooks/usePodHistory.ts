@@ -2,13 +2,18 @@
  * usePodHistory — Acumula histórico de métricas de CPU e memória por pod
  * Design: Terminal Dark / Ops Dashboard
  *
- * Mantém uma janela deslizante de até 5 minutos (MAX_HISTORY_POINTS pontos)
+ * Mantém uma janela deslizante de até ~1 hora (MAX_HISTORY_POINTS pontos)
  * por pod, indexada pelo ID do pod. Cada ponto contém:
  *   - timestamp: Date
  *   - cpuPercent: number (0–100)
  *   - memoryPercent: number (0–100)
  *   - cpuUsage: number (millicores)
  *   - memoryUsage: number (MiB)
+ *
+ * Janelas disponíveis:
+ *   - 5 min  → últimos 100 pontos  (~3s/ponto)
+ *   - 15 min → últimos 300 pontos
+ *   - 1 h    → últimos 1200 pontos
  */
 
 import { useCallback, useRef } from "react";
@@ -22,10 +27,26 @@ export interface HistoryPoint {
   memoryUsage: number;
 }
 
-// Janela máxima: 100 pontos (a ~3s/ponto = ~5 minutos)
-const MAX_HISTORY_POINTS = 100;
+// Janela máxima: 1200 pontos (a ~3s/ponto ≈ 60 minutos)
+const MAX_HISTORY_POINTS = 1200;
 
 export type PodHistoryMap = Map<string, HistoryPoint[]>;
+
+export type HistoryWindow = "5m" | "15m" | "1h";
+
+/** Retorna o número de pontos correspondente à janela */
+export function windowToPoints(w: HistoryWindow): number {
+  if (w === "5m")  return 100;
+  if (w === "15m") return 300;
+  return 1200; // 1h
+}
+
+/** Retorna a duração em ms correspondente à janela */
+export function windowToMs(w: HistoryWindow): number {
+  if (w === "5m")  return 5  * 60 * 1000;
+  if (w === "15m") return 15 * 60 * 1000;
+  return 60 * 60 * 1000; // 1h
+}
 
 /**
  * Hook que retorna uma ref estável com o histórico de todos os pods,
@@ -35,8 +56,10 @@ export type PodHistoryMap = Map<string, HistoryPoint[]>;
  *   const { historyRef, recordSnapshot } = usePodHistory();
  *   // Chamar após cada atualização de pods:
  *   recordSnapshot(pods);
- *   // Ler histórico de um pod:
- *   const points = historyRef.current.get(pod.id) ?? [];
+ *   // Ler histórico completo de um pod:
+ *   const points = getHistory(pod.id);
+ *   // Ler histórico filtrado por janela:
+ *   const points = getHistoryWindow(pod.id, "15m");
  */
 export function usePodHistory() {
   // Ref para não causar re-renders ao acumular dados
@@ -75,5 +98,22 @@ export function usePodHistory() {
     return historyRef.current.get(podId) ?? [];
   }, []);
 
-  return { historyRef, recordSnapshot, getHistory };
+  /** Retorna o histórico filtrado pela janela temporal especificada */
+  const getHistoryWindow = useCallback((podId: string, window: HistoryWindow): HistoryPoint[] => {
+    const all = historyRef.current.get(podId) ?? [];
+    if (all.length === 0) return [];
+    const cutoff = Date.now() - windowToMs(window);
+    const filtered = all.filter((p) => {
+      const ts = p.timestamp instanceof Date ? p.timestamp.getTime() : new Date(p.timestamp).getTime();
+      return ts >= cutoff;
+    });
+    // Se não há pontos suficientes no intervalo, retorna os últimos N pontos
+    if (filtered.length < 2) {
+      const n = windowToPoints(window);
+      return all.slice(-n);
+    }
+    return filtered;
+  }, []);
+
+  return { historyRef, recordSnapshot, getHistory, getHistoryWindow };
 }

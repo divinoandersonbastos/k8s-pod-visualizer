@@ -376,28 +376,35 @@ export default function ResourceEditorPanel({
 
   // ── Abre modal de confirmação com validação ────────────────────────────────────────────────
   const handleOpenApplyModal = useCallback(() => {
-    // Parseia o YAML editado usando js-yaml para validação e envio
+    // Tenta parsear o YAML editado — uma única vez para validação e apply
     let parsed: Record<string, unknown> = {};
+    let parseError: string | null = null;
     try {
       const loaded = jsYaml.load(yamlContent);
       if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
         parsed = loaded as Record<string, unknown>;
       } else {
+        // YAML válido mas não é objeto (ex: lista, scalar) — usa rawData
         parsed = rawData ? { ...rawData } : {};
       }
-    } catch {
-      // Se o YAML não é válido, usa rawData como fallback
+    } catch (e) {
+      parseError = e instanceof Error ? e.message : String(e);
+      // Fallback: usa rawData para não bloquear totalmente
       parsed = rawData ? { ...rawData } : {};
     }
     const warnings = validateYaml(yamlContent, parsed);
-    // Verifica se o YAML é sintaticamente válido
-    try { jsYaml.load(yamlContent); } catch (e) {
-      warnings.unshift({ level: "error", msg: `YAML inválido: ${e instanceof Error ? e.message : String(e)}` });
+    // Só adiciona erro de sintaxe se o parse realmente falhou
+    if (parseError) {
+      warnings.unshift({ level: "error", msg: `YAML inválido: ${parseError}` });
     }
     const hasErrors = warnings.some(w => w.level === "error");
     setValidationWarnings(warnings);
-    if (!hasErrors) setShowApplyModal(true);
-    else setError(warnings.filter(w => w.level === "error").map(w => w.msg).join("; "));
+    setError("");
+    if (!hasErrors) {
+      setShowApplyModal(true);
+    } else {
+      setError(warnings.filter(w => w.level === "error").map(w => w.msg).join("; "));
+    }
   }, [yamlContent, rawData, validateYaml]);
 
   // ── Executa o apply via /api/resources/apply-yaml ──────────────────────────────────────────────

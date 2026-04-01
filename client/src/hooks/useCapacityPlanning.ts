@@ -42,6 +42,7 @@ export interface CapacityNodeDetail {
   podCount: number;
   isSpot: boolean;
   labels: Record<string, string>;
+  createdAt?: string | null;
 }
 
 export interface CapacityPoolMetrics {

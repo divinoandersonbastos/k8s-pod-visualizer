@@ -20,6 +20,24 @@ import {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
+function formatNodeAge(createdAt: string | null | undefined): string {
+  if (!createdAt) return "—";
+  const start = new Date(createdAt);
+  if (isNaN(start.getTime())) return "—";
+  const diffMs  = Date.now() - start.getTime();
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 60) return `${diffSec}s`;
+  const diffMin = Math.floor(diffSec / 60);
+  if (diffMin < 60) return `${diffMin}m`;
+  const diffHour = Math.floor(diffMin / 60);
+  if (diffHour < 24) return `${diffHour}h`;
+  const diffDay = Math.floor(diffHour / 24);
+  if (diffDay < 30) return `${diffDay}d`;
+  const diffMonth = Math.floor(diffDay / 30);
+  if (diffMonth < 12) return `${diffMonth}mo`;
+  return `${Math.floor(diffMonth / 12)}y`;
+}
+
 function timeAgo(ts: number | string): string {
   const ms = typeof ts === "number" ? Date.now() - ts : Date.now() - new Date(ts).getTime();
   if (ms < 0) return "agora";
@@ -151,6 +169,9 @@ function NodeCard({ node }: { node: NodeHealthInfo }) {
               EVICTING
             </span>
           )}
+          <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-slate-700/60 text-slate-400 border border-slate-600/40" title={node.createdAt ? `Criado em ${new Date(node.createdAt).toLocaleString("pt-BR")}` : "Data de criação desconhecida"}>
+            {formatNodeAge(node.createdAt)}
+          </span>
           <span className={`text-[10px] font-semibold ${hc.color}`}>{hc.label}</span>
           <span className="text-slate-600 text-xs ml-1">{expanded ? "▲" : "▼"}</span>
         </div>
@@ -172,6 +193,15 @@ function NodeCard({ node }: { node: NodeHealthInfo }) {
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px]">
             <span className="text-slate-500">Roles</span>
             <span className="text-slate-300 font-mono">{node.roles || "worker"}</span>
+            <span className="text-slate-500">AGE</span>
+            <span className="text-slate-300 font-mono" title={node.createdAt ? new Date(node.createdAt).toLocaleString("pt-BR") : undefined}>
+              {formatNodeAge(node.createdAt)}
+              {node.createdAt && (
+                <span className="text-slate-500 ml-1">
+                  ({new Date(node.createdAt).toLocaleDateString("pt-BR")})
+                </span>
+              )}
+            </span>
             <span className="text-slate-500">CPU Alocável</span>
             <span className="text-slate-300 font-mono">{node.allocatable.cpu}m</span>
             <span className="text-slate-500">MEM Alocável</span>

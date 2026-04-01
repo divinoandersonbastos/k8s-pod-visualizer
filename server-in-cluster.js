@@ -790,6 +790,7 @@ async function getCapacity() {
       podCount: pods.length,
       isSpot,
       labels,
+      createdAt: n.metadata.creationTimestamp || null,
     });
     pg.totals.cpuAlloc  += cpuAlloc;
     pg.totals.memAlloc  += memAlloc;

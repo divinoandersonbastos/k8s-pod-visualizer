@@ -78,10 +78,16 @@ export function PodTerminal({
     if (container) term.writeln(`\x1b[32m  Container: \x1b[1m${container}\x1b[0m`);
     term.writeln(`\x1b[90m  Aguardando shell...\x1b[0m\r\n`);
 
-    // ── Constrói a URL do WebSocket ──────────────────────────────────────────
+    // Constroi a URL do WebSocket
     // Cenário 1: in-cluster → usa rota relativa (mesmo host do servidor)
     // Cenário 2: apiUrl definido → usa o servidor externo do cluster
     // Cenário 3: nenhum → erro orientativo
+    //
+    // NOTA: browsers não suportam headers customizados em WebSocket nativo.
+    // O token JWT é enviado via query string (?token=...) e validado no backend.
+    const _jwtToken = localStorage.getItem("k8s-viz-token") ||
+                      sessionStorage.getItem("k8s-viz-token") || "";
+
     let wsUrl: string;
 
     if (inCluster) {
@@ -91,6 +97,7 @@ export function PodTerminal({
         pod: podName,
         namespace,
         ...(container ? { container } : {}),
+        ...(_jwtToken ? { token: _jwtToken } : {}),
       });
       wsUrl = `${proto}//${window.location.host}/api/exec?${params.toString()}`;
     } else if (apiUrl) {
@@ -103,6 +110,7 @@ export function PodTerminal({
         pod: podName,
         namespace,
         ...(container ? { container } : {}),
+        ...(_jwtToken ? { token: _jwtToken } : {}),
       });
       wsUrl = `${wsBase}/api/exec?${params.toString()}`;
     } else {

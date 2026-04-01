@@ -3115,10 +3115,13 @@ _wssExec.on("connection", (ws, req) => {
   const _namespace = _url.searchParams.get("namespace") ?? "default";
   const _container = _url.searchParams.get("container") ?? "";
 
-  // ── Validação de autenticação e autorização ────────────────────────────────
-  // O token é enviado no header Authorization: Bearer <token>
+  // Validacao de autenticacao e autorizacao
+  // Browsers nao suportam headers customizados em WebSocket nativo.
+  // O token pode vir via: (1) query string ?token=... ou (2) header Authorization: Bearer ...
   const _authHeader = req.headers["authorization"] || "";
-  const _rawToken   = _authHeader.startsWith("Bearer ") ? _authHeader.slice(7) : null;
+  const _tokenFromHeader = _authHeader.startsWith("Bearer ") ? _authHeader.slice(7) : null;
+  const _tokenFromQuery  = _url.searchParams.get("token") || null;
+  const _rawToken = _tokenFromHeader || _tokenFromQuery;
   const _userPayload = verifyTokenPayload(_rawToken);
 
   if (!_userPayload) {

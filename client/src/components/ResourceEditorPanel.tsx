@@ -13,6 +13,7 @@ import {
   Pencil, Trash2, Check, SlidersHorizontal, History, User
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import * as jsYaml from "js-yaml";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -393,33 +394,66 @@ export default function ResourceEditorPanel({
     return warnings;
   }, [kind, namespace, originalYaml]);
 
-  // ── Abre modal de confirmação com validação ───────────────────────────────────────
+  // ── Abre modal de confirmação com validação ────────────────────────────────────────────────
   const handleOpenApplyModal = useCallback(() => {
-    // Parse YAML simples (key: value) — usa JSON.parse do rawData como base
+    // Parseia o YAML editado usando js-yaml para validação e envio
     let parsed: Record<string, unknown> = {};
     try {
-      // Tenta parsear o YAML atual como JSON (o servidor retorna JSON que convertemos para YAML-like)
-      // Para validação, usamos o rawData original e aplicamos as alterações do diff
+      const loaded = jsYaml.load(yamlContent);
+      if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
+        parsed = loaded as Record<string, unknown>;
+      } else {
+        parsed = rawData ? { ...rawData } : {};
+      }
+    } catch {
+      // Se o YAML não é válido, usa rawData como fallback
       parsed = rawData ? { ...rawData } : {};
-    } catch { parsed = {}; }
+    }
     const warnings = validateYaml(yamlContent, parsed);
+    // Verifica se o YAML é sintaticamente válido
+    try { jsYaml.load(yamlContent); } catch (e) {
+      warnings.unshift({ level: "error", msg: `YAML inválido: ${e instanceof Error ? e.message : String(e)}` });
+    }
     const hasErrors = warnings.some(w => w.level === "error");
     setValidationWarnings(warnings);
     if (!hasErrors) setShowApplyModal(true);
     else setError(warnings.filter(w => w.level === "error").map(w => w.msg).join("; "));
   }, [yamlContent, rawData, validateYaml]);
 
-  // ── Executa o apply via /api/resources/apply-yaml ──────────────────────────────────
+  // ── Executa o apply via /api/resources/apply-yaml ──────────────────────────────────────────────
   const handleConfirmApply = useCallback(async () => {
     if (!rawData) return;
     setApplyLoading(true);
     try {
-      // Usa rawData como base do patch (o YAML editado reflete alterações visuais)
-      // Para um apply real, enviamos o rawData com as modificações do diff aplicadas
+      // Parseia o YAML editado pelo usuário usando js-yaml
+      // Isso garante que alterações em limits/requests e outros campos sejam capturadas
+      let patchObj: Record<string, unknown>;
+      try {
+        const loaded = jsYaml.load(yamlContent);
+        if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
+          patchObj = loaded as Record<string, unknown>;
+        } else {
+          throw new Error("YAML não resultou em objeto válido");
+        }
+      } catch (parseErr) {
+        throw new Error(`YAML inválido: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+      }
+      // Preserva o resourceVersion do rawData original para evitar conflito 409
+      // (o backend remove antes do patch, mas é boa prática manter para auditoria)
+      if (rawData?.metadata && typeof rawData.metadata === "object") {
+        const origMeta = rawData.metadata as Record<string, unknown>;
+        if (!patchObj.metadata || typeof patchObj.metadata !== "object") {
+          patchObj.metadata = {};
+        }
+        const patchMeta = patchObj.metadata as Record<string, unknown>;
+        // Garante que name e namespace estejam presentes
+        if (!patchMeta.name) patchMeta.name = origMeta.name;
+        if (!patchMeta.namespace) patchMeta.namespace = origMeta.namespace;
+      }
       const res = await fetch(`${apiBase}/api/resources/apply-yaml`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ namespace, name, kind, patch: rawData }),
+        body: JSON.stringify({ namespace, name, kind, patch: patchObj }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Erro ao aplicar");
@@ -433,9 +467,9 @@ export default function ResourceEditorPanel({
     } finally {
       setApplyLoading(false);
     }
-  }, [rawData, namespace, name, kind, apiBase, getAuthHeaders]);
+  }, [rawData, yamlContent, namespace, name, kind, apiBase, getAuthHeaders]);
 
-  // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────────
+  // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────
   useEffect(() => {
     if (!namespace) { setResourceList([]); return; }
     const ctrl = new AbortController();

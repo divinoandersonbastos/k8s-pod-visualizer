@@ -72,28 +72,8 @@ function getApiBase() {
   return "";
 }
 
-function jsonToYaml(obj: unknown, indent = 0): string {
-  if (obj === null || obj === undefined) return "null";
-  if (typeof obj === "string") return obj.includes("\n") ? `|\n${obj.split("\n").map(l => "  ".repeat(indent + 1) + l).join("\n")}` : obj;
-  if (typeof obj === "number" || typeof obj === "boolean") return String(obj);
-  if (Array.isArray(obj)) {
-    if (obj.length === 0) return "[]";
-    return obj.map(item => "\n" + "  ".repeat(indent) + "- " + jsonToYaml(item, indent + 1)).join("");
-  }
-  if (typeof obj === "object") {
-    const entries = Object.entries(obj as Record<string, unknown>).filter(([, v]) => v !== undefined);
-    if (entries.length === 0) return "{}";
-    return entries.map(([k, v]) => {
-      const val = jsonToYaml(v, indent + 1);
-      if (typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).length > 0)
-        return "\n" + "  ".repeat(indent) + k + ":" + val;
-      if (Array.isArray(v) && v.length > 0)
-        return "\n" + "  ".repeat(indent) + k + ":" + val;
-      return "\n" + "  ".repeat(indent) + k + ": " + val;
-    }).join("");
-  }
-  return String(obj);
-}
+// jsonToYaml substituído por jsYaml.dump() — mantido apenas para compatibilidade
+// A geração de YAML agora usa jsYaml.dump() diretamente (YAML padrão RFC 1.2)
 
 function timeAgo(iso?: string): string {
   if (!iso) return "—";
@@ -534,7 +514,13 @@ export default function ResourceEditorPanel({
         }
         yamlData.data = maskedData;
       }
-      const yaml = Object.entries(yamlData).map(([k, v]) => k + ":" + jsonToYaml(v, 1)).join("\n").trim();
+      // Gera YAML padrão RFC 1.2 usando js-yaml (compatível com jsYaml.load() no apply)
+      const yaml = jsYaml.dump(yamlData, {
+        indent: 2,
+        lineWidth: 120,
+        noRefs: true,
+        sortKeys: false,
+      }).trim();
       setYamlContent(yaml);
       setOriginalYaml(yaml);
     } catch (err: unknown) {

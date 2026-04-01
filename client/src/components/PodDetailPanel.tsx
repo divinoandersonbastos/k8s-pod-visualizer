@@ -185,6 +185,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [copied, setCopied] = useState(false);
   const [logsFullscreen, setLogsFullscreen] = useState(false);
   const [showExecModal, setShowExecModal] = useState(false);
+  const [showContainerPicker, setShowContainerPicker] = useState(false);
   const [execContainer, setExecContainer] = useState("");
 
   // ── Resize drag state ──────────────────────────────────────────────────────
@@ -383,12 +384,20 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               >
                 {copied ? <Check size={13} /> : <Copy size={13} />}
               </button>
-              {/* Botão Entrar no Pod — visível para SRE e SQUAD */}
-              {(isSRE || isAdmin) && (
+              {/* Botão Entrar no Pod — visível para SRE, SQUAD e Admin */}
+              {(isSRE || isAdmin || true) && (
                 <button
                   onClick={() => {
-                    setExecContainer(pod.containerNames?.[0] ?? "");
-                    setShowExecModal(true);
+                    const names = pod.containerNames ?? [];
+                    if (names.length > 1) {
+                      // Múltiplos containers: exibe seletor antes de abrir
+                      setExecContainer("");
+                      setShowContainerPicker(true);
+                    } else {
+                      // Container único ou desconhecido: abre direto
+                      setExecContainer(names[0] ?? "");
+                      setShowExecModal(true);
+                    }
                   }}
                   className="p-1.5 rounded-md transition-all"
                   style={{ color: "oklch(0.72 0.18 142)", background: "oklch(0.72 0.18 142 / 0.08)", border: "1px solid oklch(0.72 0.18 142 / 0.25)" }}
@@ -819,6 +828,94 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
       )}
     </AnimatePresence>
 
+    {/* Seletor de container obrigatório (quando pod tem múltiplos containers) */}
+    <AnimatePresence>
+      {showContainerPicker && pod && (
+        <motion.div
+          key="container-picker-modal"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          className="fixed inset-0 z-[200] flex items-center justify-center"
+          style={{ background: "oklch(0.05 0.01 250 / 0.85)", backdropFilter: "blur(8px)" }}
+        >
+          <motion.div
+            initial={{ scale: 0.94, y: 10 }}
+            animate={{ scale: 1, y: 0 }}
+            exit={{ scale: 0.94, y: 10 }}
+            transition={{ duration: 0.16, ease: "easeOut" }}
+            className="flex flex-col rounded-xl overflow-hidden"
+            style={{
+              width: "min(480px, 90vw)",
+              background: "oklch(0.10 0.015 250)",
+              border: "1px solid oklch(0.72 0.18 142 / 0.35)",
+              boxShadow: "0 0 50px oklch(0.72 0.18 142 / 0.12), 0 20px 60px oklch(0.05 0.01 250 / 0.8)",
+            }}
+          >
+            {/* Header */}
+            <div
+              className="flex items-center justify-between px-5 py-3.5"
+              style={{ background: "oklch(0.13 0.018 250)", borderBottom: "1px solid oklch(0.72 0.18 142 / 0.20)" }}
+            >
+              <div className="flex items-center gap-2.5">
+                <Terminal size={14} style={{ color: "oklch(0.72 0.18 142)" }} />
+                <span className="text-sm font-semibold" style={{ color: "oklch(0.90 0.01 250)" }}>Selecionar Container</span>
+              </div>
+              <button
+                onClick={() => setShowContainerPicker(false)}
+                className="p-1.5 rounded-md transition-colors"
+                style={{ color: "oklch(0.45 0.01 250)" }}
+                title="Cancelar"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            {/* Corpo */}
+            <div className="px-5 py-5 space-y-4">
+              <div>
+                <p className="text-xs mb-1" style={{ color: "oklch(0.55 0.01 250)" }}>Pod</p>
+                <p className="text-sm font-mono font-semibold" style={{ color: "oklch(0.72 0.18 142)" }}>{pod.name}</p>
+                <p className="text-[11px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{pod.namespace}</p>
+              </div>
+              <div>
+                <p className="text-xs mb-3" style={{ color: "oklch(0.55 0.01 250)" }}>
+                  Este pod possui <strong style={{ color: "oklch(0.80 0.01 250)" }}>{pod.containerNames?.length} containers</strong>. Escolha em qual deseja abrir o terminal:
+                </p>
+                <div className="space-y-2">
+                  {(pod.containerNames ?? []).map((cn) => (
+                    <button
+                      key={cn}
+                      onClick={() => {
+                        setExecContainer(cn);
+                        setShowContainerPicker(false);
+                        setShowExecModal(true);
+                      }}
+                      className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-all"
+                      style={{
+                        background: execContainer === cn ? "oklch(0.72 0.18 142 / 0.12)" : "oklch(0.15 0.02 250)",
+                        border: `1px solid ${execContainer === cn ? "oklch(0.72 0.18 142 / 0.50)" : "oklch(0.25 0.03 250)"}`,
+                      }}
+                    >
+                      <div
+                        className="w-7 h-7 rounded-md flex items-center justify-center shrink-0"
+                        style={{ background: "oklch(0.72 0.18 142 / 0.12)", border: "1px solid oklch(0.72 0.18 142 / 0.30)" }}
+                      >
+                        <Box size={13} style={{ color: "oklch(0.72 0.18 142)" }} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-mono font-semibold truncate" style={{ color: "oklch(0.85 0.01 250)" }}>{cn}</p>
+                        <p className="text-[10px]" style={{ color: "oklch(0.40 0.01 250)" }}>container · clique para abrir o terminal</p>
+                      </div>
+                      <Terminal size={13} style={{ color: "oklch(0.72 0.18 142 / 0.60)" }} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
     {/* Terminal interativo: Entrar no Pod */}
     <AnimatePresence>
       {showExecModal && pod && (

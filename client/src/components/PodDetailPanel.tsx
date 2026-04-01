@@ -24,9 +24,45 @@ import { PodStatusTimeline } from "./PodStatusTimeline";
 import { OomRiskBadge, OomRiskSummary } from "./OomRiskPanel";
 import type { OomRiskInfo } from "@/hooks/usePodOomRisk";
 import { runSecurityRules } from "@/lib/securityRules";
-import type { SecurityFinding } from "@/lib/securityRules";
+import type { SecurityFinding } from "@/lib/securityRules";// ── Tipos de consumo real ────────────────────────────────────────────────────────────────────
+interface ResourceInsight {
+  cpuAvg:      number;  // millicores
+  cpuPeak:     number;  // millicores
+  memAvg:      number;  // MiB
+  memPeak:     number;  // MiB
+  peakTime:    string;  // HH:MM
+  replicas:    number | null;
+  sampleCount: number;
+}
 
-// ── Auth helper ───────────────────────────────────────────────────────────────
+function calcInsight(history: HistoryPoint[]): ResourceInsight | null {
+  if (!history || history.length < 2) return null;
+  let cpuSum = 0, memSum = 0;
+  let cpuPeak = 0, memPeak = 0;
+  let peakTime = "";
+  for (const p of history) {
+    cpuSum += p.cpuUsage;
+    memSum += p.memoryUsage;
+    if (p.cpuUsage > cpuPeak) {
+      cpuPeak = p.cpuUsage;
+      const ts = p.timestamp instanceof Date ? p.timestamp : new Date(p.timestamp);
+      peakTime = ts.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    }
+    if (p.memoryUsage > memPeak) memPeak = p.memoryUsage;
+  }
+  const n = history.length;
+  return {
+    cpuAvg:      Math.round(cpuSum / n),
+    cpuPeak:     Math.round(cpuPeak),
+    memAvg:      Math.round(memSum / n),
+    memPeak:     Math.round(memPeak),
+    peakTime,
+    replicas:    null,
+    sampleCount: n,
+  };
+}
+
+// ── Auth helper ────────────────────────────────────────────────────────────────────
 const TOKEN_KEY = "k8s-viz-token";
 function getAuthHeaders(): Record<string, string> {
   const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
@@ -291,6 +327,24 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  // ── Réplicas do deployment ────────────────────────────────────────────────────────────────────
+  const [replicaCount, setReplicaCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!pod?.deploymentName || !pod.namespace) { setReplicaCount(null); return; }
+    const base = apiUrl || "";
+    fetch(`${base}/api/deployments`, { headers: getAuthHeaders() })
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!Array.isArray(data)) return;
+        const dep = data.find(
+          (d: { name: string; namespace: string; replicas?: { desired?: number } }) =>
+            d.name === pod.deploymentName && d.namespace === pod.namespace
+        );
+        setReplicaCount(dep?.replicas?.desired ?? null);
+      })
+      .catch(() => setReplicaCount(null));
+  }, [pod?.deploymentName, pod?.namespace, apiUrl]);
 
   // Deriva containerStatuses a partir de containersDetail para passar ao PodLogsTab
   const containerStatuses = pod?.containersDetail?.map((cd) => ({
@@ -603,9 +657,97 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                     </div>
                   )}
 
-                  {/* ── OOM Risk Summary ────────────────────────────────────── */}
-                  {oomRisk && oomRisk.riskLevel !== "none" && (
-                    <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                  {/* ── Levantamento de Consumo Real ───────────────────────────────────────────────────────── */}
+                  {(() => {
+                    const hist = getHistory ? getHistory(pod.id) : [];
+                    const ins  = calcInsight(hist);
+                    if (!ins) return null;
+                    const insWithReplicas: ResourceInsight = { ...ins, replicas: replicaCount };
+                    // Sugestões de request/limit baseadas no consumo real
+                    const sugCpuReq  = Math.ceil(insWithReplicas.cpuAvg  * 1.2);
+                    const sugCpuLim  = Math.ceil(insWithReplicas.cpuPeak * 1.5);
+                    const sugMemReq  = Math.ceil(insWithReplicas.memAvg  * 1.2);
+                    const sugMemLim  = Math.ceil(insWithReplicas.memPeak * 1.5);
+                    const formatMem2 = (m: number) => m >= 1024 ? `${(m/1024).toFixed(1)}Gi` : `${m}Mi`;
+                    return (
+                      <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                        {/* Título */}
+                        <div className="flex items-center gap-1.5 mb-3">
+                          <Activity size={10} style={{ color: "oklch(0.65 0.18 200)" }} />
+                          <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
+                            Levantamento de Consumo Real
+                          </span>
+                          <span className="ml-auto text-[9px] font-mono px-1.5 py-0.5 rounded" style={{ background: "oklch(0.65 0.18 200 / 0.12)", color: "oklch(0.65 0.18 200)", border: "1px solid oklch(0.65 0.18 200 / 0.3)" }}>
+                            {insWithReplicas.sampleCount} amostras
+                          </span>
+                        </div>
+
+                        {/* Grid de métricas */}
+                        <div className="grid grid-cols-2 gap-1.5 mb-3">
+                          {/* CPU Média */}
+                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>CPU Média</div>
+                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.72 0.18 142)" }}>{insWithReplicas.cpuAvg}m</div>
+                          </div>
+                          {/* CPU Pico */}
+                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>CPU Pico</div>
+                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.80 0.22 50)" }}>{insWithReplicas.cpuPeak}m</div>
+                          </div>
+                          {/* MEM Média */}
+                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>MEM Média</div>
+                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.72 0.18 50)" }}>{formatMem2(insWithReplicas.memAvg)}</div>
+                          </div>
+                          {/* MEM Pico */}
+                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
+                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>MEM Pico</div>
+                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.80 0.22 25)" }}>{formatMem2(insWithReplicas.memPeak)}</div>
+                          </div>
+                        </div>
+
+                        {/* Horário de maior carga + Réplicas */}
+                        <div className="flex items-center gap-2 mb-3">
+                          {insWithReplicas.peakTime && (
+                            <div className="flex items-center gap-1.5 px-2 py-1 rounded" style={{ background: "oklch(0.80 0.22 50 / 0.08)", border: "1px solid oklch(0.80 0.22 50 / 0.25)" }}>
+                              <Clock size={9} style={{ color: "oklch(0.80 0.22 50)" }} />
+                              <span className="text-[9px] font-mono" style={{ color: "oklch(0.72 0.01 250)" }}>Pico às <strong style={{ color: "oklch(0.80 0.22 50)" }}>{insWithReplicas.peakTime}</strong></span>
+                            </div>
+                          )}
+                          {insWithReplicas.replicas !== null && (
+                            <div className="flex items-center gap-1.5 px-2 py-1 rounded" style={{ background: "oklch(0.65 0.18 200 / 0.08)", border: "1px solid oklch(0.65 0.18 200 / 0.25)" }}>
+                              <Box size={9} style={{ color: "oklch(0.65 0.18 200)" }} />
+                              <span className="text-[9px] font-mono" style={{ color: "oklch(0.72 0.01 250)" }}><strong style={{ color: "oklch(0.65 0.18 200)" }}>{insWithReplicas.replicas}</strong> réplica{insWithReplicas.replicas !== 1 ? "s" : ""}</span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Sugestões de Request/Limit */}
+                        <div className="rounded-lg p-2.5" style={{ background: "oklch(0.65 0.18 200 / 0.06)", border: "1px solid oklch(0.65 0.18 200 / 0.25)" }}>
+                          <div className="flex items-center gap-1.5 mb-2">
+                            <Info size={9} style={{ color: "oklch(0.65 0.18 200)" }} />
+                            <span className="text-[9px] font-mono uppercase tracking-wider" style={{ color: "oklch(0.65 0.18 200)" }}>Sugestão de Request / Limit</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1 text-[9px] font-mono">
+                            <div style={{ color: "oklch(0.45 0.01 250)" }}>CPU Request</div>
+                            <div style={{ color: "oklch(0.72 0.18 142)" }}>{sugCpuReq}m</div>
+                            <div style={{ color: "oklch(0.45 0.01 250)" }}>CPU Limit</div>
+                            <div style={{ color: "oklch(0.80 0.22 50)" }}>{sugCpuLim}m</div>
+                            <div style={{ color: "oklch(0.45 0.01 250)" }}>MEM Request</div>
+                            <div style={{ color: "oklch(0.72 0.18 50)" }}>{formatMem2(sugMemReq)}</div>
+                            <div style={{ color: "oklch(0.45 0.01 250)" }}>MEM Limit</div>
+                            <div style={{ color: "oklch(0.80 0.22 25)" }}>{formatMem2(sugMemLim)}</div>
+                          </div>
+                          <div className="mt-2 text-[8px] leading-relaxed" style={{ color: "oklch(0.38 0.01 250)" }}>
+                            Request = média × 1.2 · Limit = pico × 1.5 · Baseado em {insWithReplicas.sampleCount} amostras dos últimos ~5 min
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── OOM Risk Summary ───────────────────────────────────────────────────────── */}
+                  {oomRisk && oomRisk.riskLevel !== "none" && (  <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
                       <OomRiskSummary risk={oomRisk} pod={pod} />
                     </div>
                   )}

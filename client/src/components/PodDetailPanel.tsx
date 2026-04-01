@@ -370,7 +370,19 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               >
                 {pod.name}
               </div>
-              <div className="text-[10px] text-slate-500 font-mono mt-0.5">{pod.namespace}</div>
+              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                <span className="text-[10px] text-slate-500 font-mono">{pod.namespace}</span>
+                {pod.age && pod.age !== "—" && (
+                  <span
+                    className="text-[9px] font-mono px-1.5 py-0.5 rounded flex items-center gap-1"
+                    style={{ background: "oklch(0.20 0.04 250)", color: "oklch(0.55 0.08 220)", border: "1px solid oklch(0.28 0.04 250)" }}
+                    title={`Pod em execução há ${pod.age}`}
+                  >
+                    <Clock size={8} />
+                    {pod.age}
+                  </span>
+                )}
+              </div>
               {/* Badge de risco OOM */}
               {oomRisk && oomRisk.riskLevel !== "none" && (
                 <div className="mt-1.5">

@@ -36,7 +36,7 @@ import {
   requireAuth, requireSRE, requireAdmin,
   handleSetup, handleLogin, handleLogout, handleMe, handleSetupStatus,
   handleListUsers, handleCreateUser, handleUpdateUser, handleDeleteUser,
-  handleAuditLog, insertAuditLog,
+  handleAuditLog, insertAuditLog, verifyTokenPayload,
 } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -3114,6 +3114,46 @@ _wssExec.on("connection", (ws, req) => {
   const _pod       = _url.searchParams.get("pod")       ?? "";
   const _namespace = _url.searchParams.get("namespace") ?? "default";
   const _container = _url.searchParams.get("container") ?? "";
+
+  // ── Validação de autenticação e autorização ────────────────────────────────
+  // O token é enviado no header Authorization: Bearer <token>
+  const _authHeader = req.headers["authorization"] || "";
+  const _rawToken   = _authHeader.startsWith("Bearer ") ? _authHeader.slice(7) : null;
+  const _userPayload = verifyTokenPayload(_rawToken);
+
+  if (!_userPayload) {
+    ws.send(JSON.stringify({ type: "error", message: "Acesso não autorizado: token inválido ou ausente." }));
+    ws.close(1008, "Unauthorized");
+    return;
+  }
+
+  // Admin e SRE têm acesso total; Squad só pode acessar seus namespaces
+  const _role = _userPayload.role;
+  if (_role !== "admin" && _role !== "sre") {
+    const _allowedNs = Array.isArray(_userPayload.namespaces) ? _userPayload.namespaces : [];
+    if (!_allowedNs.includes(_namespace)) {
+      ws.send(JSON.stringify({
+        type: "error",
+        message: `Acesso negado: o namespace '${_namespace}' não está associado ao seu perfil Squad.`,
+      }));
+      ws.close(1008, "Forbidden");
+      return;
+    }
+  }
+
+  // Registra o acesso no audit log
+  try {
+    insertAuditLog({
+      userId: _userPayload.sub,
+      username: _userPayload.username,
+      action: "exec",
+      resourceType: "pod",
+      resourceName: _pod,
+      namespace: _namespace,
+      payload: { container: _container || "default" },
+      result: "opened",
+    });
+  } catch (_) { /* audit log não deve bloquear o terminal */ }
 
   if (!_pod) {
     ws.send(JSON.stringify({ type: "error", message: "Parâmetro 'pod' é obrigatório." }));

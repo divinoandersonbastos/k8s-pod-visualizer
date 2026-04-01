@@ -829,7 +829,6 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
           exit={{ opacity: 0 }}
           className="fixed inset-0 z-[200] flex items-center justify-center"
           style={{ background: "oklch(0.05 0.01 250 / 0.80)", backdropFilter: "blur(6px)" }}
-          onClick={() => setShowExecModal(false)}
         >
           <motion.div
             initial={{ scale: 0.96, y: 12 }}

@@ -342,3 +342,17 @@ export function handleAuditLog(req, res) {
 }
 
 export { insertAuditLog };
+
+/**
+ * verifyTokenPayload — verifica um JWT e retorna o payload decodificado.
+ * Usado pelo WebSocket exec para validar autenticação sem o ciclo req/res.
+ * Retorna null se o token for inválido ou expirado.
+ */
+export function verifyTokenPayload(token) {
+  if (!token) return null;
+  try {
+    return jwt.verify(token, JWT_SECRET);
+  } catch {
+    return null;
+  }
+}

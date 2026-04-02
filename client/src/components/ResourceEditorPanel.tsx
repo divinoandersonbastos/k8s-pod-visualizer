@@ -244,15 +244,33 @@ const kindColors: Record<ResourceKind, string> = {
 
 // ── Componente principal ───────────────────────────────────────────────────────
 
+interface AppViewItem {
+  name: string;
+  status?: string;
+  readyReplicas?: number;
+  replicas?: number;
+  ready?: number | string[];
+  total?: number;
+  images?: string[];
+  type?: string;
+  clusterIP?: string;
+  capacity?: string;
+  storageClass?: string;
+  dataCount?: number;
+  restarts?: number;
+  rules?: unknown[];
+}
 interface ResourceEditorPanelProps {
   onClose: () => void;
   initialNamespace?: string;
   initialName?: string;
   initialKind?: string;
+  initialAppNamespace?: string;  // Namespace do pod selecionado (ativa modo AppView)
+  initialAppLabel?: string;      // Label app= do pod selecionado
 }
-
 export default function ResourceEditorPanel({
-  onClose, initialNamespace, initialName, initialKind = "deployment"
+  onClose, initialNamespace, initialName, initialKind = "deployment",
+  initialAppNamespace, initialAppLabel,
 }: ResourceEditorPanelProps) {
   useAuth(); // mantém contexto de autenticação
   const apiBase = getApiBase();
@@ -316,6 +334,14 @@ export default function ResourceEditorPanel({
   // ── Menu de navegação de recursos ────────────────────────────────────────────
   const [showAdvancedMenu, setShowAdvancedMenu] = useState(false);
   const [showActionsMenu, setShowActionsMenu] = useState(false);
+  // ── Modo AppView (visão operacional da aplicação) ─────────────────────────────
+  const [appViewNs, setAppViewNs] = useState(initialAppNamespace || "");
+  const [appViewLabel, setAppViewLabel] = useState(initialAppLabel || "");
+  const [appViewMode, setAppViewMode] = useState(!!(initialAppNamespace));
+  const [appViewTab, setAppViewTab] = useState<"pods"|"deployments"|"services"|"ingresses"|"endpoints"|"pvcs"|"configmaps"|"secrets"|"hpas">("pods");
+  const [appViewData, setAppViewData] = useState<Record<string, unknown[]> | null>(null);
+  const [appViewLoading, setAppViewLoading] = useState(false);
+  const [appViewError, setAppViewError] = useState("");
 
   // ── Busca namespaces ─────────────────────────────────────────────────────────
   // O endpoint retorna { items: [...], timestamp } — igual ao Home.tsx
@@ -624,7 +650,32 @@ export default function ResourceEditorPanel({
     if (initialNamespace && initialName) loadResource(initialNamespace, initialName, initialKind as ResourceKind);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Ações ────────────────────────────────────────────────────────────────────
+  // ── AppView: carrega visão operacional da aplicação ─────────────────────────
+  const loadAppView = useCallback(async (ns?: string, lbl?: string) => {
+    const targetNs = ns || appViewNs;
+    const targetLabel = lbl !== undefined ? lbl : appViewLabel;
+    if (!targetNs) return;
+    setAppViewLoading(true); setAppViewError("");
+    try {
+      const params = new URLSearchParams({ namespace: targetNs });
+      if (targetLabel) params.set("appLabel", targetLabel);
+      const res = await fetch(`${apiBase}/api/resources/app-overview?${params}`, {
+        headers: getAuthHeaders(),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Erro ao carregar visão da aplicação");
+      setAppViewData(data);
+    } catch (err: unknown) {
+      setAppViewError(err instanceof Error ? err.message : "Erro ao carregar");
+    } finally { setAppViewLoading(false); }
+  }, [appViewNs, appViewLabel, apiBase, getAuthHeaders]);
+
+  // Carrega automaticamente ao entrar no modo AppView
+  useEffect(() => {
+    if (appViewMode && appViewNs) loadAppView();
+  }, [appViewMode, appViewNs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Ações ────────────────────────────────────────────────────────────────────────────────────
   const handleScale = async () => {
     if (!summary) return;
     setActionLoading("scale"); setError(""); setSuccess("");
@@ -798,9 +849,50 @@ export default function ResourceEditorPanel({
           </button>
         </div>
       </div>
-      {/* ── Seletor ────────────────────────────────────────────────────────────────────── */}
-      <div className="px-4 py-3 space-y-2" style={{ borderBottom: `1px solid ${C.borderSub}` }}>
-        {/* Menu Principal */}
+      {/* ── Seletor ───────────────────────────────────────────────────────────────────────────────────── */}
+      {/* Toggle AppView / Editor */}
+      {(initialAppNamespace) && (
+        <div className="flex items-center gap-1 px-4 pt-2" style={{ borderBottom: `1px solid ${C.borderSub}` }}>
+          <button
+            onClick={() => setAppViewMode(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+            style={{
+              background: appViewMode ? `${C.accent}22` : C.bgInput,
+              border: `1px solid ${appViewMode ? C.accent + '66' : C.border}`,
+              color: appViewMode ? C.accent : C.textSub,
+            }}
+          >
+            <LayoutGrid size={12} /> Visão da App
+          </button>
+          <button
+            onClick={() => setAppViewMode(false)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+            style={{
+              background: !appViewMode ? `${C.accent}22` : C.bgInput,
+              border: `1px solid ${!appViewMode ? C.accent + '66' : C.border}`,
+              color: !appViewMode ? C.accent : C.textSub,
+            }}
+          >
+            <Code2 size={12} /> Editor de Recurso
+          </button>
+          {appViewMode && (
+            <div className="ml-auto flex items-center gap-1">
+              <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: C.bgInput, color: C.accent, border: `1px solid ${C.border}` }}>
+                {appViewNs}
+              </span>
+              {appViewLabel && (
+                <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: C.bgInput, color: C.textSub, border: `1px solid ${C.border}` }}>
+                  app={appViewLabel}
+                </span>
+              )}
+              <button onClick={() => loadAppView()} disabled={appViewLoading} className="p-1 rounded" style={{ color: C.textSub }}>
+                {appViewLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="px-4 py-3 space-y-2" style={{ borderBottom: `1px solid ${C.borderSub}`, display: appViewMode ? 'none' : undefined }}>       {/* Menu Principal */}
         <div>
           <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: C.textMuted }}>Menu Principal</p>
           <div className="flex flex-wrap gap-1">
@@ -1043,6 +1135,107 @@ export default function ResourceEditorPanel({
 
       {/* ── Conteúdo ────────────────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto">
+        {/* ── Modo AppView ──────────────────────────────────────────────────────────────────────────────────── */}
+        {appViewMode && (
+          <div className="flex flex-col h-full">
+            {/* Abas de tipos de recurso */}
+            <div className="flex gap-0.5 px-3 pt-2 flex-wrap" style={{ borderBottom: `1px solid ${C.borderSub}` }}>
+              {([
+                { id: 'pods', label: 'Pods', icon: <Box size={11} /> },
+                { id: 'deployments', label: 'Deploys', icon: <Layers size={11} /> },
+                { id: 'services', label: 'Services', icon: <Network size={11} /> },
+                { id: 'ingresses', label: 'Ingresses', icon: <Globe size={11} /> },
+                { id: 'endpoints', label: 'Endpoints', icon: <Activity size={11} /> },
+                { id: 'pvcs', label: 'PVCs', icon: <HardDrive size={11} /> },
+                { id: 'configmaps', label: 'ConfigMaps', icon: <FileText size={11} /> },
+                { id: 'secrets', label: 'Secrets', icon: <Lock size={11} /> },
+                { id: 'hpas', label: 'HPA', icon: <Scale size={11} /> },
+              ] as const).map(tab => {
+                const count = (appViewData as Record<string, unknown[]> | null)?.[tab.id]?.length ?? 0;
+                return (
+                  <button key={tab.id}
+                    onClick={() => setAppViewTab(tab.id as typeof appViewTab)}
+                    className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-medium relative"
+                    style={{ color: appViewTab === tab.id ? C.accent : C.textSub, borderBottom: appViewTab === tab.id ? `2px solid ${C.accent}` : '2px solid transparent' }}
+                  >
+                    {tab.icon} {tab.label}
+                    {count > 0 && <span className="ml-0.5 text-[9px] px-1 rounded-full" style={{ background: appViewTab === tab.id ? `${C.accent}33` : C.bgInput, color: appViewTab === tab.id ? C.accent : C.textMuted }}>{count}</span>}
+                  </button>
+                );
+              })}
+            </div>
+            {/* Conteúdo da aba */}
+            <div className="flex-1 overflow-y-auto px-3 py-2">
+              {appViewLoading && (
+                <div className="flex items-center justify-center h-32 gap-2" style={{ color: C.textMuted }}>
+                  <Loader2 size={16} className="animate-spin" />
+                  <span className="text-xs">Carregando recursos...</span>
+                </div>
+              )}
+              {appViewError && (
+                <div className="flex items-center gap-2 rounded-lg px-3 py-2 mt-2" style={{ background: 'oklch(0.55 0.22 25 / 0.1)', border: '1px solid oklch(0.55 0.22 25 / 0.3)' }}>
+                  <AlertCircle size={13} style={{ color: 'oklch(0.65 0.22 25)' }} />
+                  <span className="text-xs" style={{ color: 'oklch(0.75 0.15 25)' }}>{appViewError}</span>
+                </div>
+              )}
+              {!appViewLoading && !appViewError && appViewData && (() => {
+                const items = ((appViewData as Record<string, AppViewItem[]>)[appViewTab] || []) as AppViewItem[];
+                if (items.length === 0) return (
+                  <div className="flex flex-col items-center justify-center h-32 text-center">
+                    <Package size={22} style={{ color: C.textMuted }} className="mb-2" />
+                    <p className="text-xs" style={{ color: C.textMuted }}>Nenhum {appViewTab} encontrado neste namespace</p>
+                  </div>
+                );
+                return (
+                  <div className="space-y-1.5">
+                    {items.map((r: AppViewItem) => {
+                      const statusColor = r.status === 'Running' || r.status === 'Bound' ? 'oklch(0.65 0.22 145)'
+                        : r.status === 'Pending' ? 'oklch(0.75 0.22 80)'
+                        : r.status === 'Failed' || r.status === 'CrashLoopBackOff' ? 'oklch(0.65 0.22 25)'
+                        : C.textSub;
+                      return (
+                        <div key={r.name as string}
+                          className="rounded-lg px-3 py-2 cursor-pointer transition-all hover:bg-white/5"
+                          style={{ background: C.bgCard, border: `1px solid ${C.border}` }}
+                          onClick={() => {
+                            // Abre no editor de recurso
+                            setAppViewMode(false);
+                            setKind(appViewTab === 'pvcs' ? 'pvc' : appViewTab === 'configmaps' ? 'configmap' : appViewTab === 'secrets' ? 'secret' : appViewTab === 'ingresses' ? 'ingress' : appViewTab === 'endpoints' ? 'endpoints' : appViewTab === 'hpas' ? 'hpa' : appViewTab.replace(/s$/, '') as ResourceKind);
+                            setNamespace(appViewNs);
+                            setName(r.name as string);
+                            setResourceSearch(r.name as string);
+                            loadResource(appViewNs, r.name as string, (appViewTab === 'pvcs' ? 'pvc' : appViewTab === 'configmaps' ? 'configmap' : appViewTab === 'secrets' ? 'secret' : appViewTab === 'ingresses' ? 'ingress' : appViewTab === 'endpoints' ? 'endpoints' : appViewTab === 'hpas' ? 'hpa' : appViewTab.replace(/s$/, '')) as ResourceKind);
+                          }}
+                        >
+                          <div className="flex items-center justify-between mb-0.5">
+                            <span className="text-xs font-mono font-semibold truncate" style={{ color: C.text, maxWidth: 260 }}>{r.name}</span>
+                            {r.status && <span className="text-[10px] font-medium" style={{ color: statusColor }}>{r.status}</span>}
+                            {r.readyReplicas !== undefined && <span className="text-[10px]" style={{ color: C.textSub }}>{r.readyReplicas}/{r.replicas} ready</span>}
+                            {r.ready !== undefined && r.total !== undefined && !Array.isArray(r.ready) && <span className="text-[10px]" style={{ color: C.textSub }}>{r.ready}/{r.total} ready</span>}
+                          </div>
+                          <div className="flex flex-wrap gap-2 mt-0.5">
+                            {r.images && r.images.map((img: string, i: number) => (
+                              <span key={i} className="text-[10px] font-mono truncate" style={{ color: C.textMuted, maxWidth: 300 }}>{img}</span>
+                            ))}
+                            {r.type && appViewTab === 'services' && <span className="text-[10px]" style={{ color: C.textMuted }}>{r.type}</span>}
+                            {r.clusterIP && <span className="text-[10px] font-mono" style={{ color: C.textMuted }}>{r.clusterIP}</span>}
+                            {r.capacity && <span className="text-[10px]" style={{ color: C.textMuted }}>{r.capacity}</span>}
+                            {r.storageClass && <span className="text-[10px]" style={{ color: C.textMuted }}>{r.storageClass}</span>}
+                            {r.dataCount !== undefined && <span className="text-[10px]" style={{ color: C.textMuted }}>{r.dataCount} chaves</span>}
+                            {r.restarts !== undefined && r.restarts > 0 && <span className="text-[10px]" style={{ color: 'oklch(0.75 0.22 55)' }}>{r.restarts} restarts</span>}
+                            {r.rules && r.rules.length > 0 && <span className="text-[10px]" style={{ color: C.textMuted }}>{r.rules.length} regras</span>}
+                            {r.ready && Array.isArray(r.ready) && r.ready.length > 0 && <span className="text-[10px]" style={{ color: 'oklch(0.65 0.22 145)' }}>{r.ready.length} endpoints ativos</span>}
+                            {r.ready && Array.isArray(r.ready) && r.ready.length === 0 && appViewTab === 'endpoints' && <span className="text-[10px]" style={{ color: 'oklch(0.65 0.22 25)' }}>sem endpoints ativos</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
         {/* Estado inicial */}
         {!isLoaded && !loading && (
           <div className="flex flex-col items-center justify-center h-full text-center px-8">

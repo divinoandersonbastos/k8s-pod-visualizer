@@ -2603,6 +2603,152 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── /api/resources/app-overview — Visão operacional completa de uma aplicação ──
+  if (url.pathname === "/api/resources/app-overview" && req.method === "GET") {
+    requireAuth(req, res, async () => {
+      try {
+        const ns = url.searchParams.get("namespace") || "";
+        const appLabel = url.searchParams.get("appLabel") || "";
+        if (!ns) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "namespace obrigatório" })); }
+
+        const labelSel = appLabel ? `?labelSelector=app%3D${encodeURIComponent(appLabel)}&limit=100` : "?limit=100";
+
+        const [pods, deployments, statefulsets, daemonsets, services, ingresses, endpoints, pvcs, configmaps, secrets, hpas, pdbs] = await Promise.allSettled([
+          k8sRequest(`/api/v1/namespaces/${ns}/pods${labelSel}`),
+          k8sRequest(`/apis/apps/v1/namespaces/${ns}/deployments?limit=100`),
+          k8sRequest(`/apis/apps/v1/namespaces/${ns}/statefulsets?limit=100`),
+          k8sRequest(`/apis/apps/v1/namespaces/${ns}/daemonsets?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/services?limit=100`),
+          k8sRequest(`/apis/networking.k8s.io/v1/namespaces/${ns}/ingresses?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/endpoints?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/persistentvolumeclaims?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/configmaps?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/secrets?limit=100`),
+          k8sRequest(`/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=100`),
+          k8sRequest(`/apis/policy/v1/namespaces/${ns}/poddisruptionbudgets?limit=100`),
+        ]);
+
+        const extract = (result) => {
+          if (result.status !== "fulfilled") return [];
+          return result.value?.body?.items || [];
+        };
+
+        const matchesApp = (item) => {
+          if (!appLabel) return true;
+          const labels = item.metadata?.labels || {};
+          return labels.app === appLabel || labels["app.kubernetes.io/name"] === appLabel || labels["app.kubernetes.io/instance"] === appLabel;
+        };
+
+        const mapBase = (item) => ({
+          name: item.metadata?.name,
+          namespace: item.metadata?.namespace,
+          labels: item.metadata?.labels || {},
+          creationTimestamp: item.metadata?.creationTimestamp,
+          uid: item.metadata?.uid,
+        });
+
+        const result = {
+          namespace: ns,
+          appLabel,
+          pods: extract(pods).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            status: item.status?.phase,
+            ready: (item.status?.containerStatuses || []).filter(c => c.ready).length,
+            total: (item.spec?.containers || []).length,
+            restarts: (item.status?.containerStatuses || []).reduce((s, c) => s + (c.restartCount || 0), 0),
+            node: item.spec?.nodeName,
+            podIP: item.status?.podIP,
+            images: (item.spec?.containers || []).map(c => c.image),
+          })),
+          deployments: extract(deployments).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            replicas: item.spec?.replicas,
+            readyReplicas: item.status?.readyReplicas || 0,
+            availableReplicas: item.status?.availableReplicas || 0,
+            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
+            selector: item.spec?.selector?.matchLabels || {},
+          })),
+          statefulsets: extract(statefulsets).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            replicas: item.spec?.replicas,
+            readyReplicas: item.status?.readyReplicas || 0,
+            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
+          })),
+          daemonsets: extract(daemonsets).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            desiredNumberScheduled: item.status?.desiredNumberScheduled || 0,
+            numberReady: item.status?.numberReady || 0,
+            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
+          })),
+          services: extract(services).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            type: item.spec?.type,
+            clusterIP: item.spec?.clusterIP,
+            ports: (item.spec?.ports || []).map(p => ({ name: p.name, port: p.port, targetPort: p.targetPort, protocol: p.protocol })),
+            selector: item.spec?.selector || {},
+          })),
+          ingresses: extract(ingresses).map(item => ({
+            ...mapBase(item),
+            rules: (item.spec?.rules || []).map(r => ({
+              host: r.host,
+              paths: (r.http?.paths || []).map(p => ({
+                path: p.path,
+                service: p.backend?.service?.name || p.backend?.serviceName,
+                port: p.backend?.service?.port?.number || p.backend?.servicePort,
+              })),
+            })),
+            tls: (item.spec?.tls || []).map(t => ({ hosts: t.hosts, secretName: t.secretName })),
+          })),
+          endpoints: extract(endpoints).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            ready: (item.subsets || []).flatMap(s => s.addresses || []).map(a => a.ip),
+            notReady: (item.subsets || []).flatMap(s => s.notReadyAddresses || []).map(a => a.ip),
+            ports: (item.subsets || []).flatMap(s => s.ports || []),
+          })),
+          pvcs: extract(pvcs).map(item => ({
+            ...mapBase(item),
+            status: item.status?.phase,
+            capacity: item.status?.capacity?.storage,
+            storageClass: item.spec?.storageClassName,
+            accessModes: item.spec?.accessModes,
+            volumeName: item.spec?.volumeName,
+          })),
+          configmaps: extract(configmaps).filter(cm => !cm.metadata?.name?.startsWith("kube-")).map(item => ({
+            ...mapBase(item),
+            keys: Object.keys(item.data || {}),
+            dataCount: Object.keys(item.data || {}).length,
+          })),
+          secrets: extract(secrets).filter(s => !["default-token", "kube-"].some(p => s.metadata?.name?.startsWith(p))).map(item => ({
+            ...mapBase(item),
+            type: item.type,
+            keys: Object.keys(item.data || {}),
+            dataCount: Object.keys(item.data || {}).length,
+          })),
+          hpas: extract(hpas).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            minReplicas: item.spec?.minReplicas,
+            maxReplicas: item.spec?.maxReplicas,
+            currentReplicas: item.status?.currentReplicas,
+            targetRef: item.spec?.scaleTargetRef,
+          })),
+          pdbs: extract(pdbs).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            minAvailable: item.spec?.minAvailable,
+            maxUnavailable: item.spec?.maxUnavailable,
+            currentHealthy: item.status?.currentHealthy,
+            desiredHealthy: item.status?.desiredHealthy,
+          })),
+        };
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
   // ── /api/app-access/ingresses — Lista Ingresses do cluster ─────────────────
   if (url.pathname === "/api/app-access/ingresses" && req.method === "GET") {
     requireAuth(req, res, async () => {

@@ -637,6 +637,8 @@ export default function Home() {
             {showResourceEditor && isSRE && (
               <ResourceEditorPanel
                 onClose={() => setShowResourceEditor(false)}
+                initialAppNamespace={selectedPod?.namespace}
+                initialAppLabel={selectedPod?.labels?.['app'] || selectedPod?.labels?.['app.kubernetes.io/name'] || selectedPod?.labels?.['k8s-app']}
               />
             )}
           </AnimatePresence>

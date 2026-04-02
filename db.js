@@ -183,6 +183,40 @@ const migrations = [
     `,
   },
 
+  // v5 — Histórico de logs de pods e eventos de restart
+  {
+    version: 5,
+    sql: `
+      -- Histórico de logs de pods (linhas capturadas periodicamente para consulta retroativa)
+      CREATE TABLE IF NOT EXISTS pod_logs_history (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        pod_name     TEXT NOT NULL,
+        namespace    TEXT NOT NULL,
+        container    TEXT NOT NULL DEFAULT '',
+        log_line     TEXT NOT NULL,
+        log_level    TEXT NOT NULL DEFAULT 'INFO', -- 'ERROR'|'WARN'|'INFO'|'DEBUG'
+        log_ts       TEXT NOT NULL,               -- timestamp extraído da linha de log
+        captured_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_plh_pod      ON pod_logs_history(pod_name, namespace, captured_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_plh_level    ON pod_logs_history(log_level, captured_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plh_dedup ON pod_logs_history(pod_name, namespace, container, log_ts, log_line);
+
+      -- Eventos de restart de pod (quem fez, quando, motivo)
+      CREATE TABLE IF NOT EXISTS pod_restart_events (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        pod_name     TEXT NOT NULL,
+        namespace    TEXT NOT NULL,
+        triggered_by TEXT NOT NULL,              -- username do SRE
+        reason       TEXT,                       -- motivo opcional
+        result       TEXT NOT NULL DEFAULT 'success', -- 'success'|'error'
+        error_msg    TEXT,
+        recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_pre_pod ON pod_restart_events(pod_name, namespace, recorded_at DESC);
+    `,
+  },
+
   // v4 — Usuários SRE/Squad e sessões de autenticação
   {
     version: 4,
@@ -234,51 +268,18 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_audit_resource  ON audit_log(resource_name, namespace, recorded_at DESC);
     `,
   },
-  // v5 — Histórico de logs de pods e eventos de restart
+  // v5 — Role admin master (acima de SRE, gerencia todos os usuários)
   {
     version: 5,
-    sql: `
-      -- Histórico de logs de pods (linhas capturadas periodicamente para consulta retroativa)
-      CREATE TABLE IF NOT EXISTS pod_logs_history (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        pod_name     TEXT NOT NULL,
-        namespace    TEXT NOT NULL,
-        container    TEXT NOT NULL DEFAULT '',
-        log_line     TEXT NOT NULL,
-        log_level    TEXT NOT NULL DEFAULT 'INFO', -- 'ERROR'|'WARN'|'INFO'|'DEBUG'
-        log_ts       TEXT NOT NULL,               -- timestamp extraído da linha de log
-        captured_at  TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_plh_pod      ON pod_logs_history(pod_name, namespace, captured_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_plh_level    ON pod_logs_history(log_level, captured_at DESC);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_plh_dedup ON pod_logs_history(pod_name, namespace, container, log_ts, log_line);
-
-      -- Eventos de restart de pod (quem fez, quando, motivo)
-      CREATE TABLE IF NOT EXISTS pod_restart_events (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        pod_name     TEXT NOT NULL,
-        namespace    TEXT NOT NULL,
-        triggered_by TEXT NOT NULL,              -- username do SRE
-        reason       TEXT,                       -- motivo opcional
-        result       TEXT NOT NULL DEFAULT 'success', -- 'success'|'error'
-        error_msg    TEXT,
-        recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_pre_pod ON pod_restart_events(pod_name, namespace, recorded_at DESC);
-    `,
-  },
-  // v6 — Role admin master (acima de SRE, gerencia todos os usuários)
-  {
-    version: 6,
     sql: `
       -- Adiciona suporte ao role 'admin' na tabela users (sem ALTER TABLE para SQLite)
       -- O campo role já existe; apenas atualizamos o índice e adicionamos índice específico
       CREATE INDEX IF NOT EXISTS idx_users_role_admin ON users(role) WHERE role = 'admin';
     `,
   },
-  // v7 — Histórico de edições de recursos do cluster
+  // v6 — Histórico de edições de recursos do cluster (P5)
   {
-    version: 7,
+    version: 6,
     sql: `
       CREATE TABLE IF NOT EXISTS resource_edit_history (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -305,21 +306,14 @@ const migrations = [
 ];
 
 // Aplicar migrações pendentes dentro de uma transação
-// Ordena por versão para garantir aplicação sequencial correta
 const applyMigrations = db.transaction(() => {
-  // Obtém versões já aplicadas para evitar duplicatas
-  const appliedVersions = new Set(
-    db.prepare("SELECT version FROM schema_version").all().map(r => r.version)
-  );
-  // Ordena migrações por versão crescente
-  const sorted = [...migrations].sort((a, b) => a.version - b.version);
-  for (const migration of sorted) {
-    if (appliedVersions.has(migration.version)) continue; // já aplicada
-    console.log(`[db] Aplicando migração v${migration.version}...`);
-    db.exec(migration.sql);
-    db.prepare("INSERT OR IGNORE INTO schema_version (version) VALUES (?)").run(migration.version);
-    appliedVersions.add(migration.version);
-    console.log(`[db] Migração v${migration.version} aplicada.`);
+  for (const migration of migrations) {
+    if (migration.version > currentVersion) {
+      console.log(`[db] Aplicando migração v${migration.version}...`);
+      db.exec(migration.sql);
+      db.prepare("INSERT INTO schema_version (version) VALUES (?)").run(migration.version);
+      console.log(`[db] Migração v${migration.version} aplicada.`);
+    }
   }
 });
 applyMigrations();

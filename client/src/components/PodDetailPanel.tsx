@@ -13,11 +13,9 @@ import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
   RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal,
-  TrendingUp, TrendingDown, ArrowRight, FileCode2,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
-import type { HistoryWindow } from "@/hooks/usePodHistory";
 import type { StatusEvent } from "@/hooks/usePodStatusEvents";
 import { PodLogsTab } from "./PodLogsTab";
 import { PodTerminal } from "./PodTerminal";
@@ -26,45 +24,9 @@ import { PodStatusTimeline } from "./PodStatusTimeline";
 import { OomRiskBadge, OomRiskSummary } from "./OomRiskPanel";
 import type { OomRiskInfo } from "@/hooks/usePodOomRisk";
 import { runSecurityRules } from "@/lib/securityRules";
-import type { SecurityFinding } from "@/lib/securityRules";// ── Tipos de consumo real ────────────────────────────────────────────────────────────────────
-interface ResourceInsight {
-  cpuAvg:      number;  // millicores
-  cpuPeak:     number;  // millicores
-  memAvg:      number;  // MiB
-  memPeak:     number;  // MiB
-  peakTime:    string;  // HH:MM
-  replicas:    number | null;
-  sampleCount: number;
-}
+import type { SecurityFinding } from "@/lib/securityRules";
 
-function calcInsight(history: HistoryPoint[]): ResourceInsight | null {
-  if (!history || history.length < 2) return null;
-  let cpuSum = 0, memSum = 0;
-  let cpuPeak = 0, memPeak = 0;
-  let peakTime = "";
-  for (const p of history) {
-    cpuSum += p.cpuUsage;
-    memSum += p.memoryUsage;
-    if (p.cpuUsage > cpuPeak) {
-      cpuPeak = p.cpuUsage;
-      const ts = p.timestamp instanceof Date ? p.timestamp : new Date(p.timestamp);
-      peakTime = ts.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-    }
-    if (p.memoryUsage > memPeak) memPeak = p.memoryUsage;
-  }
-  const n = history.length;
-  return {
-    cpuAvg:      Math.round(cpuSum / n),
-    cpuPeak:     Math.round(cpuPeak),
-    memAvg:      Math.round(memSum / n),
-    memPeak:     Math.round(memPeak),
-    peakTime,
-    replicas:    null,
-    sampleCount: n,
-  };
-}
-
-// ── Auth helper ────────────────────────────────────────────────────────────────────
+// ── Auth helper ───────────────────────────────────────────────────────────────
 const TOKEN_KEY = "k8s-viz-token";
 function getAuthHeaders(): Record<string, string> {
   const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
@@ -85,7 +47,7 @@ interface PodDetailPanelProps {
   isSRE?: boolean;
   isAdmin?: boolean;
   onRestartStart?: (podId: string) => void;
-  onRestartEnd?: () => void;
+  onRestartEnd?: (podId: string) => void;
 }
 
 const STATUS_CONFIG = {
@@ -230,8 +192,6 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [showContainerPicker, setShowContainerPicker] = useState(false);
   const [execContainer, setExecContainer] = useState("");
   const [selectedFinding, setSelectedFinding] = useState<SecurityFinding | null>(null);
-  const [historyWindow, setHistoryWindow] = useState<HistoryWindow>("5m");
-  const [copiedYaml, setCopiedYaml] = useState(false);
 
   // ── Resize drag state ──────────────────────────────────────────────────────
   const [panelWidth, setPanelWidth] = useState<number>(() => {
@@ -303,14 +263,15 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
         throw new Error(err.error || `HTTP ${resp.status}`);
       }
       setRestartResult({ ok: true, msg: `Pod reiniciado com sucesso às ${new Date().toLocaleTimeString()}` });
-      // Manter animação por 8s após sucesso (tempo do pod subir)
-      setTimeout(() => onRestartEnd?.(), 8000);
     } catch (err: unknown) {
       setRestartResult({ ok: false, msg: err instanceof Error ? err.message : "Erro desconhecido" });
-      onRestartEnd?.();
     } finally {
       setRestartLoading(false);
       setShowRestartModal(false);
+      // Mantém o anel por 8s após o restart
+      setTimeout(() => {
+        if (pod) onRestartEnd?.(pod.id);
+      }, 8000);
       setTimeout(() => setRestartResult(null), 5000);
     }
   }, [pod, apiUrl, onRestartStart, onRestartEnd]);
@@ -337,24 +298,6 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  // ── Réplicas do deployment ────────────────────────────────────────────────────────────────────
-  const [replicaCount, setReplicaCount] = useState<number | null>(null);
-  useEffect(() => {
-    if (!pod?.deploymentName || !pod.namespace) { setReplicaCount(null); return; }
-    const base = apiUrl || "";
-    fetch(`${base}/api/deployments`, { headers: getAuthHeaders() })
-      .then((r) => r.ok ? r.json() : null)
-      .then((data) => {
-        if (!Array.isArray(data)) return;
-        const dep = data.find(
-          (d: { name: string; namespace: string; replicas?: { desired?: number } }) =>
-            d.name === pod.deploymentName && d.namespace === pod.namespace
-        );
-        setReplicaCount(dep?.replicas?.desired ?? null);
-      })
-      .catch(() => setReplicaCount(null));
-  }, [pod?.deploymentName, pod?.namespace, apiUrl]);
 
   // Deriva containerStatuses a partir de containersDetail para passar ao PodLogsTab
   const containerStatuses = pod?.containersDetail?.map((cd) => ({
@@ -434,19 +377,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               >
                 {pod.name}
               </div>
-              <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                <span className="text-[10px] text-slate-500 font-mono">{pod.namespace}</span>
-                {pod.age && pod.age !== "—" && (
-                  <span
-                    className="text-[9px] font-mono px-1.5 py-0.5 rounded flex items-center gap-1"
-                    style={{ background: "oklch(0.20 0.04 250)", color: "oklch(0.55 0.08 220)", border: "1px solid oklch(0.28 0.04 250)" }}
-                    title={`Pod em execução há ${pod.age}`}
-                  >
-                    <Clock size={8} />
-                    {pod.age}
-                  </span>
-                )}
-              </div>
+              <div className="text-[10px] text-slate-500 font-mono mt-0.5">{pod.namespace}</div>
               {/* Badge de risco OOM */}
               {oomRisk && oomRisk.riskLevel !== "none" && (
                 <div className="mt-1.5">
@@ -667,191 +598,9 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                     </div>
                   )}
 
-                  {/* ── Levantamento de Consumo Real ───────────────────────────────────────────────────────── */}
-                  {(() => {
-                    const hist = getHistory ? getHistory(pod.id) : [];
-                    // Filtra pela janela selecionada
-                    const windowMs: Record<HistoryWindow, number> = { "5m": 5*60*1000, "15m": 15*60*1000, "1h": 60*60*1000 };
-                    const cutoff = Date.now() - windowMs[historyWindow];
-                    const filteredHist = hist.filter((p) => {
-                      const ts = p.timestamp instanceof Date ? p.timestamp.getTime() : new Date(p.timestamp).getTime();
-                      return ts >= cutoff;
-                    });
-                    const histForCalc = filteredHist.length >= 2 ? filteredHist : hist;
-                    const ins  = calcInsight(histForCalc);
-                    if (!ins) return null;
-                    const insWithReplicas: ResourceInsight = { ...ins, replicas: replicaCount };
-                    // Sugestões de request/limit baseadas no consumo real
-                    const sugCpuReq  = Math.ceil(insWithReplicas.cpuAvg  * 1.2);
-                    const sugCpuLim  = Math.ceil(insWithReplicas.cpuPeak * 1.5);
-                    const sugMemReq  = Math.ceil(insWithReplicas.memAvg  * 1.2);
-                    const sugMemLim  = Math.ceil(insWithReplicas.memPeak * 1.5);
-                    const formatMem2 = (m: number) => m >= 1024 ? `${(m/1024).toFixed(1)}Gi` : `${m}Mi`;
-                    // Indicadores de comparação consumo vs configurado
-                    const currCpuReq = pod.resources.requests.cpu;
-                    const currCpuLim = pod.resources.limits.cpu;
-                    const currMemReq = pod.resources.requests.memory;
-                    const currMemLim = pod.resources.limits.memory;
-                    type CompDir = "over" | "under" | "ok" | "unset";
-                    const compare = (curr: number | null | undefined, sug: number): CompDir => {
-                      if (curr == null) return "unset";
-                      const ratio = curr / sug;
-                      if (ratio > 1.5) return "over";   // configurado muito acima do sugerido
-                      if (ratio < 0.7) return "under";  // configurado muito abaixo do sugerido
-                      return "ok";
-                    };
-                    const dirCpuReq = compare(currCpuReq, sugCpuReq);
-                    const dirCpuLim = compare(currCpuLim, sugCpuLim);
-                    const dirMemReq = compare(currMemReq, sugMemReq);
-                    const dirMemLim = compare(currMemLim, sugMemLim);
-                    const dirColor = (d: CompDir) => d === "over" ? "oklch(0.80 0.22 50)" : d === "under" ? "oklch(0.72 0.22 25)" : d === "ok" ? "oklch(0.72 0.18 142)" : "oklch(0.38 0.01 250)";
-                    const DirIcon = ({ d }: { d: CompDir }) => {
-                      if (d === "over")  return <TrendingUp  size={9} style={{ color: dirColor(d) }} />;
-                      if (d === "under") return <TrendingDown size={9} style={{ color: dirColor(d) }} />;
-                      if (d === "ok")    return <ArrowRight   size={9} style={{ color: dirColor(d) }} />;
-                      return null;
-                    };
-                    // YAML para copiar
-                    const windowLabel: Record<HistoryWindow, string> = { "5m": "5 min", "15m": "15 min", "1h": "1 hora" };
-                    const yamlBlock = [
-                      `        resources:`,
-                      `          requests:`,
-                      `            cpu: "${sugCpuReq}m"`,
-                      `            memory: "${formatMem2(sugMemReq)}"`,
-                      `          limits:`,
-                      `            cpu: "${sugCpuLim}m"`,
-                      `            memory: "${formatMem2(sugMemLim)}"`,
-                      `        # Gerado por K8s Pod Visualizer`,
-                      `        # Janela: ${windowLabel[historyWindow]} · ${insWithReplicas.sampleCount} amostras`,
-                      `        # Pod: ${pod.name}`,
-                    ].join("\n");
-                    const handleCopyYaml = () => {
-                      navigator.clipboard.writeText(yamlBlock).then(() => {
-                        setCopiedYaml(true);
-                        setTimeout(() => setCopiedYaml(false), 2500);
-                      });
-                    };
-                    return (
-                      <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
-                        {/* Título + seletor de janela */}
-                        <div className="flex items-center gap-1.5 mb-2">
-                          <Activity size={10} style={{ color: "oklch(0.65 0.18 200)" }} />
-                          <span className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>
-                            Consumo Real
-                          </span>
-                          <div className="ml-auto flex items-center gap-0.5">
-                            {(["5m", "15m", "1h"] as HistoryWindow[]).map((w) => (
-                              <button
-                                key={w}
-                                onClick={() => setHistoryWindow(w)}
-                                className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-all"
-                                style={{
-                                  background: historyWindow === w ? "oklch(0.65 0.18 200 / 0.25)" : "oklch(0.16 0.022 250)",
-                                  border: `1px solid ${historyWindow === w ? "oklch(0.65 0.18 200 / 0.6)" : "oklch(0.22 0.03 250)"}`,
-                                  color: historyWindow === w ? "oklch(0.65 0.18 200)" : "oklch(0.45 0.01 250)",
-                                }}
-                              >{w}</button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="text-[9px] font-mono mb-2" style={{ color: "oklch(0.38 0.01 250)" }}>
-                          {insWithReplicas.sampleCount} amostras · janela {windowLabel[historyWindow]}
-                        </div>
-
-                        {/* Grid de métricas */}
-                        <div className="grid grid-cols-2 gap-1.5 mb-2">
-                          {/* CPU Média */}
-                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
-                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>CPU Média</div>
-                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.72 0.18 142)" }}>{insWithReplicas.cpuAvg}m</div>
-                          </div>
-                          {/* CPU Pico */}
-                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
-                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>CPU Pico</div>
-                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.80 0.22 50)" }}>{insWithReplicas.cpuPeak}m</div>
-                          </div>
-                          {/* MEM Média */}
-                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
-                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>MEM Média</div>
-                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.72 0.18 50)" }}>{formatMem2(insWithReplicas.memAvg)}</div>
-                          </div>
-                          {/* MEM Pico */}
-                          <div className="rounded-lg p-2" style={{ background: "oklch(0.16 0.022 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
-                            <div className="text-[9px] font-mono uppercase tracking-wider mb-0.5" style={{ color: "oklch(0.45 0.01 250)" }}>MEM Pico</div>
-                            <div className="text-sm font-bold font-mono" style={{ color: "oklch(0.80 0.22 25)" }}>{formatMem2(insWithReplicas.memPeak)}</div>
-                          </div>
-                        </div>
-
-                        {/* Horário de maior carga + Réplicas */}
-                        <div className="flex items-center gap-2 mb-2">
-                          {insWithReplicas.peakTime && (
-                            <div className="flex items-center gap-1.5 px-2 py-1 rounded" style={{ background: "oklch(0.80 0.22 50 / 0.08)", border: "1px solid oklch(0.80 0.22 50 / 0.25)" }}>
-                              <Clock size={9} style={{ color: "oklch(0.80 0.22 50)" }} />
-                              <span className="text-[9px] font-mono" style={{ color: "oklch(0.72 0.01 250)" }}>Pico às <strong style={{ color: "oklch(0.80 0.22 50)" }}>{insWithReplicas.peakTime}</strong></span>
-                            </div>
-                          )}
-                          {insWithReplicas.replicas !== null && (
-                            <div className="flex items-center gap-1.5 px-2 py-1 rounded" style={{ background: "oklch(0.65 0.18 200 / 0.08)", border: "1px solid oklch(0.65 0.18 200 / 0.25)" }}>
-                              <Box size={9} style={{ color: "oklch(0.65 0.18 200)" }} />
-                              <span className="text-[9px] font-mono" style={{ color: "oklch(0.72 0.01 250)" }}><strong style={{ color: "oklch(0.65 0.18 200)" }}>{insWithReplicas.replicas}</strong> réplica{insWithReplicas.replicas !== 1 ? "s" : ""}</span>
-                            </div>
-                          )}
-                        </div>
-
-                        {/* Sugestões de Request/Limit + indicadores de comparação */}
-                        <div className="rounded-lg p-2.5 mb-2" style={{ background: "oklch(0.65 0.18 200 / 0.06)", border: "1px solid oklch(0.65 0.18 200 / 0.25)" }}>
-                          <div className="flex items-center gap-1.5 mb-2">
-                            <Info size={9} style={{ color: "oklch(0.65 0.18 200)" }} />
-                            <span className="text-[9px] font-mono uppercase tracking-wider" style={{ color: "oklch(0.65 0.18 200)" }}>Sugestão de Request / Limit</span>
-                          </div>
-                          {/* Cabeçalho da tabela */}
-                          <div className="grid gap-1 mb-1" style={{ gridTemplateColumns: "auto 1fr auto auto" }}>
-                            <div />
-                            <div className="text-[8px] font-mono" style={{ color: "oklch(0.35 0.01 250)" }}>Sugerido</div>
-                            <div className="text-[8px] font-mono text-center" style={{ color: "oklch(0.35 0.01 250)" }}>Atual</div>
-                            <div className="text-[8px] font-mono text-center" style={{ color: "oklch(0.35 0.01 250)" }}>Δ</div>
-                          </div>
-                          {/* Linhas de dados */}
-                          {[
-                            { label: "CPU Req",  sug: `${sugCpuReq}m`,       curr: currCpuReq != null ? `${currCpuReq}m`     : "—", dir: dirCpuReq, color: "oklch(0.72 0.18 142)" },
-                            { label: "CPU Lim",  sug: `${sugCpuLim}m`,       curr: currCpuLim != null ? `${currCpuLim}m`     : "—", dir: dirCpuLim, color: "oklch(0.80 0.22 50)"  },
-                            { label: "MEM Req",  sug: formatMem2(sugMemReq), curr: currMemReq != null ? formatMem2(currMemReq) : "—", dir: dirMemReq, color: "oklch(0.72 0.18 50)"  },
-                            { label: "MEM Lim",  sug: formatMem2(sugMemLim), curr: currMemLim != null ? formatMem2(currMemLim) : "—", dir: dirMemLim, color: "oklch(0.80 0.22 25)"  },
-                          ].map(({ label, sug, curr, dir, color }) => (
-                            <div key={label} className="grid gap-1 items-center" style={{ gridTemplateColumns: "auto 1fr auto auto" }}>
-                              <span className="text-[9px] font-mono" style={{ color: "oklch(0.45 0.01 250)", minWidth: 44 }}>{label}</span>
-                              <span className="text-[9px] font-mono font-bold" style={{ color }}>{sug}</span>
-                              <span className="text-[9px] font-mono text-center" style={{ color: "oklch(0.55 0.01 250)", minWidth: 40 }}>{curr}</span>
-                              <span className="flex justify-center" style={{ minWidth: 14 }}><DirIcon d={dir} /></span>
-                            </div>
-                          ))}
-                          <div className="mt-2 text-[8px] leading-relaxed" style={{ color: "oklch(0.38 0.01 250)" }}>
-                            Req = média×1.2 · Lim = pico×1.5 · ↑ acima do sugerido · ↓ abaixo
-                          </div>
-                        </div>
-
-                        {/* Botão Copiar YAML */}
-                        <button
-                          onClick={handleCopyYaml}
-                          className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-[10px] font-mono font-medium transition-all"
-                          style={{
-                            background: copiedYaml ? "oklch(0.72 0.18 142 / 0.15)" : "oklch(0.16 0.022 250)",
-                            border: `1px solid ${copiedYaml ? "oklch(0.72 0.18 142 / 0.5)" : "oklch(0.28 0.04 250)"}`,
-                            color: copiedYaml ? "oklch(0.72 0.18 142)" : "oklch(0.55 0.01 250)",
-                          }}
-                        >
-                          {copiedYaml ? (
-                            <><Check size={11} /> YAML copiado!</>
-                          ) : (
-                            <><FileCode2 size={11} /> Copiar YAML resources:</>
-                          )}
-                        </button>
-                      </div>
-                    );
-                  })()}
-
-                  {/* ── OOM Risk Summary ───────────────────────────────────────────────────────── */}
-                  {oomRisk && oomRisk.riskLevel !== "none" && (  <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
+                  {/* ── OOM Risk Summary ────────────────────────────────────── */}
+                  {oomRisk && oomRisk.riskLevel !== "none" && (
+                    <div style={{ borderTop: "1px solid oklch(0.20 0.03 250)" }} className="pt-3">
                       <OomRiskSummary risk={oomRisk} pod={pod} />
                     </div>
                   )}
@@ -1221,6 +970,19 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
 
           </div>
         </motion.aside>
+      )}
+    </AnimatePresence>
+
+    {/* Modal de confirmação de restart */}
+    <AnimatePresence>
+      {showRestartModal && pod && (
+        <RestartConfirmModal
+          podName={pod.name}
+          namespace={pod.namespace}
+          onConfirm={handleRestartConfirm}
+          onCancel={() => setShowRestartModal(false)}
+          loading={restartLoading}
+        />
       )}
     </AnimatePresence>
 

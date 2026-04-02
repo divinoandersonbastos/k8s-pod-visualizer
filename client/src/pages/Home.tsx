@@ -65,9 +65,9 @@ export default function Home() {
   const [showAppAccess, setShowAppAccess] = useState(false);
   const [showTopology, setShowTopology] = useState(false);
   const [showDbStatus, setShowDbStatus] = useState(false);
-  const [restartingPodId, setRestartingPodId] = useState<string | null>(null);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
+  const [restartingPodId, setRestartingPodId] = useState<string | null>(null);
   const { user, isSRE, isAdmin, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");

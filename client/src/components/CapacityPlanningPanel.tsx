@@ -24,25 +24,7 @@ import {
 } from "@/hooks/useCapacityPlanning";
 import { getHeadroomThreshold } from "@/components/ConfigModal";
 
-// ── Utilitários visuais ────────────────────────────────────────────
-
-function fmtNodeAge(createdAt: string | null | undefined): string {
-  if (!createdAt) return "—";
-  const start = new Date(createdAt);
-  if (isNaN(start.getTime())) return "—";
-  const diffMs  = Date.now() - start.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return `${diffSec}s`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour}h`;
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay < 30) return `${diffDay}d`;
-  const diffMonth = Math.floor(diffDay / 30);
-  if (diffMonth < 12) return `${diffMonth}mo`;
-  return `${Math.floor(diffMonth / 12)}y`;
-}
+// ── Utilitários visuais ───────────────────────────────────────────────────────
 
 function pct(value: number, max: number) {
   if (!max) return 0;
@@ -625,7 +607,7 @@ function PoolDetail({ pool, onClose, apiUrl = "" }: { pool: CapacityPool; onClos
               <table className="w-full text-[10px] font-mono">
                 <thead>
                   <tr style={{ background: "oklch(0.11 0.015 250)", borderBottom: "1px solid oklch(0.20 0.025 250)" }}>
-                    {["Node", "AGE", "CPU uso", "MEM uso", "CPU req", "MEM req", "Pods"].map((h) => (
+                    {["Node", "CPU uso", "MEM uso", "CPU req", "MEM req", "Pods"].map((h) => (
                       <th key={h} className="px-2 py-1.5 text-left font-semibold" style={{ color: "oklch(0.45 0.015 250)" }}>{h}</th>
                     ))}
                   </tr>
@@ -646,9 +628,6 @@ function PoolDetail({ pool, onClose, apiUrl = "" }: { pool: CapacityPool; onClos
                             {n.name.length > 16 ? n.name.slice(-16) : n.name}
                           </div>
                           {n.isSpot && <div style={{ color: "oklch(0.55 0.15 280)", fontSize: "8px" }}>SPOT</div>}
-                        </td>
-                        <td className="px-2 py-1.5" title={n.createdAt ? new Date(n.createdAt).toLocaleString("pt-BR") : undefined}>
-                          <span style={{ color: "oklch(0.55 0.015 250)" }}>{fmtNodeAge(n.createdAt)}</span>
                         </td>
                         <td className="px-2 py-1.5" style={{ color: colorFor(cpuUPct) }}>
                           {cpuUPct.toFixed(0)}%

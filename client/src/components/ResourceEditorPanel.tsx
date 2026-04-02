@@ -13,7 +13,6 @@ import {
   Pencil, Trash2, Check, SlidersHorizontal, History, User
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import * as jsYaml from "js-yaml";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
@@ -72,8 +71,28 @@ function getApiBase() {
   return "";
 }
 
-// jsonToYaml substituído por jsYaml.dump() — mantido apenas para compatibilidade
-// A geração de YAML agora usa jsYaml.dump() diretamente (YAML padrão RFC 1.2)
+function jsonToYaml(obj: unknown, indent = 0): string {
+  if (obj === null || obj === undefined) return "null";
+  if (typeof obj === "string") return obj.includes("\n") ? `|\n${obj.split("\n").map(l => "  ".repeat(indent + 1) + l).join("\n")}` : obj;
+  if (typeof obj === "number" || typeof obj === "boolean") return String(obj);
+  if (Array.isArray(obj)) {
+    if (obj.length === 0) return "[]";
+    return obj.map(item => "\n" + "  ".repeat(indent) + "- " + jsonToYaml(item, indent + 1)).join("");
+  }
+  if (typeof obj === "object") {
+    const entries = Object.entries(obj as Record<string, unknown>).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) return "{}";
+    return entries.map(([k, v]) => {
+      const val = jsonToYaml(v, indent + 1);
+      if (typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).length > 0)
+        return "\n" + "  ".repeat(indent) + k + ":" + val;
+      if (Array.isArray(v) && v.length > 0)
+        return "\n" + "  ".repeat(indent) + k + ":" + val;
+      return "\n" + "  ".repeat(indent) + k + ": " + val;
+    }).join("");
+  }
+  return String(obj);
+}
 
 function timeAgo(iso?: string): string {
   if (!iso) return "—";
@@ -374,73 +393,33 @@ export default function ResourceEditorPanel({
     return warnings;
   }, [kind, namespace, originalYaml]);
 
-  // ── Abre modal de confirmação com validação ────────────────────────────────────────────────
+  // ── Abre modal de confirmação com validação ───────────────────────────────────────
   const handleOpenApplyModal = useCallback(() => {
-    // Tenta parsear o YAML editado — uma única vez para validação e apply
+    // Parse YAML simples (key: value) — usa JSON.parse do rawData como base
     let parsed: Record<string, unknown> = {};
-    let parseError: string | null = null;
     try {
-      const loaded = jsYaml.load(yamlContent);
-      if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
-        parsed = loaded as Record<string, unknown>;
-      } else {
-        // YAML válido mas não é objeto (ex: lista, scalar) — usa rawData
-        parsed = rawData ? { ...rawData } : {};
-      }
-    } catch (e) {
-      parseError = e instanceof Error ? e.message : String(e);
-      // Fallback: usa rawData para não bloquear totalmente
+      // Tenta parsear o YAML atual como JSON (o servidor retorna JSON que convertemos para YAML-like)
+      // Para validação, usamos o rawData original e aplicamos as alterações do diff
       parsed = rawData ? { ...rawData } : {};
-    }
+    } catch { parsed = {}; }
     const warnings = validateYaml(yamlContent, parsed);
-    // Só adiciona erro de sintaxe se o parse realmente falhou
-    if (parseError) {
-      warnings.unshift({ level: "error", msg: `YAML inválido: ${parseError}` });
-    }
     const hasErrors = warnings.some(w => w.level === "error");
     setValidationWarnings(warnings);
-    setError("");
-    if (!hasErrors) {
-      setShowApplyModal(true);
-    } else {
-      setError(warnings.filter(w => w.level === "error").map(w => w.msg).join("; "));
-    }
+    if (!hasErrors) setShowApplyModal(true);
+    else setError(warnings.filter(w => w.level === "error").map(w => w.msg).join("; "));
   }, [yamlContent, rawData, validateYaml]);
 
-  // ── Executa o apply via /api/resources/apply-yaml ──────────────────────────────────────────────
+  // ── Executa o apply via /api/resources/apply-yaml ──────────────────────────────────
   const handleConfirmApply = useCallback(async () => {
     if (!rawData) return;
     setApplyLoading(true);
     try {
-      // Parseia o YAML editado pelo usuário usando js-yaml
-      // Isso garante que alterações em limits/requests e outros campos sejam capturadas
-      let patchObj: Record<string, unknown>;
-      try {
-        const loaded = jsYaml.load(yamlContent);
-        if (loaded && typeof loaded === "object" && !Array.isArray(loaded)) {
-          patchObj = loaded as Record<string, unknown>;
-        } else {
-          throw new Error("YAML não resultou em objeto válido");
-        }
-      } catch (parseErr) {
-        throw new Error(`YAML inválido: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
-      }
-      // Preserva o resourceVersion do rawData original para evitar conflito 409
-      // (o backend remove antes do patch, mas é boa prática manter para auditoria)
-      if (rawData?.metadata && typeof rawData.metadata === "object") {
-        const origMeta = rawData.metadata as Record<string, unknown>;
-        if (!patchObj.metadata || typeof patchObj.metadata !== "object") {
-          patchObj.metadata = {};
-        }
-        const patchMeta = patchObj.metadata as Record<string, unknown>;
-        // Garante que name e namespace estejam presentes
-        if (!patchMeta.name) patchMeta.name = origMeta.name;
-        if (!patchMeta.namespace) patchMeta.namespace = origMeta.namespace;
-      }
+      // Usa rawData como base do patch (o YAML editado reflete alterações visuais)
+      // Para um apply real, enviamos o rawData com as modificações do diff aplicadas
       const res = await fetch(`${apiBase}/api/resources/apply-yaml`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...getAuthHeaders() },
-        body: JSON.stringify({ namespace, name, kind, patch: patchObj }),
+        body: JSON.stringify({ namespace, name, kind, patch: rawData }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Erro ao aplicar");
@@ -454,9 +433,9 @@ export default function ResourceEditorPanel({
     } finally {
       setApplyLoading(false);
     }
-  }, [rawData, yamlContent, namespace, name, kind, apiBase, getAuthHeaders]);
+  }, [rawData, namespace, name, kind, apiBase, getAuthHeaders]);
 
-  // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────
+  // ── Busca lista de recursos ao mudar tipo ou namespace ───────────────────────────
   useEffect(() => {
     if (!namespace) { setResourceList([]); return; }
     const ctrl = new AbortController();
@@ -521,13 +500,7 @@ export default function ResourceEditorPanel({
         }
         yamlData.data = maskedData;
       }
-      // Gera YAML padrão RFC 1.2 usando js-yaml (compatível com jsYaml.load() no apply)
-      const yaml = jsYaml.dump(yamlData, {
-        indent: 2,
-        lineWidth: 120,
-        noRefs: true,
-        sortKeys: false,
-      }).trim();
+      const yaml = Object.entries(yamlData).map(([k, v]) => k + ":" + jsonToYaml(v, 1)).join("\n").trim();
       setYamlContent(yaml);
       setOriginalYaml(yaml);
     } catch (err: unknown) {

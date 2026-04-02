@@ -184,25 +184,6 @@ function parseMem(val: string | number | null | undefined): number {
   return Math.round(parseInt(val) / (1024 * 1024));
 }
 
-// Converte um timestamp ISO em string de idade legível (ex: "3d", "2h", "45m")
-export function formatAge(startTime: string | null | undefined): string {
-  if (!startTime) return "—";
-  const start = new Date(startTime);
-  if (isNaN(start.getTime())) return "—";
-  const diffMs = Date.now() - start.getTime();
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return `${diffSec}s`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m`;
-  const diffHour = Math.floor(diffMin / 60);
-  if (diffHour < 24) return `${diffHour}h`;
-  const diffDay = Math.floor(diffHour / 24);
-  if (diffDay < 30) return `${diffDay}d`;
-  const diffMonth = Math.floor(diffDay / 30);
-  if (diffMonth < 12) return `${diffMonth}mo`;
-  return `${Math.floor(diffMonth / 12)}y`;
-}
-
 // ── Conversão de resposta da API real para PodMetrics ─────────────────────────
 function apiPodToMetrics(raw: Record<string, unknown>, idx: number): PodMetrics {
   const cpuUsage    = typeof raw.cpuUsage    === "number" ? raw.cpuUsage    : parseCPU(raw.cpuUsage as string);
@@ -227,7 +208,7 @@ function apiPodToMetrics(raw: Record<string, unknown>, idx: number): PodMetrics 
   };
 
   const podBase = {
-    id:           `${String(raw.namespace ?? "default")}/${String(raw.name ?? "unknown")}`,
+    id:           `pod-${idx}-${String(raw.name)}`,
     name:         String(raw.name ?? "unknown"),
     namespace:    String(raw.namespace ?? "default"),
     node:         String(raw.node ?? "unknown"),
@@ -239,7 +220,7 @@ function apiPodToMetrics(raw: Record<string, unknown>, idx: number): PodMetrics 
     memoryLimit,
     memoryPercent,
     restarts:        typeof raw.restarts === "number" ? raw.restarts : 0,
-    age:             formatAge(typeof raw.startTime === "string" ? raw.startTime : null),
+    age:             "—",
     containers:      Array.isArray(raw.containerNames) ? (raw.containerNames as string[]).length : 1,
     containerNames:  Array.isArray(raw.containerNames) ? (raw.containerNames as string[]) : [String(raw.name ?? "app")],
     containersDetail: Array.isArray(raw.containersDetail) ? (raw.containersDetail as ContainerDetail[]) : undefined,
@@ -366,7 +347,7 @@ const POD_TEMPLATES = [
 
 const MOCK_NODES = ["node-01", "node-02", "node-03", "node-04", "node-05"];
 
-function formatAgeMock(ms: number): string {
+function formatAge(ms: number): string {
   const h = Math.floor(ms / 3600000);
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
@@ -398,12 +379,12 @@ function generateInitialPods(): PodMetrics[] {
         limits:   { cpu: t.hasLimits   ? (t.cpuLimit   ?? null) : null, memory: t.hasLimits   ? (t.memLimit   ?? null) : null },
       };
       const base = {
-        id: `${t.namespace}/${t.prefix}-${suffix}`, name: `${t.prefix}-${suffix}`,
+        id: `pod-${++podIdCounter}`, name: `${t.prefix}-${suffix}`,
         namespace: t.namespace, node: MOCK_NODES[Math.floor(Math.random() * MOCK_NODES.length)],
         status: getStatus(cpuPercent, memPercent),
         cpuUsage: Math.round(cpuUsage), cpuLimit: gaugeLimit, cpuPercent: Math.min(100, cpuPercent),
         memoryUsage: Math.round(memUsage), memoryLimit: gaugeMem, memoryPercent: Math.min(100, memPercent),
-        restarts: Math.floor(Math.random() * 5), age: formatAgeMock(Math.random() * 7 * 24 * 3600000 + now),
+        restarts: Math.floor(Math.random() * 5), age: formatAge(Math.random() * 7 * 24 * 3600000 + now),
         containers: Math.floor(Math.random() * 2) + 1, ready: 1,
         containerNames: [`${t.prefix}`],
         labels: { app: t.prefix, env: t.namespace },

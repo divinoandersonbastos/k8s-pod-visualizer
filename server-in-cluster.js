@@ -47,25 +47,7 @@ const SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 const SA_CA_PATH    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
 const SA_NS_PATH    = "/var/run/secrets/kubernetes.io/serviceaccount/namespace";
 
-/// ── Parser de URL da API do Kubernetes ─────────────────────────────────────
-// Extrai hostname e porta corretamente de URLs como https://172.17.62.119:6443
-function parseK8sApiUrl() {
-  const isHttps = K8S_API.startsWith("https");
-  const withoutProto = K8S_API.replace(/^https?:\/\//, "");
-  const colonIdx = withoutProto.lastIndexOf(":");
-  let hostname, port;
-  if (colonIdx !== -1 && colonIdx > withoutProto.lastIndexOf("]")) {
-    // Tem porta explícita: "172.17.62.119:6443" ou "[::1]:6443"
-    hostname = withoutProto.substring(0, colonIdx);
-    port = parseInt(withoutProto.substring(colonIdx + 1), 10);
-  } else {
-    hostname = withoutProto;
-    port = isHttps ? 443 : 80;
-  }
-  return { hostname, port, isHttps };
-}
-
-// ── Helpers de autenticação ─────────────────────────────────────────────────
+// ── Helpers de autenticação ───────────────────────────────────────────────────
 function getToken() {
   try { return fs.readFileSync(SA_TOKEN_PATH, "utf8").trim(); }
   catch { return null; }
@@ -78,16 +60,18 @@ function getSANamespace() {
   try { return fs.readFileSync(SA_NS_PATH, "utf8").trim(); }
   catch { return "k8s-pod-visualizer"; }
 }
-// ── Requisição para a API do Kubernetes ───────────────────────────────────────────────
+
+// ── Requisição para a API do Kubernetes ───────────────────────────────────────
 function k8sRequest(urlPath) {
   return new Promise((resolve, reject) => {
     const token = getToken();
     const ca    = getCA();
-    const { hostname: apiHost, port: apiPort, isHttps } = parseK8sApiUrl();
+    const apiHost = K8S_API.replace(/^https?:\/\//, "");
+    const isHttps = K8S_API.startsWith("https");
 
     const options = {
       hostname: apiHost,
-      port: apiPort,
+      port: isHttps ? 443 : 80,
       path: urlPath,
       method: "GET",
       headers: {
@@ -118,10 +102,11 @@ function k8sRequestText(urlPath) {
   return new Promise((resolve, reject) => {
     const token = getToken();
     const ca    = getCA();
-    const { hostname: apiHost, port: apiPort, isHttps } = parseK8sApiUrl();
+    const apiHost = K8S_API.replace(/^https?:\/\//, "");
+    const isHttps = K8S_API.startsWith("https");
     const options = {
       hostname: apiHost,
-      port: apiPort,
+      port: isHttps ? 443 : 80,
       path: urlPath,
       method: "GET",
       headers: {
@@ -153,11 +138,12 @@ function k8sPatch(urlPath, patchData) {
   return new Promise((resolve, reject) => {
     const token = getToken();
     const ca    = getCA();
-    const { hostname: apiHost, port: apiPort, isHttps } = parseK8sApiUrl();
+    const apiHost = K8S_API.replace(/^https?:\/\//, "");
+    const isHttps = K8S_API.startsWith("https");
     const body = JSON.stringify(patchData);
     const options = {
       hostname: apiHost,
-      port: apiPort,
+      port: isHttps ? 443 : 80,
       path: urlPath,
       method: "PATCH",
       headers: {
@@ -804,7 +790,6 @@ async function getCapacity() {
       podCount: pods.length,
       isSpot,
       labels,
-      createdAt: n.metadata.creationTimestamp || null,
     });
     pg.totals.cpuAlloc  += cpuAlloc;
     pg.totals.memAlloc  += memAlloc;
@@ -1101,11 +1086,12 @@ const server = http.createServer(async (req, res) => {
     try {
       const token = getToken();
       const ca    = getCA();
-      const { hostname: apiHost, port: apiPort, isHttps } = parseK8sApiUrl();
+      const apiHost = K8S_API.replace(/^https?:\/\//, "");
+      const isHttps = K8S_API.startsWith("https");
 
       const options = {
         hostname: apiHost,
-        port: apiPort,
+        port: isHttps ? 443 : 80,
         path: logPath,
         method: "GET",
         headers: {
@@ -1184,11 +1170,12 @@ const server = http.createServer(async (req, res) => {
           // Deleta o pod — o Deployment/DaemonSet cria um novo automaticamente
           const token = getToken();
           const ca    = getCA();
-          const { hostname: apiHost, port: apiPort, isHttps } = parseK8sApiUrl();
+          const apiHost = K8S_API.replace(/^https?:\/\//, "");
+          const isHttps = K8S_API.startsWith("https");
           await new Promise((resolve, reject) => {
             const options = {
               hostname: apiHost,
-              port: apiPort,
+              port: isHttps ? 443 : 80,
               path: `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}`,
               method: "DELETE",
               headers: {
@@ -3209,7 +3196,8 @@ _wssExec.on("connection", (ws, req) => {
   // ── Monta a URL da Kubernetes Exec API ──────────────────────────────────
   const _token   = getToken();
   const _ca      = getCA();
-  const { hostname: _apiHost, port: _apiPort, isHttps: _isHttps } = parseK8sApiUrl();
+  const _apiHost = K8S_API.replace(/^https?:\/\//, "");
+  const _isHttps = K8S_API.startsWith("https");
   const _wsProto = _isHttps ? "wss" : "ws";
 
   const _execParams = new URLSearchParams({

@@ -695,7 +695,6 @@ export function BubbleCanvas({
             };
             const colors = securityMode ? (SEC_COLORS[secRisk] ?? SEC_COLORS.OK) : STATUS_COLORS[node.status];
             const isSelected = node.id === selectedPodId;
-            const isRestarting = node.id === restartingPodId;
             const percent = viewMode === "cpu" ? node.cpuPercent : node.memoryPercent;
             const value = viewMode === "cpu"
               ? `${node.cpuUsage}m`
@@ -713,13 +712,11 @@ export function BubbleCanvas({
             const nsRingColor = `oklch(0.65 0.20 ${nsHue})`;
 
             // ── Textos comuns a todos os estilos ──────────────────────────────────────────────
-            const podAge = (node as PodMetrics).age || "—";
-            const showAge = node.radius >= 26 && podAge !== "—";
             const labelNodes = (
               <>
                 {showName && (
                   <text
-                    textAnchor="middle" dy={showValue ? "-0.55em" : (showAge ? "-0.8em" : "0.35em")}
+                    textAnchor="middle" dy={showValue ? "-0.4em" : "0.35em"}
                     fontSize={Math.max(7, Math.min(11, node.radius * 0.22))}
                     fill={colors.text} fontFamily="'JetBrains Mono', monospace" fontWeight="500"
                     style={{ userSelect: "none", pointerEvents: "none" }}
@@ -729,7 +726,7 @@ export function BubbleCanvas({
                 )}
                 {showValue && (
                   <text
-                    textAnchor="middle" dy={showName ? (showAge ? "0.3em" : "1em") : "0.35em"}
+                    textAnchor="middle" dy={showName ? "1em" : "0.35em"}
                     fontSize={Math.max(8, Math.min(13, node.radius * 0.25))}
                     fill={colors.label} fontFamily="'JetBrains Mono', monospace" fontWeight="600"
                     style={{ userSelect: "none", pointerEvents: "none" }}
@@ -739,22 +736,11 @@ export function BubbleCanvas({
                 )}
                 {!showValue && (
                   <text
-                    textAnchor="middle" dy={showAge ? "-0.2em" : "0.35em"} fontSize="7"
+                    textAnchor="middle" dy="0.35em" fontSize="7"
                     fill={colors.text} fontFamily="'JetBrains Mono', monospace"
                     style={{ userSelect: "none", pointerEvents: "none" }}
                   >
                     {Math.round(percent)}%
-                  </text>
-                )}
-                {showAge && (
-                  <text
-                    textAnchor="middle"
-                    dy={showValue ? "1.9em" : "1.3em"}
-                    fontSize={Math.max(5, Math.min(8, node.radius * 0.17))}
-                    fill="oklch(0.60 0.04 220)" fontFamily="'JetBrains Mono', monospace" fontWeight="400"
-                    style={{ userSelect: "none", pointerEvents: "none" }}
-                  >
-                    {podAge}
                   </text>
                 )}
               </>
@@ -763,17 +749,6 @@ export function BubbleCanvas({
             // ── Anel de seleção e namespace (comum) ───────────────────────────────────────
             const selectionRing = isSelected && (
               <circle r={node.radius + 8} fill="none" stroke={colors.stroke} strokeWidth="2" strokeDasharray="6 3" opacity="0.8" />
-            );
-            // ── Anel de restart: laranja giratório ────────────────────────────────────────
-            const restartRing = isRestarting && (
-              <g>
-                <circle r={node.radius + 10} fill="none" stroke="oklch(0.75 0.22 55)" strokeWidth="3" strokeDasharray="18 8" strokeOpacity="0.9">
-                  <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="1s" repeatCount="indefinite" />
-                </circle>
-                <circle r={node.radius + 6} fill="oklch(0.75 0.22 55 / 0.15)" stroke="oklch(0.75 0.22 55 / 0.4)" strokeWidth="1.5">
-                  <animate attributeName="opacity" values="0.6;1;0.6" dur="0.8s" repeatCount="indefinite" />
-                </circle>
-              </g>
             );
             const nsRing = layoutMode === "constellation" && (
               <circle r={node.radius + 3} fill="none" stroke={nsRingColor} strokeWidth="1.5" strokeOpacity="0.45" />
@@ -818,9 +793,26 @@ export function BubbleCanvas({
             // ──────────────────────────────────────────────────────────────────────────────
             // ESTILO: BOLHA — reflexo 3D aprimorado com múltiplos highlights
             // ──────────────────────────────────────────────────────────────────────────────
+            // Anel laranja giratório durante restart
+            const isRestarting = restartingPodId === node.id;
+            const restartRingCircumference = 2 * Math.PI * (node.radius + 10);
             if (bubbleStyle === "bubble") return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
-                {restartRing}{selectionRing}{nsRing}
+                {selectionRing}{nsRing}
+                {/* Anel laranja giratório de restart */}
+                {isRestarting && (
+                  <circle
+                    r={node.radius + 10}
+                    fill="none"
+                    stroke="oklch(0.75 0.22 50)"
+                    strokeWidth="3"
+                    strokeDasharray={`${restartRingCircumference * 0.35} ${restartRingCircumference * 0.65}`}
+                    strokeLinecap="round"
+                    opacity="0.9"
+                  >
+                    <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.9s" repeatCount="indefinite" />
+                  </circle>
+                )}
                 {/* Halo de glow externo */}
                 <circle r={node.radius + 5} fill={colors.glow} filter={`url(#glow-${node.status})`}>
                   {node.status === "critical" && (
@@ -828,7 +820,7 @@ export function BubbleCanvas({
                   )}
                 </circle>
                 {/* Corpo principal */}
-                <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}>
+                <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={isRestarting ? "oklch(0.75 0.22 50)" : colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}>
                   {node.status === "critical" && (
                     <animate attributeName="stroke-opacity" values="0.9;0.4;0.9" dur="1.5s" repeatCount="indefinite" />
                   )}
@@ -865,8 +857,8 @@ export function BubbleCanvas({
               }));
               return (
                 <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
-                  {restartRing}{selectionRing}{nsRing}
-                  {/* Rastro do cometa */}
+                  {selectionRing}{nsRing}
+                  {/* Cauda do cometa */}
                   <line
                     x1={0} y1={0} x2={tailDx} y2={tailDy}
                     stroke={colors.glow} strokeWidth={node.radius * 0.9}
@@ -912,8 +904,8 @@ export function BubbleCanvas({
             const aqDur = 3 + (node.id.charCodeAt(0) % 3); // 3-5s varia por pod
             return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
-                {restartRing}{selectionRing}{nsRing}
-                {/* Halo de glow externo */}
+                {selectionRing}{nsRing}
+                {/* Halo de água pulsante */}
                 <circle r={node.radius + 6} fill={colors.glow} opacity="0.30" filter="url(#aqua-glow)">
                   <animate attributeName="r" values={`${node.radius + 4};${node.radius + 10};${node.radius + 4}`} dur={`${aqDur}s`} repeatCount="indefinite" />
                   <animate attributeName="opacity" values="0.30;0.12;0.30" dur={`${aqDur}s`} repeatCount="indefinite" />

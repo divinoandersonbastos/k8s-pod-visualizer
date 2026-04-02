@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
-  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal,
+  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal, Flame,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
@@ -25,6 +25,7 @@ import { OomRiskBadge, OomRiskSummary } from "./OomRiskPanel";
 import type { OomRiskInfo } from "@/hooks/usePodOomRisk";
 import { runSecurityRules } from "@/lib/securityRules";
 import type { SecurityFinding } from "@/lib/securityRules";
+import { JvmTab } from "./JvmTab";
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 const TOKEN_KEY = "k8s-viz-token";
@@ -76,7 +77,7 @@ function formatMem(mib: number): string {
   return `${mib} MiB`;
 }
 
-type Tab = "details" | "logs" | "events" | "security" | "resources";
+type Tab = "details" | "logs" | "events" | "security" | "resources" | "jvm";
 
 // ── Modal de Confirmação de Restart ──────────────────────────────────────────
 function RestartConfirmModal({
@@ -445,6 +446,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               { id: "events",    label: `Eventos${eventCount > 0 ? ` (${eventCount})` : ""}`, icon: <Activity size={11} /> },
               { id: "resources", label: "Recursos",   icon: <Cpu size={11} /> },
               { id: "security",  label: "Segurança",  icon: <Shield size={11} /> },
+              { id: "jvm",       label: "JVM",         icon: <Flame size={11} /> },
             ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((tab) => (
               <button
                 key={tab.id}
@@ -1072,6 +1074,10 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                 </div>
               );
             })()}
+            {/* Tab: JVM — Monitoramento JVM via jstat/jcmd */}
+            {activeTab === "jvm" && pod && (
+              <JvmTab pod={pod} apiUrl={apiUrl} />
+            )}
             {/* Tab: Eventos */}
             {activeTab === "events" && (
               <div className="absolute inset-0 overflow-y-auto p-4">

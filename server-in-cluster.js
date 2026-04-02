@@ -1240,6 +1240,194 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/jvm/:namespace/:pod — Métricas JVM via kubectl exec (jstat/jcmd) ──────
+  // Suporta pods Java com jstat/jcmd disponíveis (WildFly, Spring Boot, etc.)
+  // Retorna: heap, oldgen, metaspace, gc, threads, jvm_version
+  const jvmMatch = url.pathname.match(/^\/api\/jvm\/([^/]+)\/([^/]+)$/);
+  if (jvmMatch && req.method === "GET") {
+    const [, namespace, podName] = jvmMatch;
+    const container = url.searchParams.get("container") || "";
+    requireAuth(req, res, async () => {
+      try {
+        const token  = getToken();
+        const ca     = getCA();
+        const parsed = parseK8sApiUrl(K8S_API);
+        const isHttps = parsed.isHttps;
+        const apiHost = parsed.hostname;
+        const apiPort = parsed.port;
+
+        // Executa um comando no pod via K8s Exec API (sem WebSocket — usa HTTP SPDY/upgrade)
+        // Para simplicidade, usamos o padrão de exec one-shot via stdout capture
+        async function execInPod(cmd) {
+          return new Promise((resolve, reject) => {
+            const cmdParts = ["/bin/sh", "-c", cmd];
+            const cmdQuery = cmdParts.map(c => `command=${encodeURIComponent(c)}`).join("&");
+            const containerQuery = container ? `&container=${encodeURIComponent(container)}` : "";
+            const path = `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}/exec?stdin=false&stdout=true&stderr=true&tty=false&${cmdQuery}${containerQuery}`;
+
+            const proto = isHttps ? https : http;
+            const options = {
+              hostname: apiHost,
+              port: apiPort,
+              path,
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                // Solicitar upgrade para SPDY/websocket — K8s suporta ambos
+                Connection: "Upgrade",
+                Upgrade: "SPDY/3.1",
+              },
+              ...(ca ? { ca } : { rejectUnauthorized: false }),
+            };
+
+            // Fallback: usar WebSocket v4.channel.k8s.io para exec one-shot
+            const { WebSocket: _WS } = await import("ws");
+            const wsProto = isHttps ? "wss" : "ws";
+            const wsUrl = `${wsProto}://${apiHost}:${apiPort}${path.replace("POST", "")}`.replace(/\?.*/, "") +
+              `?stdin=false&stdout=true&stderr=true&tty=false&${cmdQuery}${containerQuery}`;
+
+            const ws = new _WS(wsUrl, ["v4.channel.k8s.io"], {
+              headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+              ...(ca ? { ca } : { rejectUnauthorized: false }),
+            });
+
+            let output = "";
+            const timer = setTimeout(() => {
+              ws.terminate();
+              reject(new Error("exec timeout"));
+            }, 8000);
+
+            ws.on("message", (data) => {
+              if (!Buffer.isBuffer(data) || data.length < 1) return;
+              const channel = data[0];
+              if (channel === 1 || channel === 2) {
+                output += data.slice(1).toString("utf8");
+              }
+            });
+            ws.on("close", () => { clearTimeout(timer); resolve(output.trim()); });
+            ws.on("error", (err) => { clearTimeout(timer); reject(err); });
+          });
+        }
+
+        // 1. Descobrir o PID do processo Java
+        const jpsOut = await execInPod(
+          "PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jps -l 2>/dev/null | grep -v Jps | head -1"
+        );
+        const pid = jpsOut.split(/\s+/)[0];
+        if (!pid || isNaN(parseInt(pid))) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Nenhum processo Java encontrado no pod", notJava: true }));
+          return;
+        }
+
+        // 2. Executar jstat -gc e jstat -gcutil em paralelo
+        const [gcRaw, gcUtilRaw, heapRaw, vmVersionRaw, threadCountRaw] = await Promise.allSettled([
+          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jstat -gc ${pid} 1 1 2>/dev/null`),
+          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jstat -gcutil ${pid} 1 1 2>/dev/null`),
+          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jcmd ${pid} GC.heap_info 2>/dev/null`),
+          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jcmd ${pid} VM.version 2>/dev/null`),
+          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jcmd ${pid} Thread.print 2>/dev/null | grep -c "java.lang.Thread" || echo 0`),
+        ]);
+
+        // 3. Parsear jstat -gc (linha de header + linha de dados)
+        // Colunas: S0C S1C S0U S1U EC EU OC OU MC MU CCSC CCSU YGC YGCT FGC FGCT GCT
+        let gcData = {};
+        if (gcRaw.status === "fulfilled") {
+          const lines = gcRaw.value.split("\n").filter(l => l.trim());
+          if (lines.length >= 2) {
+            const headers = lines[0].trim().split(/\s+/);
+            const values  = lines[1].trim().split(/\s+/);
+            headers.forEach((h, i) => { gcData[h] = parseFloat(values[i]) || 0; });
+          }
+        }
+
+        // 4. Parsear jstat -gcutil (percentuais)
+        // Colunas: S0 S1 E O M CCS YGC YGCT FGC FGCT GCT
+        let gcUtil = {};
+        if (gcUtilRaw.status === "fulfilled") {
+          const lines = gcUtilRaw.value.split("\n").filter(l => l.trim());
+          if (lines.length >= 2) {
+            const headers = lines[0].trim().split(/\s+/);
+            const values  = lines[1].trim().split(/\s+/);
+            headers.forEach((h, i) => { gcUtil[h] = parseFloat(values[i]) || 0; });
+          }
+        }
+
+        // 5. Parsear heap info do jcmd
+        let heapInfo = { gcType: "Unknown", heapTotal: 0, heapUsed: 0, metaspaceUsed: 0, metaspaceCommitted: 0 };
+        if (heapRaw.status === "fulfilled") {
+          const h = heapRaw.value;
+          // "garbage-first heap   total 7217152K, used 3725572K"
+          // "ZGC heap             total 4096M, used 1024M"
+          // "PSYoungGen  total 2048K, used 512K"
+          const gcTypeMatch = h.match(/(garbage-first|ZGC|Shenandoah|parallel scavenge|serial|cms|G1)/i);
+          heapInfo.gcType = gcTypeMatch ? gcTypeMatch[1].toUpperCase().replace("GARBAGE-FIRST", "G1GC") : "Unknown";
+          const totalMatch = h.match(/total\s+(\d+)K/i);
+          const usedMatch  = h.match(/used\s+(\d+)K/i);
+          const metaUsed   = h.match(/Metaspace\s+used\s+(\d+)K/i);
+          const metaComm   = h.match(/committed\s+(\d+)K/i);
+          if (totalMatch) heapInfo.heapTotal = Math.round(parseInt(totalMatch[1]) / 1024); // MiB
+          if (usedMatch)  heapInfo.heapUsed  = Math.round(parseInt(usedMatch[1])  / 1024);
+          if (metaUsed)   heapInfo.metaspaceUsed      = Math.round(parseInt(metaUsed[1]) / 1024);
+          if (metaComm)   heapInfo.metaspaceCommitted  = Math.round(parseInt(metaComm[1]) / 1024);
+        }
+
+        // 6. Parsear versão JVM
+        let jvmVersion = "Unknown";
+        if (vmVersionRaw.status === "fulfilled") {
+          const vMatch = vmVersionRaw.value.match(/JDK\s+([\d._]+)/i) ||
+                         vmVersionRaw.value.match(/version\s+([\d._]+)/i);
+          if (vMatch) jvmVersion = vMatch[1];
+        }
+
+        // 7. Thread count
+        let threadCount = 0;
+        if (threadCountRaw.status === "fulfilled") {
+          threadCount = parseInt(threadCountRaw.value.trim()) || 0;
+        }
+
+        // 8. Montar resposta
+        const result = {
+          pid: parseInt(pid),
+          jvmVersion,
+          gcType: heapInfo.gcType,
+          heap: {
+            totalMiB:   heapInfo.heapTotal || Math.round((gcData["OC"] || 0 + gcData["EC"] || 0 + gcData["S0C"] || 0 + gcData["S1C"] || 0) / 1024),
+            usedMiB:    heapInfo.heapUsed  || Math.round((gcData["OU"] || 0 + gcData["EU"] || 0 + gcData["S0U"] || 0 + gcData["S1U"] || 0) / 1024),
+            oldGenPct:  gcUtil["O"]  || 0,
+            edenPct:    gcUtil["E"]  || 0,
+            survivorPct: Math.max(gcUtil["S0"] || 0, gcUtil["S1"] || 0),
+          },
+          metaspace: {
+            usedMiB:      heapInfo.metaspaceUsed      || Math.round((gcData["MU"] || 0) / 1024),
+            committedMiB: heapInfo.metaspaceCommitted || Math.round((gcData["MC"] || 0) / 1024),
+            pct:          gcUtil["M"] || 0,
+          },
+          gc: {
+            youngGcCount: gcData["YGC"]  || 0,
+            youngGcTimeSec: gcData["YGCT"] || 0,
+            fullGcCount:  gcData["FGC"]  || 0,
+            fullGcTimeSec: gcData["FGCT"] || 0,
+            totalGcTimeSec: gcData["GCT"] || 0,
+          },
+          threads: {
+            live: threadCount,
+          },
+          timestamp: new Date().toISOString(),
+        };
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        console.error(`[error] /api/jvm/${namespace}/${podName}:`, err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
   // ── /api/logs-history/:namespace/:pod — Histórico de logs do SQLite ──────────
   const logsHistoryMatch = url.pathname.match(/^\/api\/logs-history\/([^/]+)\/([^/]+)$/);
   if (logsHistoryMatch && req.method === "GET") {

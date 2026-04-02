@@ -2254,13 +2254,35 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         let k8sPath;
-        if      (kind === "deployment")   k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
-        else if (kind === "statefulset")  k8sPath = `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`;
-        else if (kind === "daemonset")    k8sPath = `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`;
-        else if (kind === "service")      k8sPath = `/api/v1/namespaces/${namespace}/services/${name}`;
-        else if (kind === "secret")       k8sPath = `/api/v1/namespaces/${namespace}/secrets/${name}`;
-        else if (kind === "configmap")    k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
-        else if (kind === "hpa")          k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
+        // Menu Principal
+        if      (kind === "pod")           k8sPath = `/api/v1/namespaces/${namespace}/pods/${name}`;
+        else if (kind === "deployment")    k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
+        else if (kind === "statefulset")   k8sPath = `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`;
+        else if (kind === "daemonset")     k8sPath = `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`;
+        else if (kind === "job")           k8sPath = `/apis/batch/v1/namespaces/${namespace}/jobs/${name}`;
+        else if (kind === "cronjob")       k8sPath = `/apis/batch/v1/namespaces/${namespace}/cronjobs/${name}`;
+        else if (kind === "service")       k8sPath = `/api/v1/namespaces/${namespace}/services/${name}`;
+        else if (kind === "ingress")       k8sPath = `/apis/networking.k8s.io/v1/namespaces/${namespace}/ingresses/${name}`;
+        else if (kind === "configmap")     k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
+        else if (kind === "secret")        k8sPath = `/api/v1/namespaces/${namespace}/secrets/${name}`;
+        else if (kind === "pvc")           k8sPath = `/api/v1/namespaces/${namespace}/persistentvolumeclaims/${name}`;
+        else if (kind === "pv")            k8sPath = `/api/v1/persistentvolumes/${name}`;
+        else if (kind === "storageclass")  k8sPath = `/apis/storage.k8s.io/v1/storageclasses/${name}`;
+        // Menu Avançado
+        else if (kind === "replicaset")                     k8sPath = `/apis/apps/v1/namespaces/${namespace}/replicasets/${name}`;
+        else if (kind === "resourcequota")                  k8sPath = `/api/v1/namespaces/${namespace}/resourcequotas/${name}`;
+        else if (kind === "limitrange")                     k8sPath = `/api/v1/namespaces/${namespace}/limitranges/${name}`;
+        else if (kind === "hpa")                            k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
+        else if (kind === "pdb")                            k8sPath = `/apis/policy/v1/namespaces/${namespace}/poddisruptionbudgets/${name}`;
+        else if (kind === "priorityclass")                  k8sPath = `/apis/scheduling.k8s.io/v1/priorityclasses/${name}`;
+        else if (kind === "endpoints")                      k8sPath = `/api/v1/namespaces/${namespace}/endpoints/${name}`;
+        else if (kind === "ingressclass")                   k8sPath = `/apis/networking.k8s.io/v1/ingressclasses/${name}`;
+        else if (kind === "networkpolicy")                  k8sPath = `/apis/networking.k8s.io/v1/namespaces/${namespace}/networkpolicies/${name}`;
+        else if (kind === "runtimeclass")                   k8sPath = `/apis/node.k8s.io/v1/runtimeclasses/${name}`;
+        else if (kind === "lease")                          k8sPath = `/apis/coordination.k8s.io/v1/namespaces/${namespace}/leases/${name}`;
+        else if (kind === "mutatingwebhookconfiguration")   k8sPath = `/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations/${name}`;
+        else if (kind === "validatingwebhookconfiguration") k8sPath = `/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/${name}`;
+        else if (kind === "replicationcontroller")          k8sPath = `/api/v1/namespaces/${namespace}/replicationcontrollers/${name}`;
         else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
         const data = await k8sRequest(k8sPath);
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -2536,13 +2558,35 @@ const server = http.createServer(async (req, res) => {
       const ns   = url.searchParams.get("namespace") || "";
       try {
         let k8sPath;
-        if      (kind === "deployment")   k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/deployments?limit=200`        : `/apis/apps/v1/deployments?limit=200`;
-        else if (kind === "statefulset")  k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/statefulsets?limit=200`       : `/apis/apps/v1/statefulsets?limit=200`;
-        else if (kind === "daemonset")    k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/daemonsets?limit=200`         : `/apis/apps/v1/daemonsets?limit=200`;
-        else if (kind === "configmap")    k8sPath = ns ? `/api/v1/namespaces/${ns}/configmaps?limit=200`               : `/api/v1/configmaps?limit=200`;
-        else if (kind === "secret")       k8sPath = ns ? `/api/v1/namespaces/${ns}/secrets?limit=200`                  : `/api/v1/secrets?limit=200`;
-        else if (kind === "service")      k8sPath = ns ? `/api/v1/namespaces/${ns}/services?limit=200`                 : `/api/v1/services?limit=200`;
-        else if (kind === "hpa")          k8sPath = ns ? `/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=200` : `/apis/autoscaling/v2/horizontalpodautoscalers?limit=200`;
+        // Menu Principal
+        if      (kind === "pod")           k8sPath = ns ? `/api/v1/namespaces/${ns}/pods?limit=200`                                            : `/api/v1/pods?limit=200`;
+        else if (kind === "deployment")    k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/deployments?limit=200`                              : `/apis/apps/v1/deployments?limit=200`;
+        else if (kind === "statefulset")   k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/statefulsets?limit=200`                             : `/apis/apps/v1/statefulsets?limit=200`;
+        else if (kind === "daemonset")     k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/daemonsets?limit=200`                               : `/apis/apps/v1/daemonsets?limit=200`;
+        else if (kind === "job")           k8sPath = ns ? `/apis/batch/v1/namespaces/${ns}/jobs?limit=200`                                    : `/apis/batch/v1/jobs?limit=200`;
+        else if (kind === "cronjob")       k8sPath = ns ? `/apis/batch/v1/namespaces/${ns}/cronjobs?limit=200`                                : `/apis/batch/v1/cronjobs?limit=200`;
+        else if (kind === "service")       k8sPath = ns ? `/api/v1/namespaces/${ns}/services?limit=200`                                       : `/api/v1/services?limit=200`;
+        else if (kind === "ingress")       k8sPath = ns ? `/apis/networking.k8s.io/v1/namespaces/${ns}/ingresses?limit=200`                   : `/apis/networking.k8s.io/v1/ingresses?limit=200`;
+        else if (kind === "configmap")     k8sPath = ns ? `/api/v1/namespaces/${ns}/configmaps?limit=200`                                     : `/api/v1/configmaps?limit=200`;
+        else if (kind === "secret")        k8sPath = ns ? `/api/v1/namespaces/${ns}/secrets?limit=200`                                        : `/api/v1/secrets?limit=200`;
+        else if (kind === "pvc")           k8sPath = ns ? `/api/v1/namespaces/${ns}/persistentvolumeclaims?limit=200`                         : `/api/v1/persistentvolumeclaims?limit=200`;
+        else if (kind === "pv")            k8sPath = `/api/v1/persistentvolumes?limit=200`;
+        else if (kind === "storageclass")  k8sPath = `/apis/storage.k8s.io/v1/storageclasses?limit=200`;
+        // Menu Avançado
+        else if (kind === "replicaset")                     k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/replicasets?limit=200`                                           : `/apis/apps/v1/replicasets?limit=200`;
+        else if (kind === "resourcequota")                  k8sPath = ns ? `/api/v1/namespaces/${ns}/resourcequotas?limit=200`                                              : `/api/v1/resourcequotas?limit=200`;
+        else if (kind === "limitrange")                     k8sPath = ns ? `/api/v1/namespaces/${ns}/limitranges?limit=200`                                                 : `/api/v1/limitranges?limit=200`;
+        else if (kind === "hpa")                            k8sPath = ns ? `/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=200`                       : `/apis/autoscaling/v2/horizontalpodautoscalers?limit=200`;
+        else if (kind === "pdb")                            k8sPath = ns ? `/apis/policy/v1/namespaces/${ns}/poddisruptionbudgets?limit=200`                                : `/apis/policy/v1/poddisruptionbudgets?limit=200`;
+        else if (kind === "priorityclass")                  k8sPath = `/apis/scheduling.k8s.io/v1/priorityclasses?limit=200`;
+        else if (kind === "endpoints")                      k8sPath = ns ? `/api/v1/namespaces/${ns}/endpoints?limit=200`                                                   : `/api/v1/endpoints?limit=200`;
+        else if (kind === "ingressclass")                   k8sPath = `/apis/networking.k8s.io/v1/ingressclasses?limit=200`;
+        else if (kind === "networkpolicy")                  k8sPath = ns ? `/apis/networking.k8s.io/v1/namespaces/${ns}/networkpolicies?limit=200`                          : `/apis/networking.k8s.io/v1/networkpolicies?limit=200`;
+        else if (kind === "runtimeclass")                   k8sPath = `/apis/node.k8s.io/v1/runtimeclasses?limit=200`;
+        else if (kind === "lease")                          k8sPath = ns ? `/apis/coordination.k8s.io/v1/namespaces/${ns}/leases?limit=200`                                 : `/apis/coordination.k8s.io/v1/leases?limit=200`;
+        else if (kind === "mutatingwebhookconfiguration")   k8sPath = `/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations?limit=200`;
+        else if (kind === "validatingwebhookconfiguration") k8sPath = `/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations?limit=200`;
+        else if (kind === "replicationcontroller")          k8sPath = ns ? `/api/v1/namespaces/${ns}/replicationcontrollers?limit=200`                                      : `/api/v1/replicationcontrollers?limit=200`;
         else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
         const data = await k8sRequest(k8sPath);
         const items = (data.body?.items || []).map(i => ({

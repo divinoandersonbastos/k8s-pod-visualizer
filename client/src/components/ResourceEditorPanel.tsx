@@ -10,13 +10,28 @@ import {
   GitCompare, Calendar, ChevronRight, Package, Settings,
   FileText, Zap, Info, Clock, Tag, Box, Cpu,
   Network, Shield, Database, ArrowRight, Copy, Lock,
-  Pencil, Trash2, Check, SlidersHorizontal, History, User
+  Pencil, Trash2, Check, SlidersHorizontal, History, User,
+  HardDrive, Globe, Repeat, Timer, Webhook, Activity,
+  Scale, TerminalSquare, ScrollText, AlignJustify, LayoutGrid,
+  ChevronDown, ChevronUp, Wrench, GitBranch, Filter
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 
 // ── Tipos ─────────────────────────────────────────────────────────────────────
 
-type ResourceKind = "deployment" | "statefulset" | "daemonset" | "configmap" | "secret" | "service" | "hpa";
+// Menu Principal
+type ResourceKindMain =
+  | "pod" | "deployment" | "statefulset" | "daemonset"
+  | "job" | "cronjob" | "service" | "ingress"
+  | "configmap" | "secret" | "pvc" | "pv" | "storageclass";
+// Menu Avançado
+type ResourceKindAdvanced =
+  | "replicaset" | "resourcequota" | "limitrange" | "hpa"
+  | "pdb" | "priorityclass" | "endpoints" | "ingressclass"
+  | "networkpolicy" | "runtimeclass" | "lease"
+  | "mutatingwebhookconfiguration" | "validatingwebhookconfiguration"
+  | "replicationcontroller";
+type ResourceKind = ResourceKindMain | ResourceKindAdvanced;
 type ActiveTab = "summary" | "yaml" | "events" | "diff" | "history";
 
 interface HistoryEntry {
@@ -163,25 +178,68 @@ function extractSummary(data: Record<string, unknown>, kind: ResourceKind, name:
   return base;
 }
 
-// ── Ícone por tipo ─────────────────────────────────────────────────────────────
+/// ── Ícone por tipo ─────────────────────────────────────────────────────────────
 const kindIcons: Record<ResourceKind, React.ReactNode> = {
-  deployment:  <Box size={12} />,
-  statefulset: <Database size={12} />,
-  daemonset:   <Cpu size={12} />,
-  configmap:   <FileText size={12} />,
-  secret:      <Shield size={12} />,
-  service:     <Network size={12} />,
-  hpa:         <Zap size={12} />,
+  // Menu Principal
+  pod:           <Box size={12} />,
+  deployment:    <Layers size={12} />,
+  statefulset:   <Database size={12} />,
+  daemonset:     <Cpu size={12} />,
+  job:           <Timer size={12} />,
+  cronjob:       <Repeat size={12} />,
+  service:       <Network size={12} />,
+  ingress:       <Globe size={12} />,
+  configmap:     <FileText size={12} />,
+  secret:        <Shield size={12} />,
+  pvc:           <HardDrive size={12} />,
+  pv:            <HardDrive size={12} />,
+  storageclass:  <HardDrive size={12} />,
+  // Menu Avançado
+  replicaset:                      <GitBranch size={12} />,
+  resourcequota:                   <Filter size={12} />,
+  limitrange:                      <Scale size={12} />,
+  hpa:                             <Zap size={12} />,
+  pdb:                             <Activity size={12} />,
+  priorityclass:                   <AlignJustify size={12} />,
+  endpoints:                       <Network size={12} />,
+  ingressclass:                    <Globe size={12} />,
+  networkpolicy:                   <Shield size={12} />,
+  runtimeclass:                    <Settings size={12} />,
+  lease:                           <Clock size={12} />,
+  mutatingwebhookconfiguration:    <Webhook size={12} />,
+  validatingwebhookconfiguration:  <Webhook size={12} />,
+  replicationcontroller:           <Repeat size={12} />,
 };
-
 const kindColors: Record<ResourceKind, string> = {
-  deployment:  "oklch(0.65 0.22 280)",
-  statefulset: "oklch(0.65 0.20 200)",
-  daemonset:   "oklch(0.65 0.20 160)",
-  configmap:   "oklch(0.65 0.20 80)",
-  secret:      "oklch(0.65 0.20 25)",
-  service:     "oklch(0.65 0.20 230)",
-  hpa:         "oklch(0.65 0.22 310)",
+  // Menu Principal
+  pod:           "oklch(0.65 0.22 142)",
+  deployment:    "oklch(0.65 0.22 280)",
+  statefulset:   "oklch(0.65 0.20 200)",
+  daemonset:     "oklch(0.65 0.20 160)",
+  job:           "oklch(0.65 0.20 60)",
+  cronjob:       "oklch(0.65 0.20 50)",
+  service:       "oklch(0.65 0.20 230)",
+  ingress:       "oklch(0.65 0.20 220)",
+  configmap:     "oklch(0.65 0.20 80)",
+  secret:        "oklch(0.65 0.20 25)",
+  pvc:           "oklch(0.65 0.20 300)",
+  pv:            "oklch(0.65 0.18 310)",
+  storageclass:  "oklch(0.65 0.18 320)",
+  // Menu Avançado
+  replicaset:                      "oklch(0.65 0.18 270)",
+  resourcequota:                   "oklch(0.65 0.18 40)",
+  limitrange:                      "oklch(0.65 0.18 35)",
+  hpa:                             "oklch(0.65 0.22 310)",
+  pdb:                             "oklch(0.65 0.18 180)",
+  priorityclass:                   "oklch(0.65 0.18 100)",
+  endpoints:                       "oklch(0.65 0.18 240)",
+  ingressclass:                    "oklch(0.65 0.18 215)",
+  networkpolicy:                   "oklch(0.65 0.18 15)",
+  runtimeclass:                    "oklch(0.65 0.18 150)",
+  lease:                           "oklch(0.65 0.18 190)",
+  mutatingwebhookconfiguration:    "oklch(0.65 0.18 340)",
+  validatingwebhookconfiguration:  "oklch(0.65 0.18 350)",
+  replicationcontroller:           "oklch(0.65 0.18 260)",
 };
 
 // ── Componente principal ───────────────────────────────────────────────────────
@@ -255,6 +313,9 @@ export default function ResourceEditorPanel({
   // ── Histórico de edições (P5) ─────────────────────────────────────────────────
   const [historyEntries, setHistoryEntries] = useState<HistoryEntry[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  // ── Menu de navegação de recursos ────────────────────────────────────────────
+  const [showAdvancedMenu, setShowAdvancedMenu] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
 
   // ── Busca namespaces ─────────────────────────────────────────────────────────
   // O endpoint retorna { items: [...], timestamp } — igual ao Home.tsx
@@ -649,14 +710,46 @@ export default function ResourceEditorPanel({
     { id: "history", label: "Histórico", icon: <Clock size={12} />, badge: historyEntries.length || undefined },
   ];
 
-  const KINDS: { id: ResourceKind; label: string }[] = [
-    { id: "deployment",  label: "Deployment" },
-    { id: "statefulset", label: "StatefulSet" },
-    { id: "daemonset",   label: "DaemonSet" },
-    { id: "service",     label: "Service" },
-    { id: "configmap",   label: "ConfigMap" },
-    { id: "secret",      label: "Secret" },
-    { id: "hpa",         label: "HPA" },
+  const KINDS_MAIN: { id: ResourceKind; label: string }[] = [
+    { id: "pod",          label: "Pod" },
+    { id: "deployment",   label: "Deployment" },
+    { id: "statefulset",  label: "StatefulSet" },
+    { id: "daemonset",    label: "DaemonSet" },
+    { id: "job",          label: "Job" },
+    { id: "cronjob",      label: "CronJob" },
+    { id: "service",      label: "Service" },
+    { id: "ingress",      label: "Ingress" },
+    { id: "configmap",    label: "ConfigMap" },
+    { id: "secret",       label: "Secret" },
+    { id: "pvc",          label: "PVC" },
+    { id: "pv",           label: "PV" },
+    { id: "storageclass", label: "StorageClass" },
+  ];
+  const KINDS_ADVANCED: { id: ResourceKind; label: string }[] = [
+    { id: "replicaset",                     label: "ReplicaSet" },
+    { id: "resourcequota",                  label: "ResourceQuota" },
+    { id: "limitrange",                     label: "LimitRange" },
+    { id: "hpa",                            label: "HPA" },
+    { id: "pdb",                            label: "PDB" },
+    { id: "priorityclass",                  label: "PriorityClass" },
+    { id: "endpoints",                      label: "Endpoints" },
+    { id: "ingressclass",                   label: "IngressClass" },
+    { id: "networkpolicy",                  label: "NetworkPolicy" },
+    { id: "runtimeclass",                   label: "RuntimeClass" },
+    { id: "lease",                          label: "Lease" },
+    { id: "mutatingwebhookconfiguration",   label: "MutatingWebhook" },
+    { id: "validatingwebhookconfiguration", label: "ValidatingWebhook" },
+    { id: "replicationcontroller",          label: "ReplicationController" },
+  ];
+  const ACTIONS_MENU: { id: string; label: string; icon: React.ReactNode; action: () => void; disabled?: boolean }[] = [
+    { id: "logs",    label: "Logs",           icon: <ScrollText size={12} />,    action: () => setActiveTab("events"),   disabled: !isLoaded },
+    { id: "yaml",    label: "YAML/Editor",    icon: <Code2 size={12} />,         action: () => setActiveTab("yaml"),    disabled: !isLoaded },
+    { id: "events",  label: "Eventos",        icon: <Calendar size={12} />,      action: () => setActiveTab("events"),  disabled: !isLoaded },
+    { id: "describe",label: "Describe",       icon: <AlignJustify size={12} />,  action: () => setActiveTab("summary"), disabled: !isLoaded },
+    { id: "scale",   label: "Scale",          icon: <Scale size={12} />,         action: () => setShowScaleModal(true), disabled: !isLoaded || !["deployment","statefulset"].includes(kind) },
+    { id: "restart", label: "Restart Rollout",icon: <RotateCcw size={12} />,     action: () => handleRolloutRestart(), disabled: !isLoaded || !["deployment","statefulset","daemonset"].includes(kind) },
+    { id: "exec",    label: "Exec no Pod",    icon: <TerminalSquare size={12} />,action: () => {}, disabled: true },
+    { id: "pf",      label: "Port Forward",   icon: <ArrowRight size={12} />,    action: () => {}, disabled: true },
   ];
 
   const isLoaded = !!summary;
@@ -705,25 +798,101 @@ export default function ResourceEditorPanel({
           </button>
         </div>
       </div>
-
-      {/* ── Seletor ─────────────────────────────────────────────────────────── */}
-      <div className="px-4 py-3 space-y-2.5" style={{ borderBottom: `1px solid ${C.borderSub}` }}>
-        {/* Tipo */}
-        <div className="flex flex-wrap gap-1.5">
-          {KINDS.map(k => (
-            <button key={k.id} onClick={() => { setKind(k.id); setName(""); setResourceSearch(""); setSummary(null); setYamlContent(""); }}
-              className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-mono"
-              style={{
-                background: kind === k.id ? `${kindColors[k.id]}22` : C.bgInput,
-                border: `1px solid ${kind === k.id ? kindColors[k.id] + "55" : C.border}`,
-                color: kind === k.id ? kindColors[k.id] : C.textSub,
-              }}
-            >
-              {kindIcons[k.id]} {k.label}
-            </button>
-          ))}
+      {/* ── Seletor ────────────────────────────────────────────────────────────────────── */}
+      <div className="px-4 py-3 space-y-2" style={{ borderBottom: `1px solid ${C.borderSub}` }}>
+        {/* Menu Principal */}
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-widest mb-1.5" style={{ color: C.textMuted }}>Menu Principal</p>
+          <div className="flex flex-wrap gap-1">
+            {KINDS_MAIN.map(k => (
+              <button key={k.id} onClick={() => { setKind(k.id); setName(""); setResourceSearch(""); setSummary(null); setYamlContent(""); }}
+                className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono transition-all"
+                style={{
+                  background: kind === k.id ? `${kindColors[k.id]}22` : C.bgInput,
+                  border: `1px solid ${kind === k.id ? kindColors[k.id] + "66" : C.border}`,
+                  color: kind === k.id ? kindColors[k.id] : C.textSub,
+                }}
+              >
+                {kindIcons[k.id]} {k.label}
+              </button>
+            ))}
+          </div>
         </div>
-
+        {/* Menu Avançado (colapsável) */}
+        <div>
+          <button
+            className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest mb-1.5 w-full text-left"
+            style={{ color: C.textMuted }}
+            onClick={() => setShowAdvancedMenu(v => !v)}
+          >
+            {showAdvancedMenu ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+            Menu Avançado
+            <span className="ml-1 px-1 rounded text-[9px]" style={{ background: C.bgInput, color: C.textMuted }}>{KINDS_ADVANCED.length}</span>
+          </button>
+          <AnimatePresence>
+            {showAdvancedMenu && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18 }}
+                style={{ overflow: "hidden" }}
+              >
+                <div className="flex flex-wrap gap-1">
+                  {KINDS_ADVANCED.map(k => (
+                    <button key={k.id} onClick={() => { setKind(k.id); setName(""); setResourceSearch(""); setSummary(null); setYamlContent(""); }}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono transition-all"
+                      style={{
+                        background: kind === k.id ? `${kindColors[k.id]}22` : C.bgInput,
+                        border: `1px solid ${kind === k.id ? kindColors[k.id] + "66" : C.border}`,
+                        color: kind === k.id ? kindColors[k.id] : C.textSub,
+                      }}
+                    >
+                      {kindIcons[k.id]} {k.label}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+        {/* Menu de Ações/Ferramentas (colapsável) */}
+        <div>
+          <button
+            className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-widest mb-1.5 w-full text-left"
+            style={{ color: C.textMuted }}
+            onClick={() => setShowActionsMenu(v => !v)}
+          >
+            {showActionsMenu ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+            Ações / Ferramentas
+          </button>
+          <AnimatePresence>
+            {showActionsMenu && (
+              <motion.div
+                initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }}
+                transition={{ duration: 0.18 }}
+                style={{ overflow: "hidden" }}
+              >
+                <div className="flex flex-wrap gap-1">
+                  {ACTIONS_MENU.map(a => (
+                    <button key={a.id}
+                      onClick={() => !a.disabled && a.action()}
+                      className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-mono transition-all"
+                      style={{
+                        background: C.bgInput,
+                        border: `1px solid ${C.border}`,
+                        color: a.disabled ? C.textMuted : C.textSub,
+                        opacity: a.disabled ? 0.45 : 1,
+                        cursor: a.disabled ? "not-allowed" : "pointer",
+                      }}
+                      title={a.disabled && !isLoaded ? "Selecione um recurso primeiro" : a.disabled ? "Não disponível para este tipo" : ""}
+                    >
+                      {a.icon} {a.label}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
         {/* Namespace + Recurso com autocomplete */}
         <div className="flex gap-2">
           {/* Namespace */}

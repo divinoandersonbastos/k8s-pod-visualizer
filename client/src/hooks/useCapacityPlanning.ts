@@ -104,8 +104,9 @@ export interface CapacityData {
 // ── Dados mock para modo demo (fora do cluster) ───────────────────────────────
 
 function buildMockCapacity(): CapacityData {
-  const GiB = 1024 * 1024 * 1024;
-  const MiB = 1024 * 1024;
+  // O backend retorna MiB — mock usa a mesma unidade
+  const GiB = 1024; // 1 GiB = 1024 MiB
+  const MiB = 1;   // 1 MiB = 1 MiB
 
   const pools: CapacityPool[] = [
     {
@@ -378,12 +379,14 @@ export function fmtCpu(milicores: number): string {
 }
 
 /**
- * Formata memória sempre em GiB (2 casas decimais).
- * Valores < 1 GiB são exibidos como fração de GiB (ex: "0.25 GiB").
+ * Formata memória em GiB (2 casas decimais).
+ * O backend retorna MiB, então dividimos por 1024 para GiB.
+ * Valores < 1 GiB são exibidos como MiB.
  */
-export function fmtMem(bytes: number): string {
-  const GiB = 1024 ** 3;
-  return `${(bytes / GiB).toFixed(2)} GiB`;
+export function fmtMem(mib: number): string {
+  if (mib <= 0) return "0 MiB";
+  if (mib >= 1024) return `${(mib / 1024).toFixed(2)} GiB`;
+  return `${mib.toFixed(0)} MiB`;
 }
 
 export const SIZING_LABEL: Record<SizingStatus, string> = {

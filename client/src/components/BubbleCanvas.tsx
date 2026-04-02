@@ -40,6 +40,7 @@ interface BubbleCanvasProps {
   onSelectPod: (pod: PodMetrics | null) => void;
   selectedPodId?: string;
   securityMode?: boolean;
+  restartingPodId?: string | null;
 }
 
 // ─── Paleta de cores por namespace ────────────────────────────────────────────
@@ -242,6 +243,7 @@ export function BubbleCanvas({
   onSelectPod,
   selectedPodId,
   securityMode = false,
+  restartingPodId,
 }: BubbleCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -693,6 +695,7 @@ export function BubbleCanvas({
             };
             const colors = securityMode ? (SEC_COLORS[secRisk] ?? SEC_COLORS.OK) : STATUS_COLORS[node.status];
             const isSelected = node.id === selectedPodId;
+            const isRestarting = node.id === restartingPodId;
             const percent = viewMode === "cpu" ? node.cpuPercent : node.memoryPercent;
             const value = viewMode === "cpu"
               ? `${node.cpuUsage}m`
@@ -761,6 +764,17 @@ export function BubbleCanvas({
             const selectionRing = isSelected && (
               <circle r={node.radius + 8} fill="none" stroke={colors.stroke} strokeWidth="2" strokeDasharray="6 3" opacity="0.8" />
             );
+            // ── Anel de restart: laranja giratório ────────────────────────────────────────
+            const restartRing = isRestarting && (
+              <g>
+                <circle r={node.radius + 10} fill="none" stroke="oklch(0.75 0.22 55)" strokeWidth="3" strokeDasharray="18 8" strokeOpacity="0.9">
+                  <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="1s" repeatCount="indefinite" />
+                </circle>
+                <circle r={node.radius + 6} fill="oklch(0.75 0.22 55 / 0.15)" stroke="oklch(0.75 0.22 55 / 0.4)" strokeWidth="1.5">
+                  <animate attributeName="opacity" values="0.6;1;0.6" dur="0.8s" repeatCount="indefinite" />
+                </circle>
+              </g>
+            );
             const nsRing = layoutMode === "constellation" && (
               <circle r={node.radius + 3} fill="none" stroke={nsRingColor} strokeWidth="1.5" strokeOpacity="0.45" />
             );
@@ -806,7 +820,7 @@ export function BubbleCanvas({
             // ──────────────────────────────────────────────────────────────────────────────
             if (bubbleStyle === "bubble") return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
-                {selectionRing}{nsRing}
+                {restartRing}{selectionRing}{nsRing}
                 {/* Halo de glow externo */}
                 <circle r={node.radius + 5} fill={colors.glow} filter={`url(#glow-${node.status})`}>
                   {node.status === "critical" && (
@@ -851,8 +865,8 @@ export function BubbleCanvas({
               }));
               return (
                 <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
-                  {selectionRing}{nsRing}
-                  {/* Cauda do cometa */}
+                  {restartRing}{selectionRing}{nsRing}
+                  {/* Rastro do cometa */}
                   <line
                     x1={0} y1={0} x2={tailDx} y2={tailDy}
                     stroke={colors.glow} strokeWidth={node.radius * 0.9}
@@ -898,8 +912,8 @@ export function BubbleCanvas({
             const aqDur = 3 + (node.id.charCodeAt(0) % 3); // 3-5s varia por pod
             return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
-                {selectionRing}{nsRing}
-                {/* Halo de água pulsante */}
+                {restartRing}{selectionRing}{nsRing}
+                {/* Halo de glow externo */}
                 <circle r={node.radius + 6} fill={colors.glow} opacity="0.30" filter="url(#aqua-glow)">
                   <animate attributeName="r" values={`${node.radius + 4};${node.radius + 10};${node.radius + 4}`} dur={`${aqDur}s`} repeatCount="indefinite" />
                   <animate attributeName="opacity" values="0.30;0.12;0.30" dur={`${aqDur}s`} repeatCount="indefinite" />

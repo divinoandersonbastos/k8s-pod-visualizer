@@ -65,6 +65,7 @@ export default function Home() {
   const [showAppAccess, setShowAppAccess] = useState(false);
   const [showTopology, setShowTopology] = useState(false);
   const [showDbStatus, setShowDbStatus] = useState(false);
+  const [restartingPodId, setRestartingPodId] = useState<string | null>(null);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
   const { user, isSRE, isAdmin, logout } = useAuth();
@@ -495,6 +496,7 @@ export default function Home() {
               onSelectPod={setSelectedPod}
               selectedPodId={selectedPod?.id}
               securityMode={securityMode}
+              restartingPodId={restartingPodId}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center">
@@ -534,6 +536,8 @@ export default function Home() {
             oomRisk={selectedPod ? oomRisk.getRiskForPod(selectedPod.id) : null}
             isSRE={isSRE}
             isAdmin={isAdmin}
+            onRestartStart={(podId) => setRestartingPodId(podId)}
+            onRestartEnd={() => setRestartingPodId(null)}
           />
 
           {/* Banner de risco de OOMKill */}

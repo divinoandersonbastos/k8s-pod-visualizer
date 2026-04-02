@@ -84,6 +84,8 @@ interface PodDetailPanelProps {
   oomRisk?: OomRiskInfo | null;
   isSRE?: boolean;
   isAdmin?: boolean;
+  onRestartStart?: (podId: string) => void;
+  onRestartEnd?: () => void;
 }
 
 const STATUS_CONFIG = {
@@ -216,7 +218,7 @@ const PANEL_WIDTH_KEY = "k8s-viz-detail-panel-width";
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH_RATIO = 0.72; // 72% da largura da janela
 
-export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk, isSRE = false, isAdmin = false }: PodDetailPanelProps) {
+export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk, isSRE = false, isAdmin = false, onRestartStart, onRestartEnd }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>("details");
   const [eventCount, setEventCount] = useState(0);
   const [showRestartModal, setShowRestartModal] = useState(false);
@@ -289,6 +291,7 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const handleRestartConfirm = useCallback(async () => {
     if (!pod) return;
     setRestartLoading(true);
+    onRestartStart?.(pod.id);
     try {
       const base = apiUrl || "";
       const resp = await fetch(`${base}/api/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/restart`, {
@@ -300,14 +303,17 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
         throw new Error(err.error || `HTTP ${resp.status}`);
       }
       setRestartResult({ ok: true, msg: `Pod reiniciado com sucesso às ${new Date().toLocaleTimeString()}` });
+      // Manter animação por 8s após sucesso (tempo do pod subir)
+      setTimeout(() => onRestartEnd?.(), 8000);
     } catch (err: unknown) {
       setRestartResult({ ok: false, msg: err instanceof Error ? err.message : "Erro desconhecido" });
+      onRestartEnd?.();
     } finally {
       setRestartLoading(false);
       setShowRestartModal(false);
       setTimeout(() => setRestartResult(null), 5000);
     }
-  }, [pod, apiUrl]);
+  }, [pod, apiUrl, onRestartStart, onRestartEnd]);
 
   // Reset tab ao trocar de pod
   const [lastPodId, setLastPodId] = useState<string | null>(null);

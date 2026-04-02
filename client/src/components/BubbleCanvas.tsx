@@ -40,6 +40,7 @@ interface BubbleCanvasProps {
   onSelectPod: (pod: PodMetrics | null) => void;
   selectedPodId?: string;
   securityMode?: boolean;
+  restartingPodId?: string | null;
 }
 
 // ─── Paleta de cores por namespace ────────────────────────────────────────────
@@ -242,6 +243,7 @@ export function BubbleCanvas({
   onSelectPod,
   selectedPodId,
   securityMode = false,
+  restartingPodId,
 }: BubbleCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -791,9 +793,26 @@ export function BubbleCanvas({
             // ──────────────────────────────────────────────────────────────────────────────
             // ESTILO: BOLHA — reflexo 3D aprimorado com múltiplos highlights
             // ──────────────────────────────────────────────────────────────────────────────
+            // Anel laranja giratório durante restart
+            const isRestarting = restartingPodId === node.id;
+            const restartRingCircumference = 2 * Math.PI * (node.radius + 10);
             if (bubbleStyle === "bubble") return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
                 {selectionRing}{nsRing}
+                {/* Anel laranja giratório de restart */}
+                {isRestarting && (
+                  <circle
+                    r={node.radius + 10}
+                    fill="none"
+                    stroke="oklch(0.75 0.22 50)"
+                    strokeWidth="3"
+                    strokeDasharray={`${restartRingCircumference * 0.35} ${restartRingCircumference * 0.65}`}
+                    strokeLinecap="round"
+                    opacity="0.9"
+                  >
+                    <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.9s" repeatCount="indefinite" />
+                  </circle>
+                )}
                 {/* Halo de glow externo */}
                 <circle r={node.radius + 5} fill={colors.glow} filter={`url(#glow-${node.status})`}>
                   {node.status === "critical" && (
@@ -801,7 +820,7 @@ export function BubbleCanvas({
                   )}
                 </circle>
                 {/* Corpo principal */}
-                <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}>
+                <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={isRestarting ? "oklch(0.75 0.22 50)" : colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}>
                   {node.status === "critical" && (
                     <animate attributeName="stroke-opacity" values="0.9;0.4;0.9" dur="1.5s" repeatCount="indefinite" />
                   )}

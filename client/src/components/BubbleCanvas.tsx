@@ -41,6 +41,7 @@ interface BubbleCanvasProps {
   selectedPodId?: string;
   securityMode?: boolean;
   restartingPodId?: string | null;
+  showResourceBadge?: boolean; // Exibe badge de recomendação de resources para SRE/SQUAD
 }
 
 // ─── Paleta de cores por namespace ────────────────────────────────────────────
@@ -244,6 +245,7 @@ export function BubbleCanvas({
   selectedPodId,
   securityMode = false,
   restartingPodId,
+  showResourceBadge = false,
 }: BubbleCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -790,6 +792,44 @@ export function BubbleCanvas({
               </g>
             );
 
+            // ── Badge de recursos: sem requests ou limits ─────────────────────────────────
+            const podData = node as PodMetrics;
+            const hasNoRequests = podData.resources?.requests?.cpu == null || podData.resources?.requests?.memory == null;
+            const hasNoLimits   = podData.resources?.limits?.cpu   == null || podData.resources?.limits?.memory   == null;
+            // Detectar overdimensionamento: usando <30% do request
+            const cpuOverProvisioned = podData.resources?.requests?.cpu != null && podData.cpuUsage > 0 &&
+              podData.cpuUsage < podData.resources.requests.cpu * 0.3;
+            const memOverProvisioned = podData.resources?.requests?.memory != null && podData.memoryUsage > 0 &&
+              podData.memoryUsage < podData.resources.requests.memory * 0.3;
+            const hasResourceIssue = showResourceBadge && !securityMode &&
+              (hasNoRequests || hasNoLimits || cpuOverProvisioned || memOverProvisioned);
+            const resBadgeR = Math.max(6, node.radius * 0.20);
+            const resBadgeCx = -(node.radius * 0.68);
+            const resBadgeCy = node.radius * 0.68;
+            const resourceBadge = hasResourceIssue && (
+              <g style={{ pointerEvents: "none" }}>
+                {/* Halo pulsante amarelo */}
+                <circle cx={resBadgeCx} cy={resBadgeCy} r={resBadgeR + 3} fill="oklch(0.82 0.20 85 / 0.25)">
+                  <animate attributeName="opacity" values="0.4;0.1;0.4" dur="2.2s" repeatCount="indefinite" />
+                </circle>
+                {/* Disco amarelo */}
+                <circle cx={resBadgeCx} cy={resBadgeCy} r={resBadgeR}
+                  fill="oklch(0.35 0.18 85)"
+                  stroke="oklch(0.82 0.20 85)"
+                  strokeWidth="1"
+                />
+                {/* Ícone ⚡ */}
+                <text
+                  x={resBadgeCx} y={resBadgeCy}
+                  textAnchor="middle" dominantBaseline="central"
+                  fontSize={Math.max(5, resBadgeR * 0.85)}
+                  fontFamily="'JetBrains Mono', monospace" fontWeight="700"
+                  fill="oklch(0.95 0.15 85)"
+                >
+                  ⚡
+                </text>
+              </g>
+            );
             // ──────────────────────────────────────────────────────────────────────────────
             // ESTILO: BOLHA — reflexo 3D aprimorado com múltiplos highlights
             // ──────────────────────────────────────────────────────────────────────────────
@@ -832,12 +872,12 @@ export function BubbleCanvas({
                 {/* Brilho inferior (reflexão de ambiente) */}
                 <ellipse cx={node.radius * 0.15} cy={node.radius * 0.55} rx={node.radius * 0.25} ry={node.radius * 0.10} fill={colors.stroke} opacity="0.20" />
                 {/* Anel interno de borda */}
-                <circle r={node.radius - 2} fill="none" stroke="white" strokeWidth="0.8" strokeOpacity="0.12" />
+                 <circle r={node.radius - 2} fill="none" stroke="white" strokeWidth="0.8" strokeOpacity="0.12" />
                 {labelNodes}
                 {crashBadge}
+                {resourceBadge}
               </g>
             );
-
             // ──────────────────────────────────────────────────────────────────────────────
             // ESTILO: COMETA — rastro direcional + núcleo brilhante + partículas
             // ──────────────────────────────────────────────────────────────────────────────
@@ -893,6 +933,7 @@ export function BubbleCanvas({
                   <circle cx={-node.radius * 0.15} cy={-node.radius * 0.18} r={node.radius * 0.08} fill="white" opacity="0.7" />
                   {labelNodes}
                   {crashBadge}
+                  {resourceBadge}
                 </g>
               );
             }
@@ -936,6 +977,7 @@ export function BubbleCanvas({
                 )}
                 {labelNodes}
                 {crashBadge}
+                {resourceBadge}
               </g>
             );
           })}

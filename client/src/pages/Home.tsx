@@ -498,6 +498,7 @@ export default function Home() {
               selectedPodId={selectedPod?.id}
               securityMode={securityMode}
               restartingPodId={restartingPodId}
+              showResourceBadge={isSRE || isSquad}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center">

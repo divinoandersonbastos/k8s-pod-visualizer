@@ -262,6 +262,7 @@ interface AppViewItem {
 }
 interface ResourceEditorPanelProps {
   onClose: () => void;
+  isSRE?: boolean;
   initialNamespace?: string;
   initialName?: string;
   initialKind?: string;
@@ -269,7 +270,7 @@ interface ResourceEditorPanelProps {
   initialAppLabel?: string;      // Label app= do pod selecionado
 }
 export default function ResourceEditorPanel({
-  onClose, initialNamespace, initialName, initialKind = "deployment",
+  onClose, isSRE = false, initialNamespace, initialName, initialKind = "deployment",
   initialAppNamespace, initialAppLabel,
 }: ResourceEditorPanelProps) {
   useAuth(); // mantém contexto de autenticação
@@ -864,6 +865,7 @@ export default function ResourceEditorPanel({
           >
             <LayoutGrid size={12} /> Visão da App
           </button>
+          {isSRE && (
           <button
             onClick={() => setAppViewMode(false)}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
@@ -875,6 +877,7 @@ export default function ResourceEditorPanel({
           >
             <Code2 size={12} /> Editor de Recurso
           </button>
+          )}
           {appViewMode && (
             <div className="ml-auto flex items-center gap-1">
               <span className="text-xs font-mono px-2 py-0.5 rounded" style={{ background: C.bgInput, color: C.accent, border: `1px solid ${C.border}` }}>

@@ -68,7 +68,7 @@ export default function Home() {
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
   const [restartingPodId, setRestartingPodId] = useState<string | null>(null);
-  const { user, isSRE, isAdmin, logout } = useAuth();
+  const { user, isSRE, isSquad, isAdmin, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
@@ -350,6 +350,7 @@ export default function Home() {
         onShowDbStatus={() => setShowDbStatus(true)}
         onLogout={logout}
         isSRE={isSRE}
+        isSquad={isSquad}
         isAdmin={isAdmin}
         currentUser={user ? { displayName: user.displayName, username: user.username, role: user.role } : undefined}
         clusterName={effectiveClusterName}
@@ -632,11 +633,12 @@ export default function Home() {
             )}
           </AnimatePresence>
 
-          {/* Editor de Recursos (SRE only) */}
+          {/* Editor de Recursos (SRE + SQUAD) */}
           <AnimatePresence>
-            {showResourceEditor && isSRE && (
+            {showResourceEditor && (isSRE || isSquad) && (
               <ResourceEditorPanel
                 onClose={() => setShowResourceEditor(false)}
+                isSRE={isSRE}
                 initialAppNamespace={selectedPod?.namespace}
                 initialAppLabel={selectedPod?.labels?.['app'] || selectedPod?.labels?.['app.kubernetes.io/name'] || selectedPod?.labels?.['k8s-app']}
               />

@@ -38,6 +38,7 @@ interface ClusterHeaderProps {
   onShowDbStatus?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
+  isSquad?: boolean;
   isAdmin?: boolean;
   currentUser?: { displayName?: string; username: string; role: string };
   clusterName?: string;
@@ -71,6 +72,7 @@ export function ClusterHeader({
   onShowDbStatus,
   onLogout,
   isSRE,
+  isSquad,
   isAdmin,
   currentUser,
   clusterName,
@@ -498,11 +500,11 @@ export function ClusterHeader({
           </button>
         )}
 
-        {isSRE && onShowResourceEditor && (
+        {(isSRE || isSquad) && onShowResourceEditor && (
           <button
             onClick={onShowResourceEditor}
             className="p-2 rounded-lg transition-all hover:bg-white/5"
-            title="Editor de Recursos K8s (SRE)"
+            title={isSRE ? "Editor de Recursos K8s (SRE)" : "Visão da Aplicação"}
             style={{ color: "oklch(0.65 0.22 280)" }}
           >
             <Code2 size={14} />

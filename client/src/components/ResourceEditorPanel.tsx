@@ -710,6 +710,8 @@ export default function ResourceEditorPanel({
     { id: "history", label: "Histórico", icon: <Clock size={12} />, badge: historyEntries.length || undefined },
   ];
 
+  const isLoaded = !!summary;
+
   const KINDS_MAIN: { id: ResourceKind; label: string }[] = [
     { id: "pod",          label: "Pod" },
     { id: "deployment",   label: "Deployment" },
@@ -746,13 +748,11 @@ export default function ResourceEditorPanel({
     { id: "yaml",    label: "YAML/Editor",    icon: <Code2 size={12} />,         action: () => setActiveTab("yaml"),    disabled: !isLoaded },
     { id: "events",  label: "Eventos",        icon: <Calendar size={12} />,      action: () => setActiveTab("events"),  disabled: !isLoaded },
     { id: "describe",label: "Describe",       icon: <AlignJustify size={12} />,  action: () => setActiveTab("summary"), disabled: !isLoaded },
-    { id: "scale",   label: "Scale",          icon: <Scale size={12} />,         action: () => setShowScaleModal(true), disabled: !isLoaded || !["deployment","statefulset"].includes(kind) },
-    { id: "restart", label: "Restart Rollout",icon: <RotateCcw size={12} />,     action: () => handleRolloutRestart(), disabled: !isLoaded || !["deployment","statefulset","daemonset"].includes(kind) },
+    { id: "scale",   label: "Scale",          icon: <Scale size={12} />,         action: () => setActiveTab("summary"), disabled: !isLoaded || !["deployment","statefulset"].includes(kind) },
+    { id: "restart", label: "Restart Rollout",icon: <RotateCcw size={12} />,     action: () => handleRestart(),         disabled: !isLoaded || !["deployment","statefulset","daemonset"].includes(kind) },
     { id: "exec",    label: "Exec no Pod",    icon: <TerminalSquare size={12} />,action: () => {}, disabled: true },
     { id: "pf",      label: "Port Forward",   icon: <ArrowRight size={12} />,    action: () => {}, disabled: true },
   ];
-
-  const isLoaded = !!summary;
 
   return (
     <motion.div
@@ -1082,7 +1082,7 @@ export default function ResourceEditorPanel({
               <div className="flex items-center gap-2 mb-3">
                 <span style={{ color: C.accent }}>{kindIcons[kind]}</span>
                 <h3 className="text-xs font-bold uppercase" style={{ color: C.accent, letterSpacing: "0.08em" }}>
-                  {KINDS.find(k => k.id === kind)?.label}
+                  {[...KINDS_MAIN, ...KINDS_ADVANCED].find(k => k.id === kind)?.label}
                 </h3>
                 <span className="ml-auto text-xs" style={{ color: C.textMuted }}>{timeAgo(summary.creationTimestamp)}</span>
               </div>

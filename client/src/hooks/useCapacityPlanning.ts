@@ -367,13 +367,15 @@ export function useCapacityPlanning({
 
 // ── Utilitários de formatação ─────────────────────────────────────────────────
 
-/**
- * Formata CPU em cores inteiros (ex: "4 cores") ou milicores quando < 1 core.
- * Nunca exibe decimais para valores >= 1 core.
- */
+/** Converte millicores para vCPU com formato legível.
+ *  Ex: 531 → "0,53 vCPU"  |  12000 → "12 vCPU"  |  250 → "0,25 vCPU" */
 export function fmtCpu(milicores: number): string {
-  if (milicores >= 1000) return `${Math.round(milicores / 1000)}`;
-  return `${Math.round(milicores)}m`;
+  if (!milicores) return "0 vCPU";
+  const vcpu = milicores / 1000;
+  if (vcpu === Math.floor(vcpu)) return `${vcpu} vCPU`;
+  if (vcpu < 1) return `${vcpu.toFixed(2).replace(".", ",")} vCPU`;
+  if (vcpu < 10) return `${vcpu.toFixed(1).replace(".", ",")} vCPU`;
+  return `${Math.round(vcpu)} vCPU`;
 }
 
 /**

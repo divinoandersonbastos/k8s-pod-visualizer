@@ -237,7 +237,7 @@ function PoolCard({
       {/* Totais */}
       <div className="grid grid-cols-3 gap-2 text-[9px] font-mono">
         {[
-          { label: "CPU alloc", value: fmtCpu(t.cpuAlloc) + " cores" },
+          { label: "CPU Alocado", value: fmtCpu(t.cpuAlloc) },
           { label: "MEM alloc", value: fmtMem(t.memAlloc) },
           { label: "Limit/Req CPU", value: t.cpuReq > 0 ? `${(t.cpuLim / t.cpuReq).toFixed(1)}×` : "—" },
         ].map(({ label, value }) => (
@@ -795,7 +795,7 @@ export function CapacityPlanningPanel({ onClose, apiUrl = "" }: CapacityPlanning
               {/* Barras globais */}
               <div className="grid grid-cols-3 gap-4">
                 {[
-                  { label: "CPU", icon: <Cpu size={10} />, pct: clusterCpuPct, used: fmtCpu(ct.cpuUsage), total: fmtCpu(ct.cpuAlloc) + " cores" },
+                  { label: "CPU", icon: <Cpu size={10} />, pct: clusterCpuPct, used: fmtCpu(ct.cpuUsage), total: fmtCpu(ct.cpuAlloc) },
                   { label: "Memória", icon: <MemoryStick size={10} />, pct: clusterMemPct, used: fmtMem(ct.memUsage), total: fmtMem(ct.memAlloc) },
                   { label: "Pods", icon: <Box size={10} />, pct: clusterPodPct, used: String(ct.podCount), total: String(ct.maxPods) },
                 ].map(({ label, icon, pct: p, used, total }) => (

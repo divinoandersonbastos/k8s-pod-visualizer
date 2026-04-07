@@ -46,12 +46,20 @@ interface WorkloadsByNode {
     containers: Array<{ name: string; cpuRequest: number; memRequest: number; cpuLimit: number; memLimit: number; cpuReal: number | null; memReal: number | null }>;
   }>>;
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-function fmtCPU(m: number) {
-  if (!m) return "0m";
-  if (m >= 1000) return `${(m / 1000).toFixed(1)}`;
-  return `${m}m`;
+// ── Helpers ─────────────────────────────────────────────────────────────────────────────────
+/** Converte millicores para vCPU com formato legível.
+ *  Ex: 531 → "0,53 vCPU"  |  12000 → "12 vCPU"  |  250 → "0,25 vCPU" */
+function fmtCPU(m: number): string {
+  if (!m) return "0 vCPU";
+  const vcpu = m / 1000;
+  // Se é inteiro exato, sem casas decimais
+  if (vcpu === Math.floor(vcpu)) return `${vcpu} vCPU`;
+  // Menos de 1 vCPU: 2 casas decimais
+  if (vcpu < 1) return `${vcpu.toFixed(2).replace(".", ",")} vCPU`;
+  // Entre 1 e 10: 1 casa decimal
+  if (vcpu < 10) return `${vcpu.toFixed(1).replace(".", ",")} vCPU`;
+  // Acima de 10: sem casas decimais
+  return `${Math.round(vcpu)} vCPU`;
 }
 function fmtMem(mb: number) {
   if (!mb) return "0Mi";
@@ -359,7 +367,7 @@ function OverviewTab({ nodes, topNamespaces }: { nodes: NodeOverview[]; topNames
       {/* Top namespaces */}
       {topNamespaces.length > 0 && (
         <div>
-          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Top Namespaces por CPU Request</h3>
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Top Namespaces por CPU Request (vCPU)</h3>
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg overflow-hidden">
             {topNamespaces.map((ns, i) => (
               <div key={ns.ns} className={`flex items-center gap-3 px-4 py-2 ${i < topNamespaces.length - 1 ? "border-b border-gray-800" : ""}`}>
@@ -552,8 +560,8 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
             <tr className="border-b border-gray-800 text-gray-500">
               <th className="text-left py-2 pr-3">Node</th>
               <th className="text-left py-2 pr-3">Saúde</th>
-              <th className="text-right py-2 pr-3">CPU req%</th>
-              <th className="text-right py-2 pr-3">MEM req%</th>
+              <th className="text-right py-2 pr-3">CPU Req%</th>
+              <th className="text-right py-2 pr-3">MEM Req%</th>
               <th className="text-right py-2 pr-3">Pods</th>
               <th className="text-right py-2 pr-3">OOM</th>
               <th className="text-right py-2 pr-3">Crash</th>
@@ -625,8 +633,8 @@ function WorkloadsTab({ data }: { data: WorkloadsByNode | null }) {
                 <th className="text-left py-2 pr-3">QoS</th>
                 <th className="text-right py-2 pr-3">Restarts</th>
                 <th className="text-right py-2 pr-3">OOM</th>
-                <th className="text-right py-2 pr-3">CPU req</th>
-                <th className="text-right py-2">MEM req</th>
+                <th className="text-right py-2 pr-3">CPU Req</th>
+                <th className="text-right py-2">MEM Req</th>
               </tr>
             </thead>
             <tbody>

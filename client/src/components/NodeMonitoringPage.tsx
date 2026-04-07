@@ -2,7 +2,7 @@
  * NodeMonitoringPage — Página completa de monitoramento de nodes
  * 5 abas: Visão Geral | Nodes | Workloads | Governança | Spot
  */
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   Server, Activity, Layers, ShieldAlert, Zap,
   RefreshCw, X, ChevronRight, AlertTriangle, CheckCircle,
@@ -809,6 +809,465 @@ function WorkloadsTab({ data }: { data: WorkloadsByNode | null }) {
   );
 }
 
+// ── Types: Storage ─────────────────────────────────────────────────────────
+interface StorageItem {
+  kind: "PVC" | "PV";
+  name: string; namespace: string; pvName: string;
+  storageClass: string;
+  capacityGib: number; capacityFmt: string;
+  usageGib: number | null; usagePct: number | null; usageFmt: string | null;
+  phase: string;
+  usingPods: string[]; workload: string;
+  isOrphan: boolean; isUnbound: boolean; agedays: number | null;
+  createdAt: string | null;
+  risk: "critical" | "high" | "medium" | "low";
+  riskReasons: string[];
+  action: "ok" | "review" | "delete" | "investigate";
+  accessModes: string[];
+  reclaimPolicy?: string;
+}
+interface StorageOverview {
+  summary: {
+    totalPvcs: number; totalPvs: number;
+    orphanCount: number; unboundCount: number;
+    criticalCount: number; highCount: number;
+    totalCapGib: number; totalCapFmt: string;
+    orphanCapGib: number; orphanCapFmt: string; orphanCapPct: number;
+  };
+  items: StorageItem[];
+  topWasteNs: Array<{ ns: string; totalGib: number; wasteGib: number; count: number; totalFmt: string; wasteFmt: string }>;
+  topStorageClasses: Array<{ sc: string; totalGib: number; count: number; orphanGib: number; totalFmt: string; orphanFmt: string }>;
+}
+
+// ── StorageDrawer ─────────────────────────────────────────────────────────
+function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
+  item: StorageItem; apiUrl: string;
+  getAuthHeaders: () => Record<string, string>;
+  onClose: () => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  const [deleteResult, setDeleteResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [ignored, setIgnored] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  function riskColor(r: string) {
+    if (r === "critical") return "text-red-400 bg-red-900/40";
+    if (r === "high")     return "text-orange-400 bg-orange-900/40";
+    if (r === "medium")   return "text-yellow-400 bg-yellow-900/40";
+    return "text-green-400 bg-green-900/40";
+  }
+  function phaseColor(p: string) {
+    if (p === "Bound")     return "text-green-400";
+    if (p === "Released")  return "text-orange-400";
+    if (p === "Available") return "text-blue-400";
+    if (p === "Failed")    return "text-red-400";
+    return "text-gray-400";
+  }
+
+  const kubectlCmd = item.kind === "PVC"
+    ? `kubectl delete pvc ${item.name} -n ${item.namespace}`
+    : `kubectl delete pv ${item.name}`;
+  const describeCmd = item.kind === "PVC"
+    ? `kubectl describe pvc ${item.name} -n ${item.namespace}`
+    : `kubectl describe pv ${item.name}`;
+
+  function copyCmd(cmd: string) {
+    navigator.clipboard.writeText(cmd);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  }
+
+  async function handleDelete() {
+    setDeleting(true); setDeleteResult(null);
+    try {
+      const r = await fetch(`${apiUrl}/api/nodes/storage-delete`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: item.kind, name: item.name, namespace: item.namespace }),
+      });
+      const d = await r.json();
+      if (d.success) setDeleteResult({ success: true, message: d.message });
+      else setDeleteResult({ success: false, message: d.error || "Erro ao excluir" });
+    } catch (e: any) { setDeleteResult({ success: false, message: e.message }); }
+    setDeleting(false); setConfirmDelete(false);
+  }
+
+  const actionLabel = item.action === "delete" ? "Excluir" : item.action === "review" ? "Revisar" : item.action === "investigate" ? "Investigar" : "Monitorar";
+  const actionColor = item.action === "delete" ? "bg-red-700 hover:bg-red-600" : item.action === "review" ? "bg-yellow-700 hover:bg-yellow-600" : "bg-blue-700 hover:bg-blue-600";
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="relative w-full max-w-lg bg-gray-950 border-l border-gray-700 h-full overflow-y-auto flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 py-4 border-b border-gray-800 sticky top-0 bg-gray-950 z-10">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="px-2 py-0.5 rounded text-xs bg-blue-900/50 text-blue-300 font-mono">{item.kind}</span>
+              <span className="text-sm font-semibold text-white truncate max-w-[280px]">{item.name}</span>
+            </div>
+            {item.namespace && <div className="text-xs text-gray-500">{item.namespace}</div>}
+            <div className="flex items-center gap-2 mt-1">
+              <span className={`px-1.5 py-0.5 rounded text-xs ${riskColor(item.risk)}`}>{item.risk.toUpperCase()}</span>
+              <span className={`text-xs ${phaseColor(item.phase)}`}>{item.phase}</span>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors mt-1"><X size={16} /></button>
+        </div>
+
+        <div className="flex-1 flex flex-col gap-4 p-5">
+          {/* Motivos de risco */}
+          {item.riskReasons.length > 0 && (
+            <div className="bg-orange-900/20 border border-orange-700/40 rounded-lg p-3">
+              <div className="text-xs text-orange-400 font-medium mb-1">Motivos de risco</div>
+              {item.riskReasons.map((r, i) => (
+                <div key={i} className="flex items-center gap-2 text-xs text-orange-300">
+                  <AlertTriangle size={10} />{r}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Detalhes técnicos */}
+          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+            <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Detalhes técnicos</div>
+            <div className="space-y-2">
+              {[
+                { label: "Capacidade", value: item.capacityFmt },
+                { label: "Storage Class", value: item.storageClass || "(sem classe)" },
+                { label: "Access Modes", value: item.accessModes.join(", ") || "—" },
+                ...(item.kind === "PV" ? [{ label: "Reclaim Policy", value: item.reclaimPolicy || "—" }] : []),
+                { label: "PV vinculado", value: item.pvName || "—" },
+                { label: "Criado em", value: item.createdAt ? new Date(item.createdAt).toLocaleDateString("pt-BR") : "—" },
+                { label: "Idade", value: item.agedays !== null ? `${item.agedays} dias` : "—" },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex items-center justify-between">
+                  <span className="text-xs text-gray-500">{label}</span>
+                  <span className="text-xs text-gray-300 font-mono">{value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Workload e pods */}
+          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+            <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Uso atual</div>
+            {item.usingPods.length > 0 ? (
+              <div>
+                <div className="text-xs text-gray-400 mb-1">Pods usando este volume:</div>
+                {item.usingPods.map(p => (
+                  <div key={p} className="flex items-center gap-1 text-xs text-green-300 font-mono py-0.5">
+                    <CheckCircle size={10} />{p}
+                  </div>
+                ))}
+                {item.workload && <div className="text-xs text-gray-500 mt-1">Workload: {item.workload}</div>}
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-xs text-red-400">
+                <XCircle size={12} />
+                {item.kind === "PVC" ? "Nenhum pod ativo usando este PVC" : "PV sem PVC vinculado"}
+              </div>
+            )}
+          </div>
+
+          {/* Recomendação */}
+          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+            <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Recomendação</div>
+            {item.action === "delete" && (
+              <div className="text-xs text-red-300">
+                Volume ocioso há mais de 30 dias sem uso. Recomendamos excluir após confirmar que não há dependência.
+              </div>
+            )}
+            {item.action === "review" && (
+              <div className="text-xs text-yellow-300">
+                Volume sem uso ativo. Verifique se o workload foi removido ou se o PVC ainda é necessário.
+              </div>
+            )}
+            {item.action === "investigate" && (
+              <div className="text-xs text-blue-300">
+                PVC não está vinculado a um PV. Verifique se a StorageClass e o provisioner estão funcionando.
+              </div>
+            )}
+            {item.action === "ok" && (
+              <div className="text-xs text-green-300">Volume em uso normal. Nenhuma ação necessária.</div>
+            )}
+          </div>
+
+          {/* Comandos kubectl */}
+          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+            <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Comandos kubectl</div>
+            {[{ label: "Descrever", cmd: describeCmd }, { label: "Excluir", cmd: kubectlCmd }].map(({ label, cmd }) => (
+              <div key={label} className="flex items-center gap-2 mb-2">
+                <pre className="flex-1 text-xs font-mono text-green-300 bg-gray-950 rounded px-2 py-1 overflow-x-auto">{cmd}</pre>
+                <button onClick={() => copyCmd(cmd)} className="text-gray-500 hover:text-white transition-colors shrink-0">
+                  <Copy size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Resultado */}
+          {deleteResult && (
+            <div className={`p-3 rounded-lg border text-sm flex items-center gap-2 ${deleteResult.success ? "bg-green-900/30 border-green-700/50 text-green-300" : "bg-red-900/30 border-red-700/50 text-red-300"}`}>
+              {deleteResult.success ? <CheckCircle size={14} /> : <XCircle size={14} />}
+              {deleteResult.message}
+            </div>
+          )}
+
+          {/* Ações */}
+          {!ignored && !deleteResult?.success && (
+            <div className="flex flex-col gap-2 mt-auto pt-2">
+              {item.action === "delete" && (
+                <div>
+                  {!confirmDelete ? (
+                    <button onClick={() => setConfirmDelete(true)} className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg ${actionColor} text-white text-sm font-medium transition-colors`}>
+                      <Wrench size={14} />Excluir {item.kind}
+                    </button>
+                  ) : (
+                    <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-3">
+                      <div className="text-xs text-red-300 mb-3">Confirmar exclusão de {item.kind} <strong>{item.name}</strong>? Esta ação é irreversível.</div>
+                      <div className="flex gap-2">
+                        <button onClick={handleDelete} disabled={deleting} className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded bg-red-700 hover:bg-red-600 text-white text-xs transition-colors">
+                          {deleting ? <RefreshCw size={12} className="animate-spin" /> : <XCircle size={12} />}
+                          {deleting ? "Excluindo..." : "Confirmar exclusão"}
+                        </button>
+                        <button onClick={() => setConfirmDelete(false)} className="flex-1 px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Cancelar</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {item.action !== "delete" && (
+                <button onClick={() => setIgnored(true)} className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs transition-colors">
+                  <EyeOff size={12} />Ignorar esta ocorrência
+                </button>
+              )}
+            </div>
+          )}
+          {ignored && (
+            <div className="p-3 rounded-lg bg-gray-800/50 border border-gray-700/30 text-xs text-gray-500 flex items-center gap-2">
+              <EyeOff size={12} />Marcado como ignorado nesta sessão
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── StorageTab ───────────────────────────────────────────────────────────────
+function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | null; apiUrl: string; getAuthHeaders: () => Record<string, string> }) {
+  const [filter, setFilter] = useState<"all" | "orphan" | "unbound" | "critical" | "high">("all");
+  const [nsFilter, setNsFilter] = useState("all");
+  const [selectedItem, setSelectedItem] = useState<StorageItem | null>(null);
+  const [sortBy, setSortBy] = useState<"risk" | "capacity" | "age">("risk");
+
+  if (!data) return (
+    <div className="flex flex-col items-center justify-center py-20 text-gray-500">
+      <RefreshCw size={24} className="animate-spin mb-3" />
+      <span className="text-sm">Carregando dados de storage...</span>
+    </div>
+  );
+
+  const { summary, items, topWasteNs, topStorageClasses } = data;
+
+  const namespaces = ["all", ...Array.from(new Set(items.filter(i => i.namespace).map(i => i.namespace))).sort()];
+
+  const filtered = items
+    .filter(i => {
+      if (nsFilter !== "all" && i.namespace !== nsFilter) return false;
+      if (filter === "orphan")   return i.isOrphan;
+      if (filter === "unbound")  return i.isUnbound;
+      if (filter === "critical") return i.risk === "critical";
+      if (filter === "high")     return i.risk === "high" || i.risk === "critical";
+      return true;
+    })
+    .sort((a, b) => {
+      if (sortBy === "risk") {
+        const order = { critical: 0, high: 1, medium: 2, low: 3 };
+        return order[a.risk] - order[b.risk];
+      }
+      if (sortBy === "capacity") return b.capacityGib - a.capacityGib;
+      if (sortBy === "age") return (b.agedays || 0) - (a.agedays || 0);
+      return 0;
+    });
+
+  function riskBadge(r: string) {
+    const cls = r === "critical" ? "bg-red-900/60 text-red-300" : r === "high" ? "bg-orange-900/60 text-orange-300" : r === "medium" ? "bg-yellow-900/60 text-yellow-300" : "bg-green-900/40 text-green-400";
+    return <span className={`px-1.5 py-0.5 rounded text-xs ${cls}`}>{r}</span>;
+  }
+  function actionBadge(a: string) {
+    if (a === "delete")      return <span className="px-1.5 py-0.5 rounded text-xs bg-red-900/50 text-red-300">Excluir</span>;
+    if (a === "review")      return <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-900/50 text-yellow-300">Revisar</span>;
+    if (a === "investigate") return <span className="px-1.5 py-0.5 rounded text-xs bg-blue-900/50 text-blue-300">Investigar</span>;
+    return <span className="text-xs text-gray-600">—</span>;
+  }
+  function phaseDot(p: string) {
+    if (p === "Bound")     return <span className="w-2 h-2 rounded-full bg-green-400 inline-block" />;
+    if (p === "Released")  return <span className="w-2 h-2 rounded-full bg-orange-400 inline-block" />;
+    if (p === "Available") return <span className="w-2 h-2 rounded-full bg-blue-400 inline-block" />;
+    if (p === "Failed")    return <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />;
+    return <span className="w-2 h-2 rounded-full bg-gray-500 inline-block" />;
+  }
+
+  function exportCSV() {
+    const header = "Tipo,Nome,Namespace,Workload,StorageClass,Capacidade,Fase,Pods,Idade(dias),Risco,Ação";
+    const rows = filtered.map(i => `${i.kind},${i.name},${i.namespace},${i.workload},${i.storageClass},${i.capacityFmt},${i.phase},${i.usingPods.length},${i.agedays ?? ""},${i.risk},${i.action}`);
+    const blob = new Blob([header + "\n" + rows.join("\n")], { type: "text/csv" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "storage-governance.csv"; a.click();
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+          <div className="text-xs text-gray-400">Total PVCs</div>
+          <div className="text-xl font-bold text-white">{summary.totalPvcs}</div>
+          <div className="text-xs text-gray-600">{summary.totalCapFmt} provisionados</div>
+        </div>
+        <div className="bg-gray-900 border border-red-800/40 rounded-lg p-3">
+          <div className="text-xs text-gray-400">Críticos</div>
+          <div className="text-xl font-bold text-red-400">{summary.criticalCount}</div>
+          <div className="text-xs text-gray-600">{summary.unboundCount} não vinculados</div>
+        </div>
+        <div className="bg-gray-900 border border-orange-800/40 rounded-lg p-3">
+          <div className="text-xs text-gray-400">Volumes órfãos</div>
+          <div className="text-xl font-bold text-orange-400">{summary.orphanCount}</div>
+          <div className="text-xs text-gray-600">{summary.orphanCapFmt} ociosos</div>
+        </div>
+        <div className="bg-gray-900 border border-yellow-800/40 rounded-lg p-3">
+          <div className="text-xs text-gray-400">Desperdício estimado</div>
+          <div className="text-xl font-bold text-yellow-400">{summary.orphanCapFmt}</div>
+          <div className="text-xs text-gray-600">{summary.orphanCapPct}% do total</div>
+        </div>
+      </div>
+
+      {/* Rankings */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Top namespaces por desperdício */}
+        {topWasteNs.length > 0 && (
+          <div>
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Top Namespaces por Desperdício</h3>
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg overflow-hidden">
+              {topWasteNs.map((ns, i) => (
+                <div key={ns.ns} onClick={() => { setNsFilter(ns.ns); setFilter("orphan"); }} className={`flex items-center gap-3 px-4 py-2 cursor-pointer hover:bg-gray-800/50 transition-colors ${i < topWasteNs.length - 1 ? "border-b border-gray-800" : ""}`}>
+                  <span className="text-xs text-gray-500 w-4">{i + 1}</span>
+                  <span className="text-sm text-white flex-1 truncate">{ns.ns}</span>
+                  <span className="text-xs text-orange-400">{ns.wasteFmt} ociosos</span>
+                  <span className="text-xs text-gray-500">{ns.totalFmt} total</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {/* Top storage classes */}
+        {topStorageClasses.length > 0 && (
+          <div>
+            <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Storage Classes por Volume</h3>
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg overflow-hidden">
+              {topStorageClasses.map((sc, i) => (
+                <div key={sc.sc} className={`flex items-center gap-3 px-4 py-2 ${i < topStorageClasses.length - 1 ? "border-b border-gray-800" : ""}`}>
+                  <span className="text-xs text-gray-500 w-4">{i + 1}</span>
+                  <span className="text-sm text-white flex-1 truncate font-mono">{sc.sc}</span>
+                  <span className="text-xs text-gray-400">{sc.count} PVCs</span>
+                  {sc.orphanGib > 0 && <span className="text-xs text-orange-400">{sc.orphanFmt} ociosos</span>}
+                  <span className="text-xs text-blue-300">{sc.totalFmt}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Filtros */}
+      <div className="flex gap-2 flex-wrap items-center">
+        {(["all", "orphan", "unbound", "critical", "high"] as const).map(f => (
+          <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1 rounded text-xs transition-colors ${filter === f ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>
+            {f === "all" ? "Todos" : f === "orphan" ? "Ociosos" : f === "unbound" ? "Não vinculados" : f === "critical" ? "Crítico" : "Alto risco"}
+          </button>
+        ))}
+        <select value={nsFilter} onChange={e => setNsFilter(e.target.value)} className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+          {namespaces.map(ns => <option key={ns} value={ns}>{ns === "all" ? "Todos namespaces" : ns}</option>)}
+        </select>
+        <select value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+          <option value="risk">Ordenar: Risco</option>
+          <option value="capacity">Ordenar: Capacidade</option>
+          <option value="age">Ordenar: Idade</option>
+        </select>
+        <button onClick={exportCSV} className="ml-auto flex items-center gap-1 px-3 py-1 rounded text-xs bg-gray-800 text-gray-400 hover:bg-gray-700 transition-colors">
+          <Download size={12} />CSV
+        </button>
+      </div>
+
+      {/* Hint */}
+      <div className="flex items-center gap-2 text-xs text-gray-600 -mt-1">
+        <Wrench size={11} className="text-blue-500/60" />
+        <span>Clique em qualquer linha para ver detalhes e ações de remediação</span>
+      </div>
+
+      {/* Tabela */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-gray-800 text-gray-500">
+              <th className="text-left py-2 pr-3" style={{width:"30px"}}>Tipo</th>
+              <th className="text-left py-2 pr-3" style={{minWidth:"140px"}}>PVC / PV</th>
+              <th className="text-left py-2 pr-3" style={{width:"110px"}}>Namespace</th>
+              <th className="text-left py-2 pr-3" style={{width:"130px"}}>Workload</th>
+              <th className="text-left py-2 pr-3" style={{width:"100px"}}>Storage Class</th>
+              <th className="text-right py-2 pr-3" style={{width:"80px"}}>Capacidade</th>
+              <th className="text-left py-2 pr-3" style={{width:"70px"}}>Fase</th>
+              <th className="text-right py-2 pr-3" style={{width:"50px"}}>Pods</th>
+              <th className="text-right py-2 pr-3" style={{width:"60px"}}>Idade</th>
+              <th className="text-left py-2 pr-3" style={{width:"70px"}}>Risco</th>
+              <th className="text-left py-2" style={{width:"80px"}}>Ação</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.slice(0, 300).map((item, idx) => (
+              <tr
+                key={idx}
+                onClick={() => setSelectedItem(item)}
+                className={`border-b border-gray-800/50 hover:bg-blue-900/10 cursor-pointer transition-colors group ${selectedItem?.name === item.name && selectedItem?.namespace === item.namespace ? "bg-blue-900/15" : ""}`}
+              >
+                <td className="py-2 pr-3">
+                  <span className={`px-1 py-0.5 rounded text-xs font-mono ${item.kind === "PVC" ? "bg-blue-900/40 text-blue-300" : "bg-purple-900/40 text-purple-300"}`}>{item.kind}</span>
+                </td>
+                <td className="py-2 pr-3">
+                  <div className="text-white truncate group-hover:text-blue-200 transition-colors" style={{maxWidth:"180px"}} title={item.name}>{item.name}</div>
+                </td>
+                <td className="py-2 pr-3 text-gray-400 truncate" style={{maxWidth:"110px"}}>{item.namespace || "—"}</td>
+                <td className="py-2 pr-3 text-gray-500 truncate" style={{maxWidth:"130px"}}>
+                  {item.workload ? <span className="text-gray-300">{item.workload}</span> : item.usingPods.length > 0 ? <span className="text-green-400/70">{item.usingPods.length} pod(s)</span> : <span className="text-red-400/70">sem uso</span>}
+                </td>
+                <td className="py-2 pr-3 text-gray-500 truncate font-mono" style={{maxWidth:"100px"}}>{item.storageClass || "—"}</td>
+                <td className="py-2 pr-3 text-right text-gray-300 font-mono">{item.capacityFmt}</td>
+                <td className="py-2 pr-3">
+                  <div className="flex items-center gap-1">{phaseDot(item.phase)}<span className="text-gray-400">{item.phase}</span></div>
+                </td>
+                <td className={`py-2 pr-3 text-right ${item.usingPods.length > 0 ? "text-green-400" : "text-red-400/70"}`}>{item.usingPods.length}</td>
+                <td className="py-2 pr-3 text-right text-gray-500">{item.agedays !== null ? `${item.agedays}d` : "—"}</td>
+                <td className="py-2 pr-3">{riskBadge(item.risk)}</td>
+                <td className="py-2">{actionBadge(item.action)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {filtered.length === 0 && (
+          <div className="text-center py-8 text-gray-600 text-sm">Nenhum item encontrado para os filtros selecionados</div>
+        )}
+        {filtered.length > 300 && <div className="text-xs text-gray-500 mt-2 text-center">Mostrando 300 de {filtered.length} itens</div>}
+      </div>
+
+      {/* Drawer */}
+      {selectedItem && (
+        <StorageDrawer item={selectedItem} apiUrl={apiUrl} getAuthHeaders={getAuthHeaders} onClose={() => setSelectedItem(null)} />
+      )}
+    </div>
+  );
+}
+
 // ── GovernanceDrawer ─────────────────────────────────────────────────────────
 function GovernanceDrawer({ issue, apiUrl, getAuthHeaders, onClose }: {
   issue: GovernanceIssue;
@@ -1075,6 +1534,10 @@ function GovernanceDrawer({ issue, apiUrl, getAuthHeaders, onClose }: {
 
 // ── Tab: Governança ───────────────────────────────────────────────────────────
 function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: GovernanceIssue[]; topRisk: Array<{ ns: string; count: number; critical: number; oomKilled: number }>; apiUrl: string; getAuthHeaders: () => Record<string, string> }) {
+  const [govSubTab, setGovSubTab] = useState<"compute" | "storage">("compute");
+  const [storageData, setStorageData] = useState<StorageOverview | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageError, setStorageError] = useState<string | null>(null);
   const [nsFilter, setNsFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState<"all" | "critical" | "high" | "medium">("all");
   const [selectedIssue, setSelectedIssue] = useState<GovernanceIssue | null>(null);
@@ -1085,6 +1548,16 @@ function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: Go
     return true;
   });
 
+  useEffect(() => {
+    if (govSubTab === "storage" && !storageData && !storageLoading) {
+      setStorageLoading(true); setStorageError(null);
+      fetch(`${apiUrl}/api/nodes/storage-overview`, { headers: getAuthHeaders() })
+        .then(r => r.json())
+        .then(d => { if (d.error) setStorageError(d.error); else setStorageData(d); setStorageLoading(false); })
+        .catch(e => { setStorageError(e.message); setStorageLoading(false); });
+    }
+  }, [govSubTab]);
+
   function exportCSV() {
     const header = "Pod,Namespace,Node,Container,QoS,Risco,OOMKilled,Restarts,Faltando";
     const rows = filtered.map((i) => `${i.pod},${i.namespace},${i.node},${i.container},${i.qos},${i.risk},${i.oomKilled},${i.restarts},"${i.missing.join(";")}"`);
@@ -1094,6 +1567,50 @@ function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: Go
 
   return (
     <div className="space-y-4">
+      {/* Sub-abas Compute / Storage */}
+      <div className="flex items-center gap-1 border-b border-gray-800 pb-3">
+        <button
+          onClick={() => setGovSubTab("compute")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            govSubTab === "compute" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
+          }`}
+        >
+          <Cpu size={14} />Compute
+          {issues.filter(i => i.risk === "critical").length > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full text-xs bg-red-500 text-white">{issues.filter(i => i.risk === "critical").length}</span>
+          )}
+        </button>
+        <button
+          onClick={() => setGovSubTab("storage")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            govSubTab === "storage" ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
+          }`}
+        >
+          <MemoryStick size={14} />Storage
+          {storageData && storageData.summary.criticalCount > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full text-xs bg-red-500 text-white">{storageData.summary.criticalCount}</span>
+          )}
+        </button>
+      </div>
+
+      {/* Sub-aba Storage */}
+      {govSubTab === "storage" && (
+        storageLoading ? (
+          <div className="flex flex-col items-center justify-center py-20 text-gray-500">
+            <RefreshCw size={24} className="animate-spin mb-3" />
+            <span className="text-sm">Carregando dados de storage...</span>
+          </div>
+        ) : storageError ? (
+          <div className="p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
+            <div className="flex items-center gap-2 text-red-400 text-sm"><AlertTriangle size={14} />{storageError}</div>
+          </div>
+        ) : (
+          <StorageTab data={storageData} apiUrl={apiUrl} getAuthHeaders={getAuthHeaders} />
+        )
+      )}
+
+      {/* Sub-aba Compute */}
+      {govSubTab === "compute" && (<React.Fragment>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
           <div className="text-xs text-gray-400">Total de issues</div>
@@ -1218,6 +1735,8 @@ function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: Go
           getAuthHeaders={getAuthHeaders}
           onClose={() => setSelectedIssue(null)}
         />
+      )}
+      </React.Fragment>
       )}
     </div>
   );

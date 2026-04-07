@@ -1517,6 +1517,189 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── /api/nodes/storage-overview — Governança de PVs e PVCs ─────────────────
+  if (url.pathname === "/api/nodes/storage-overview") {
+    try {
+      const [pvRes, pvcRes, podRes] = await Promise.allSettled([
+        k8sGet("/api/v1/persistentvolumes"),
+        k8sGet("/api/v1/persistentvolumeclaims?limit=500"),
+        k8sGet("/api/v1/pods?limit=1000"),
+      ]);
+      const pvs  = pvRes.status  === "fulfilled" ? (pvRes.value.items  || []) : [];
+      const pvcs = pvcRes.status === "fulfilled" ? (pvcRes.value.items || []) : [];
+      const pods = podRes.status === "fulfilled" ? (podRes.value.items || []) : [];
+
+      // Map: pvcKey -> pods usando o volume
+      const pvcToPods = {};
+      const pvcToWorkload = {};
+      for (const pod of pods) {
+        if (pod.status?.phase !== "Running" && pod.status?.phase !== "Pending") continue;
+        const ns = pod.metadata.namespace;
+        const owners = pod.metadata?.ownerReferences || [];
+        const owner = owners.find(o => ["ReplicaSet","StatefulSet","DaemonSet","Job"].includes(o.kind));
+        const wl = owner ? `${owner.kind}/${owner.name}` : "";
+        for (const vol of (pod.spec?.volumes || [])) {
+          if (vol.persistentVolumeClaim?.claimName) {
+            const key = `${ns}/${vol.persistentVolumeClaim.claimName}`;
+            if (!pvcToPods[key]) pvcToPods[key] = [];
+            pvcToPods[key].push(pod.metadata.name);
+            if (!pvcToWorkload[key]) pvcToWorkload[key] = wl;
+          }
+        }
+      }
+
+      function parseStorageGib(s) {
+        if (!s) return 0;
+        if (s.endsWith("Ti")) return parseFloat(s) * 1024;
+        if (s.endsWith("Gi")) return parseFloat(s);
+        if (s.endsWith("Mi")) return parseFloat(s) / 1024;
+        if (s.endsWith("Ki")) return parseFloat(s) / (1024 * 1024);
+        return parseFloat(s) / (1024 * 1024 * 1024);
+      }
+      function fmtStorageGib(gib) {
+        if (gib >= 1024) return `${(gib/1024).toFixed(1)} TiB`;
+        if (gib >= 1)    return `${gib.toFixed(1)} GiB`;
+        return `${(gib*1024).toFixed(0)} MiB`;
+      }
+
+      const now = Date.now();
+      const DAY = 86400000;
+
+      // Build PVC records
+      const pvcItems = pvcs.map(pvc => {
+        const ns   = pvc.metadata.namespace;
+        const name = pvc.metadata.name;
+        const key  = `${ns}/${name}`;
+        const capGib = parseStorageGib(pvc.spec?.resources?.requests?.storage);
+        const phase  = pvc.status?.phase || "Unknown";
+        const sc     = pvc.spec?.storageClassName || "";
+        const pvName = pvc.spec?.volumeName || "";
+        const createdAt = pvc.metadata.creationTimestamp || null;
+        const agedays = createdAt ? Math.floor((now - new Date(createdAt).getTime()) / DAY) : null;
+        const usingPods = pvcToPods[key] || [];
+        const workload  = pvcToWorkload[key] || "";
+        const isOrphan  = phase === "Bound" && usingPods.length === 0;
+        const isUnbound = phase !== "Bound";
+        let risk = "low"; const riskReasons = [];
+        if (isUnbound) { risk = "critical"; riskReasons.push(`PVC não vinculado (${phase})`); }
+        else if (isOrphan && agedays !== null && agedays > 7) { risk = "high"; riskReasons.push(`Sem pod ativo há ${agedays} dias`); }
+        else if (isOrphan) { risk = "medium"; riskReasons.push("Sem pod ativo"); }
+        let action = "ok";
+        if (isUnbound) action = "investigate";
+        else if (isOrphan && agedays > 30) action = "delete";
+        else if (isOrphan) action = "review";
+        return {
+          kind: "PVC", name, namespace: ns, pvName, storageClass: sc,
+          capacityGib: capGib, capacityFmt: fmtStorageGib(capGib),
+          usageGib: null, usagePct: null, usageFmt: null,
+          phase, usingPods, workload, isOrphan, isUnbound, agedays,
+          createdAt, risk, riskReasons, action,
+          accessModes: pvc.spec?.accessModes || [],
+        };
+      });
+
+      // Build PV records (Released/Available/Failed = orphan)
+      const pvItems = pvs
+        .filter(pv => ["Released","Available","Failed"].includes(pv.status?.phase))
+        .map(pv => {
+          const phase    = pv.status?.phase || "Unknown";
+          const capGib   = parseStorageGib(pv.spec?.capacity?.storage);
+          const sc       = pv.spec?.storageClassName || "";
+          const createdAt = pv.metadata.creationTimestamp || null;
+          const agedays  = createdAt ? Math.floor((now - new Date(createdAt).getTime()) / DAY) : null;
+          let risk = phase === "Released" ? "high" : phase === "Available" ? "medium" : "critical";
+          const riskReasons = [`PV em estado ${phase}`];
+          if (agedays > 30) riskReasons.push(`Há ${agedays} dias neste estado`);
+          return {
+            kind: "PV", name: pv.metadata.name, namespace: "", pvName: pv.metadata.name,
+            storageClass: sc, capacityGib: capGib, capacityFmt: fmtStorageGib(capGib),
+            usageGib: null, usagePct: null, usageFmt: null,
+            phase, usingPods: [], workload: "", isOrphan: true, isUnbound: true, agedays,
+            createdAt, risk, riskReasons, action: agedays > 30 ? "delete" : "review",
+            accessModes: pv.spec?.accessModes || [],
+            reclaimPolicy: pv.spec?.persistentVolumeReclaimPolicy || "",
+          };
+        });
+
+      const allItems = [...pvcItems, ...pvItems];
+      const totalCapGib = pvcItems.reduce((s, p) => s + p.capacityGib, 0);
+      const orphanCapGib = pvcItems.filter(p => p.isOrphan || p.isUnbound).reduce((s, p) => s + p.capacityGib, 0);
+
+      // Top namespaces por desperdício
+      const nsByWaste = {};
+      for (const p of pvcItems) {
+        if (!nsByWaste[p.namespace]) nsByWaste[p.namespace] = { ns: p.namespace, totalGib: 0, wasteGib: 0, count: 0 };
+        nsByWaste[p.namespace].totalGib += p.capacityGib;
+        nsByWaste[p.namespace].count++;
+        if (p.isOrphan || p.isUnbound) nsByWaste[p.namespace].wasteGib += p.capacityGib;
+      }
+      const topWasteNs = Object.values(nsByWaste)
+        .filter(n => n.wasteGib > 0).sort((a, b) => b.wasteGib - a.wasteGib).slice(0, 5)
+        .map(n => ({ ...n, totalFmt: fmtStorageGib(n.totalGib), wasteFmt: fmtStorageGib(n.wasteGib) }));
+
+      // Top storage classes
+      const scMap = {};
+      for (const p of pvcItems) {
+        const sc = p.storageClass || "(sem classe)";
+        if (!scMap[sc]) scMap[sc] = { sc, totalGib: 0, count: 0, orphanGib: 0 };
+        scMap[sc].totalGib += p.capacityGib; scMap[sc].count++;
+        if (p.isOrphan || p.isUnbound) scMap[sc].orphanGib += p.capacityGib;
+      }
+      const topStorageClasses = Object.values(scMap)
+        .sort((a, b) => b.totalGib - a.totalGib).slice(0, 8)
+        .map(s => ({ ...s, totalFmt: fmtStorageGib(s.totalGib), orphanFmt: fmtStorageGib(s.orphanGib) }));
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        summary: {
+          totalPvcs: pvcItems.length, totalPvs: pvs.length,
+          orphanCount: pvcItems.filter(p => p.isOrphan).length,
+          unboundCount: pvcItems.filter(p => p.isUnbound).length,
+          criticalCount: allItems.filter(p => p.risk === "critical").length,
+          highCount: allItems.filter(p => p.risk === "high").length,
+          totalCapGib, totalCapFmt: fmtStorageGib(totalCapGib),
+          orphanCapGib, orphanCapFmt: fmtStorageGib(orphanCapGib),
+          orphanCapPct: totalCapGib > 0 ? Math.round(orphanCapGib / totalCapGib * 100) : 0,
+        },
+        items: allItems,
+        topWasteNs,
+        topStorageClasses,
+      }));
+    } catch (err) { console.error("[error] /api/nodes/storage-overview:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    return;
+  }
+
+  // ── /api/nodes/storage-delete — Deleta um PVC ou PV ──────────────────────────
+  if (url.pathname === "/api/nodes/storage-delete" && req.method === "POST") {
+    let body = "";
+    req.on("data", d => body += d);
+    req.on("end", async () => {
+      try {
+        const { kind, name, namespace } = JSON.parse(body);
+        if (!name) throw new Error("name obrigatório");
+        const path = kind === "PVC"
+          ? `/api/v1/namespaces/${encodeURIComponent(namespace)}/persistentvolumeclaims/${encodeURIComponent(name)}`
+          : `/api/v1/persistentvolumes/${encodeURIComponent(name)}`;
+        await new Promise((resolve, reject) => {
+          const token = getToken(); const ca = getCA();
+          const apiHost = K8S_API.replace(/^https?:\/\//, "");
+          const isHttps = K8S_API.startsWith("https");
+          const opts = {
+            hostname: apiHost, port: isHttps ? 443 : 80, path, method: "DELETE",
+            headers: { "Content-Type": "application/json", Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            ...(ca ? { ca } : { rejectUnauthorized: false }),
+          };
+          const proto = isHttps ? https : http;
+          const r = proto.request(opts, (res2) => { let d=""; res2.on("data",c=>d+=c); res2.on("end",()=>{ if(res2.statusCode>=400) reject(new Error(`HTTP ${res2.statusCode}`)); else resolve(d); }); });
+          r.on("error", reject); r.setTimeout(8000, () => r.destroy(new Error("timeout"))); r.end();
+        });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, message: `${kind} "${name}" excluído com sucesso` }));
+      } catch (err) { console.error("[error] /api/nodes/storage-delete:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
+
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
   if (logsMatch) {

@@ -6,7 +6,7 @@
  *   2. Após setup: exibe apenas tela de login (sem aba "Novo usuário")
  *   3. Criação de SRE e Squad é feita pelo painel de usuários (Admin)
  */
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocation } from "wouter";
 import { motion, AnimatePresence } from "framer-motion";
@@ -15,6 +15,13 @@ import { Crown, Terminal, Eye, EyeOff, Loader2, AlertCircle, CheckCircle2 } from
 export default function LoginPage() {
   const { login, setup, setupDone, user } = useAuth();
   const [, setLocation] = useLocation();
+  const [appVersion, setAppVersion] = useState<string>("...");
+  useEffect(() => {
+    fetch("/api/version")
+      .then(r => r.json())
+      .then(d => setAppVersion(d.version || "?"))
+      .catch(() => setAppVersion("?"));
+  }, []);
 
   useEffect(() => {
     if (user) setLocation("/");
@@ -295,7 +302,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center text-xs mt-6" style={{ color: "oklch(0.35 0.02 250)" }}>
-          K8s Pod Visualizer v3.5.0 · CentralDevOps
+          K8s Pod Visualizer v{appVersion} · CentralDevOps
         </p>
       </motion.div>
     </div>

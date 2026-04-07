@@ -150,7 +150,7 @@ async function detectInCluster(): Promise<boolean> {
   if (_inClusterDetected !== null) return _inClusterDetected;
   try {
     const res = await fetch("/api/cluster-info", {
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(600),
       headers: { Accept: "application/json" },
     });
     if (!res.ok) { _inClusterDetected = false; return false; }

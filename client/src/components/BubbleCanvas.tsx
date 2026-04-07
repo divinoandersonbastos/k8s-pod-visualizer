@@ -18,7 +18,7 @@
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ZoomIn, ZoomOut, Maximize2 } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize2, FileText } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import { useThemeCustomizer, statusColorSet } from "@/contexts/ThemeCustomizerContext";
 
@@ -40,8 +40,8 @@ interface BubbleCanvasProps {
   onSelectPod: (pod: PodMetrics | null) => void;
   selectedPodId?: string;
   securityMode?: boolean;
-  restartingPodId?: string | null;
-  showResourceBadge?: boolean; // Exibe badge de recomendação de resources para SRE/SQUAD
+  /** NOVO v5.20.0 — atalho para abrir o painel direto na aba Describe */
+  onDescribePod?: (pod: PodMetrics) => void;
 }
 
 // ─── Paleta de cores por namespace ────────────────────────────────────────────
@@ -244,8 +244,7 @@ export function BubbleCanvas({
   onSelectPod,
   selectedPodId,
   securityMode = false,
-  restartingPodId,
-  showResourceBadge = false,
+  onDescribePod,
 }: BubbleCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -792,67 +791,12 @@ export function BubbleCanvas({
               </g>
             );
 
-            // ── Badge de recursos: sem requests ou limits ─────────────────────────────────
-            const podData = node as PodMetrics;
-            const hasNoRequests = podData.resources?.requests?.cpu == null || podData.resources?.requests?.memory == null;
-            const hasNoLimits   = podData.resources?.limits?.cpu   == null || podData.resources?.limits?.memory   == null;
-            // Detectar overdimensionamento: usando <30% do request
-            const cpuOverProvisioned = podData.resources?.requests?.cpu != null && podData.cpuUsage > 0 &&
-              podData.cpuUsage < podData.resources.requests.cpu * 0.3;
-            const memOverProvisioned = podData.resources?.requests?.memory != null && podData.memoryUsage > 0 &&
-              podData.memoryUsage < podData.resources.requests.memory * 0.3;
-            const hasResourceIssue = showResourceBadge && !securityMode &&
-              (hasNoRequests || hasNoLimits || cpuOverProvisioned || memOverProvisioned);
-            const resBadgeR = Math.max(6, node.radius * 0.20);
-            const resBadgeCx = -(node.radius * 0.68);
-            const resBadgeCy = node.radius * 0.68;
-            const resourceBadge = hasResourceIssue && (
-              <g style={{ pointerEvents: "none" }}>
-                {/* Halo pulsante amarelo */}
-                <circle cx={resBadgeCx} cy={resBadgeCy} r={resBadgeR + 3} fill="oklch(0.82 0.20 85 / 0.25)">
-                  <animate attributeName="opacity" values="0.4;0.1;0.4" dur="2.2s" repeatCount="indefinite" />
-                </circle>
-                {/* Disco amarelo */}
-                <circle cx={resBadgeCx} cy={resBadgeCy} r={resBadgeR}
-                  fill="oklch(0.35 0.18 85)"
-                  stroke="oklch(0.82 0.20 85)"
-                  strokeWidth="1"
-                />
-                {/* Ícone ⚡ */}
-                <text
-                  x={resBadgeCx} y={resBadgeCy}
-                  textAnchor="middle" dominantBaseline="central"
-                  fontSize={Math.max(5, resBadgeR * 0.85)}
-                  fontFamily="'JetBrains Mono', monospace" fontWeight="700"
-                  fill="oklch(0.95 0.15 85)"
-                >
-                  ⚡
-                </text>
-              </g>
-            );
             // ──────────────────────────────────────────────────────────────────────────────
             // ESTILO: BOLHA — reflexo 3D aprimorado com múltiplos highlights
             // ──────────────────────────────────────────────────────────────────────────────
-            // Anel laranja giratório durante restart
-            const isRestarting = restartingPodId === node.id;
-            const restartRingCircumference = 2 * Math.PI * (node.radius + 10);
             if (bubbleStyle === "bubble") return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} style={{ cursor: "pointer" }}>
                 {selectionRing}{nsRing}
-                {/* Anel laranja giratório de restart */}
-                {isRestarting && (
-                  <circle
-                    r={node.radius + 10}
-                    fill="none"
-                    stroke="oklch(0.75 0.22 50)"
-                    strokeWidth="3"
-                    strokeDasharray={`${restartRingCircumference * 0.35} ${restartRingCircumference * 0.65}`}
-                    strokeLinecap="round"
-                    opacity="0.9"
-                  >
-                    <animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="0.9s" repeatCount="indefinite" />
-                  </circle>
-                )}
                 {/* Halo de glow externo */}
                 <circle r={node.radius + 5} fill={colors.glow} filter={`url(#glow-${node.status})`}>
                   {node.status === "critical" && (
@@ -860,7 +804,7 @@ export function BubbleCanvas({
                   )}
                 </circle>
                 {/* Corpo principal */}
-                <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={isRestarting ? "oklch(0.75 0.22 50)" : colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}>
+                <circle r={node.radius} fill={`url(#grad-${node.status})`} stroke={colors.stroke} strokeWidth={isSelected ? 2.5 : 1.5} strokeOpacity={0.9}>
                   {node.status === "critical" && (
                     <animate attributeName="stroke-opacity" values="0.9;0.4;0.9" dur="1.5s" repeatCount="indefinite" />
                   )}
@@ -872,12 +816,12 @@ export function BubbleCanvas({
                 {/* Brilho inferior (reflexão de ambiente) */}
                 <ellipse cx={node.radius * 0.15} cy={node.radius * 0.55} rx={node.radius * 0.25} ry={node.radius * 0.10} fill={colors.stroke} opacity="0.20" />
                 {/* Anel interno de borda */}
-                 <circle r={node.radius - 2} fill="none" stroke="white" strokeWidth="0.8" strokeOpacity="0.12" />
+                <circle r={node.radius - 2} fill="none" stroke="white" strokeWidth="0.8" strokeOpacity="0.12" />
                 {labelNodes}
                 {crashBadge}
-                {resourceBadge}
               </g>
             );
+
             // ──────────────────────────────────────────────────────────────────────────────
             // ESTILO: COMETA — rastro direcional + núcleo brilhante + partículas
             // ──────────────────────────────────────────────────────────────────────────────
@@ -933,7 +877,6 @@ export function BubbleCanvas({
                   <circle cx={-node.radius * 0.15} cy={-node.radius * 0.18} r={node.radius * 0.08} fill="white" opacity="0.7" />
                   {labelNodes}
                   {crashBadge}
-                  {resourceBadge}
                 </g>
               );
             }
@@ -977,7 +920,6 @@ export function BubbleCanvas({
                 )}
                 {labelNodes}
                 {crashBadge}
-                {resourceBadge}
               </g>
             );
           })}
@@ -1267,10 +1209,11 @@ export function BubbleCanvas({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.9 }}
             transition={{ duration: 0.12 }}
-            className="absolute z-50 pointer-events-none"
+            className="absolute z-50"
             style={{
               left: Math.min(tooltip.x + 12, width - 240),
               top: Math.max(tooltip.y - 130, 8),
+              pointerEvents: onDescribePod ? "auto" : "none",
             }}
           >
             <div
@@ -1336,7 +1279,29 @@ export function BubbleCanvas({
                   </>
                 )}
               </div>
-              <div className="mt-2 text-slate-500 text-[10px]">Clique para detalhes</div>
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <span className="text-slate-500 text-[10px]">Clique para detalhes</span>
+                {onDescribePod && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDescribePod(tooltip.pod);
+                      setTooltip(null);
+                    }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium"
+                    style={{
+                      background: "oklch(0.55 0.18 200 / 0.15)",
+                      border: "1px solid oklch(0.55 0.18 200 / 0.45)",
+                      color: "oklch(0.72 0.18 200)",
+                      cursor: "pointer",
+                    }}
+                    title="Abrir aba Describe"
+                  >
+                    <FileText size={10} />
+                    Describe
+                  </button>
+                )}
+              </div>
             </div>
           </motion.div>
         )}

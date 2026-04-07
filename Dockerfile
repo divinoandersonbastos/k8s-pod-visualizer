@@ -29,7 +29,7 @@ RUN pnpm build
 # ─────────────────────────────────────────────
 FROM node:20-alpine AS runtime
 
-LABEL version="3.2.0" \
+LABEL version="5.19.0" \
       maintainer="CentralDevOps <contato@centraldevops.com>" \
       description="K8s Pod Visualizer — real-time Kubernetes pod visualization"
 

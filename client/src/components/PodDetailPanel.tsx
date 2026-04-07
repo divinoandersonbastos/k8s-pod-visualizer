@@ -12,12 +12,15 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
-  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal, Flame,
+  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal, Database, FileText,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
 import type { StatusEvent } from "@/hooks/usePodStatusEvents";
 import { PodLogsTab } from "./PodLogsTab";
+import { DbTab } from "./DbTab";
+import { JvmTab } from "./JvmTab";
+import { PodDescribeTab } from "./PodDescribeTab";
 import { PodTerminal } from "./PodTerminal";
 import { PodHistoryChart } from "./PodHistoryChart";
 import { PodStatusTimeline } from "./PodStatusTimeline";
@@ -25,7 +28,6 @@ import { OomRiskBadge, OomRiskSummary } from "./OomRiskPanel";
 import type { OomRiskInfo } from "@/hooks/usePodOomRisk";
 import { runSecurityRules } from "@/lib/securityRules";
 import type { SecurityFinding } from "@/lib/securityRules";
-import { JvmTab } from "./JvmTab";
 
 // ── Auth helper ───────────────────────────────────────────────────────────────
 const TOKEN_KEY = "k8s-viz-token";
@@ -47,8 +49,8 @@ interface PodDetailPanelProps {
   oomRisk?: OomRiskInfo | null;
   isSRE?: boolean;
   isAdmin?: boolean;
-  onRestartStart?: (podId: string) => void;
-  onRestartEnd?: (podId: string) => void;
+  /** NOVO v5.20.0 — aba inicial ao abrir o painel (ex: "describe") */
+  initialTab?: Tab;
 }
 
 const STATUS_CONFIG = {
@@ -77,7 +79,7 @@ function formatMem(mib: number): string {
   return `${mib} MiB`;
 }
 
-type Tab = "details" | "logs" | "events" | "security" | "resources" | "jvm";
+type Tab = "details" | "describe" | "logs" | "events" | "security" | "jvm" | "db";
 
 // ── Modal de Confirmação de Restart ──────────────────────────────────────────
 function RestartConfirmModal({
@@ -181,8 +183,17 @@ const PANEL_WIDTH_KEY = "k8s-viz-detail-panel-width";
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH_RATIO = 0.72; // 72% da largura da janela
 
-export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk, isSRE = false, isAdmin = false, onRestartStart, onRestartEnd }: PodDetailPanelProps) {
-  const [activeTab, setActiveTab] = useState<Tab>("details");
+export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk, isSRE = false, isAdmin = false, initialTab }: PodDetailPanelProps) {
+  const [activeTab, setActiveTab] = useState<Tab>(initialTab || "details");
+
+  // Quando o pod muda OU quando initialTab muda, resetar para a aba correta
+  const prevPodIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (pod?.id !== prevPodIdRef.current) {
+      prevPodIdRef.current = pod?.id ?? null;
+      setActiveTab(initialTab || "details");
+    }
+  }, [pod?.id, initialTab]);
   const [eventCount, setEventCount] = useState(0);
   const [showRestartModal, setShowRestartModal] = useState(false);
   const [restartLoading, setRestartLoading] = useState(false);
@@ -252,7 +263,6 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const handleRestartConfirm = useCallback(async () => {
     if (!pod) return;
     setRestartLoading(true);
-    onRestartStart?.(pod.id);
     try {
       const base = apiUrl || "";
       const resp = await fetch(`${base}/api/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/restart`, {
@@ -269,13 +279,9 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
     } finally {
       setRestartLoading(false);
       setShowRestartModal(false);
-      // Mantém o anel por 8s após o restart
-      setTimeout(() => {
-        if (pod) onRestartEnd?.(pod.id);
-      }, 8000);
       setTimeout(() => setRestartResult(null), 5000);
     }
-  }, [pod, apiUrl, onRestartStart, onRestartEnd]);
+  }, [pod, apiUrl]);
 
   // Reset tab ao trocar de pod
   const [lastPodId, setLastPodId] = useState<string | null>(null);
@@ -441,12 +447,13 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
             style={{ borderColor: "oklch(0.28 0.04 250)", background: "oklch(0.13 0.018 250)" }}
           >
             {([
-              { id: "details",   label: "Detalhes",  icon: <BarChart2 size={11} /> },
-              { id: "logs",      label: "Logs",      icon: <ScrollText size={11} /> },
-              { id: "events",    label: `Eventos${eventCount > 0 ? ` (${eventCount})` : ""}`, icon: <Activity size={11} /> },
-              { id: "resources", label: "Recursos",   icon: <Cpu size={11} /> },
-              { id: "security",  label: "Segurança",  icon: <Shield size={11} /> },
-              { id: "jvm",       label: "JVM",         icon: <Flame size={11} /> },
+              { id: "details",  label: "Detalhes",  icon: <BarChart2 size={11} /> },
+              { id: "describe", label: "Describe",   icon: <FileText size={11} /> },
+              { id: "logs",     label: "Logs",      icon: <ScrollText size={11} /> },
+              { id: "events",   label: `Eventos${eventCount > 0 ? ` (${eventCount})` : ""}`, icon: <Activity size={11} /> },
+              { id: "security", label: "Segurança",  icon: <Shield size={11} /> },
+              { id: "jvm",      label: "JVM",         icon: <Activity size={11} /> },
+              { id: "db",       label: "DB",          icon: <Database size={11} /> },
             ] as { id: Tab; label: string; icon: React.ReactNode }[]).map((tab) => (
               <button
                 key={tab.id}
@@ -952,131 +959,27 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               );
             })()}
 
-            {/* Tab: Recursos — Recomendações automáticas de requests/limits */}
-            {activeTab === "resources" && pod && (() => {
-              const res = pod.resources;
-              const cpuUsage = pod.cpuUsage;       // millicores
-              const memUsage = pod.memoryUsage;    // MiB
-              const cpuReq   = res?.requests?.cpu    ?? null;
-              const cpuLim   = res?.limits?.cpu      ?? null;
-              const memReq   = res?.requests?.memory ?? null;
-              const memLim   = res?.limits?.memory   ?? null;
-
-              // Calcular valores sugeridos baseados no uso real (p95 estimado = uso * 1.5)
-              const sugCpuReq = Math.ceil(cpuUsage * 1.5 / 10) * 10;   // arredonda para 10m
-              const sugCpuLim = Math.ceil(cpuUsage * 3.0 / 50) * 50;   // arredonda para 50m
-              const sugMemReq = Math.ceil(memUsage * 1.5 / 32) * 32;   // arredonda para 32Mi
-              const sugMemLim = Math.ceil(memUsage * 2.5 / 64) * 64;   // arredonda para 64Mi
-
-              type ResIssue = { field: string; current: string | null; suggested: string; reason: string; severity: "HIGH" | "MEDIUM" | "LOW" };
-              const issues: ResIssue[] = [];
-
-              if (cpuReq == null)
-                issues.push({ field: "CPU Request", current: null, suggested: `${sugCpuReq}m`, reason: "Sem CPU request: o scheduler não consegue alocar o pod de forma previsível.", severity: "HIGH" });
-              else if (cpuUsage > 0 && cpuUsage < cpuReq * 0.3)
-                issues.push({ field: "CPU Request", current: `${cpuReq}m`, suggested: `${sugCpuReq}m`, reason: `Overdimensionado: usando ${cpuUsage}m mas request é ${cpuReq}m (${Math.round(cpuUsage/cpuReq*100)}% do request). Reduzir libera recursos no cluster.`, severity: "MEDIUM" });
-              else if (cpuUsage > 0 && cpuReq > 0 && cpuUsage > cpuReq * 0.85)
-                issues.push({ field: "CPU Request", current: `${cpuReq}m`, suggested: `${sugCpuReq}m`, reason: `Subdimensionado: usando ${cpuUsage}m com request de ${cpuReq}m (${Math.round(cpuUsage/cpuReq*100)}%). Risco de throttling.`, severity: "HIGH" });
-
-              if (cpuLim == null)
-                issues.push({ field: "CPU Limit", current: null, suggested: `${sugCpuLim}m`, reason: "Sem CPU limit: o container pode consumir CPU ilimitada e afetar outros pods no nó.", severity: "MEDIUM" });
-
-              if (memReq == null)
-                issues.push({ field: "MEM Request", current: null, suggested: `${sugMemReq}Mi`, reason: "Sem Memory request: o scheduler pode alocar o pod em nó com pouca memória disponível.", severity: "HIGH" });
-              else if (memUsage > 0 && memUsage < memReq * 0.3)
-                issues.push({ field: "MEM Request", current: formatMem(memReq), suggested: `${sugMemReq}Mi`, reason: `Overdimensionado: usando ${formatMem(memUsage)} mas request é ${formatMem(memReq)} (${Math.round(memUsage/memReq*100)}%). Reduzir libera memória no cluster.`, severity: "MEDIUM" });
-              else if (memUsage > 0 && memReq > 0 && memUsage > memReq * 0.80)
-                issues.push({ field: "MEM Request", current: formatMem(memReq), suggested: `${sugMemReq}Mi`, reason: `Subdimensionado: usando ${formatMem(memUsage)} com request de ${formatMem(memReq)} (${Math.round(memUsage/memReq*100)}%). Risco de OOMKill.`, severity: "HIGH" });
-
-              if (memLim == null)
-                issues.push({ field: "MEM Limit", current: null, suggested: `${sugMemLim}Mi`, reason: "Sem Memory limit: o container pode consumir toda a memória do nó e causar OOMKill em outros pods.", severity: "HIGH" });
-              else if (memUsage > 0 && memLim > 0 && memUsage > memLim * 0.80)
-                issues.push({ field: "MEM Limit", current: formatMem(memLim), suggested: `${sugMemLim}Mi`, reason: `Crítico: usando ${formatMem(memUsage)} com limit de ${formatMem(memLim)} (${Math.round(memUsage/memLim*100)}%). OOMKill iminente.`, severity: "HIGH" });
-
-              const SEV_COLOR: Record<string, string> = {
-                HIGH:   "oklch(0.72 0.22 25)",
-                MEDIUM: "oklch(0.82 0.20 85)",
-                LOW:    "oklch(0.72 0.18 200)",
-              };
-              const SEV_BG: Record<string, string> = {
-                HIGH:   "oklch(0.42 0.22 25 / 0.12)",
-                MEDIUM: "oklch(0.45 0.18 85 / 0.12)",
-                LOW:    "oklch(0.40 0.14 200 / 0.12)",
-              };
-
-              // YAML sugerido
-              const yamlSuggestion = `resources:
-  requests:
-    cpu: "${cpuReq != null && cpuUsage > 0 && cpuUsage >= cpuReq * 0.3 ? cpuReq + 'm' : sugCpuReq + 'm'}"
-    memory: "${memReq != null && memUsage > 0 && memUsage >= memReq * 0.3 ? formatMem(memReq) : sugMemReq + 'Mi'}"
-  limits:
-    cpu: "${cpuLim != null ? cpuLim + 'm' : sugCpuLim + 'm'}"
-    memory: "${memLim != null ? formatMem(memLim) : sugMemLim + 'Mi'}"`;
-
-              return (
-                <div className="absolute inset-0 overflow-y-auto p-4 space-y-4">
-                  {/* Resumo atual */}
-                  <div className="rounded-xl p-3 space-y-3" style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.22 0.03 250)" }}>
-                    <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>Uso Atual vs Configurado</div>
-                    <div className="grid grid-cols-2 gap-2">
-                      {[
-                        { label: "CPU Uso",     val: `${cpuUsage}m`,           color: "oklch(0.72 0.18 142)" },
-                        { label: "CPU Request", val: cpuReq != null ? `${cpuReq}m` : "—",  color: cpuReq == null ? "oklch(0.72 0.22 25)" : "oklch(0.72 0.18 200)" },
-                        { label: "CPU Limit",   val: cpuLim != null ? `${cpuLim}m` : "—",  color: cpuLim == null ? "oklch(0.72 0.22 25)" : "oklch(0.72 0.18 200)" },
-                        { label: "MEM Uso",     val: formatMem(memUsage),      color: "oklch(0.72 0.18 50)" },
-                        { label: "MEM Request", val: memReq != null ? formatMem(memReq) : "—", color: memReq == null ? "oklch(0.72 0.22 25)" : "oklch(0.72 0.18 200)" },
-                        { label: "MEM Limit",   val: memLim != null ? formatMem(memLim) : "—", color: memLim == null ? "oklch(0.72 0.22 25)" : "oklch(0.72 0.18 200)" },
-                      ].map(({ label, val, color }) => (
-                        <div key={label} className="rounded-lg p-2" style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.20 0.025 250)" }}>
-                          <div className="text-[9px] font-mono" style={{ color: "oklch(0.40 0.01 250)" }}>{label}</div>
-                          <div className="text-[13px] font-mono font-bold mt-0.5" style={{ color }}>{val}</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Issues encontradas */}
-                  {issues.length === 0 ? (
-                    <div className="rounded-xl p-4 flex flex-col items-center gap-2" style={{ background: "oklch(0.13 0.018 250)", border: "1px solid oklch(0.72 0.18 142 / 0.25)" }}>
-                      <div className="text-2xl">✅</div>
-                      <div className="text-xs font-semibold" style={{ color: "oklch(0.72 0.18 142)" }}>Resources bem configurados</div>
-                      <div className="text-[10px] text-center" style={{ color: "oklch(0.45 0.01 250)" }}>CPU e memória estão dentro dos limites recomendados.</div>
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="text-[10px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>Recomendações ({issues.length})</div>
-                      {issues.map((issue, idx) => (
-                        <div key={idx} className="rounded-xl p-3 space-y-2" style={{ background: SEV_BG[issue.severity], border: `1px solid ${SEV_COLOR[issue.severity]}44` }}>
-                          <div className="flex items-center gap-2">
-                            <span className="text-[8px] font-mono font-bold px-1.5 py-0.5 rounded" style={{ background: SEV_BG[issue.severity], border: `1px solid ${SEV_COLOR[issue.severity]}55`, color: SEV_COLOR[issue.severity] }}>{issue.severity}</span>
-                            <span className="text-[11px] font-semibold font-mono" style={{ color: "oklch(0.85 0.01 250)" }}>{issue.field}</span>
-                          </div>
-                          <div className="flex items-center gap-2 text-[10px] font-mono">
-                            <span style={{ color: "oklch(0.45 0.01 250)" }}>Atual:</span>
-                            <span style={{ color: issue.current == null ? "oklch(0.72 0.22 25)" : "oklch(0.65 0.01 250)" }}>{issue.current ?? "não definido"}</span>
-                            <span style={{ color: "oklch(0.35 0.01 250)" }}>→</span>
-                            <span style={{ color: "oklch(0.82 0.20 85)" }}>Sugerido: {issue.suggested}</span>
-                          </div>
-                          <p className="text-[10px] leading-relaxed" style={{ color: "oklch(0.60 0.01 250)" }}>{issue.reason}</p>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  {/* YAML sugerido */}
-                  <div className="rounded-xl p-3 space-y-2" style={{ background: "oklch(0.08 0.012 250)", border: "1px solid oklch(0.72 0.18 142 / 0.20)" }}>
-                    <div className="text-[9px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.45 0.01 250)" }}>YAML Sugerido</div>
-                    <pre className="text-[10px] font-mono leading-relaxed overflow-x-auto" style={{ color: "oklch(0.72 0.18 142)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{yamlSuggestion}</pre>
-                    <div className="text-[9px] leading-relaxed" style={{ color: "oklch(0.40 0.01 250)" }}>
-                      ⚠️ Valores baseados no uso atual. Recomenda-se monitorar por 24-48h antes de aplicar.
-                    </div>
-                  </div>
-                </div>
-              );
-            })()}
-            {/* Tab: JVM — Monitoramento JVM via jstat/jcmd */}
+            {/* Tab: JVM */}
             {activeTab === "jvm" && pod && (
-              <JvmTab pod={pod} apiUrl={apiUrl} />
+              <div className="absolute inset-0">
+                <JvmTab pod={pod} apiUrl={apiUrl} />
+              </div>
+            )}
+            {/* Tab: DB */}
+            {activeTab === "db" && pod && (
+              <div className="absolute inset-0">
+                <DbTab
+                  namespace={pod.namespace}
+                  podName={pod.name}
+                  containers={pod.containerNames || []}
+                />
+              </div>
+            )}
+            {/* Tab: Describe (v5.19.1) — novo, isolado, não altera nada existente */}
+            {activeTab === "describe" && pod && (
+              <div className="absolute inset-0">
+                <PodDescribeTab pod={pod} apiUrl={apiUrl} />
+              </div>
             )}
             {/* Tab: Eventos */}
             {activeTab === "events" && (
@@ -1099,19 +1002,6 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
 
           </div>
         </motion.aside>
-      )}
-    </AnimatePresence>
-
-    {/* Modal de confirmação de restart */}
-    <AnimatePresence>
-      {showRestartModal && pod && (
-        <RestartConfirmModal
-          podName={pod.name}
-          namespace={pod.namespace}
-          onConfirm={handleRestartConfirm}
-          onCancel={() => setShowRestartModal(false)}
-          loading={restartLoading}
-        />
       )}
     </AnimatePresence>
 

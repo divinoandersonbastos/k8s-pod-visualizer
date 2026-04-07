@@ -6,7 +6,7 @@
  * O estado `statusFilter` é gerenciado em Home.tsx e passado como prop.
  */
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Search, Settings, RefreshCw, Wifi, WifiOff, Info, Bell, AlertTriangle, AlertCircle, X, Activity, Server, MessageCircle, Send, Layers, BarChart3, Paintbrush, Users, Code2, GitBranch, LogOut, Shield, User, Crown, Network, Database, Skull } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { ClusterStats } from "@/hooks/usePodData";
@@ -38,7 +38,6 @@ interface ClusterHeaderProps {
   onShowDbStatus?: () => void;
   onLogout?: () => void;
   isSRE?: boolean;
-  isSquad?: boolean;
   isAdmin?: boolean;
   currentUser?: { displayName?: string; username: string; role: string };
   clusterName?: string;
@@ -72,7 +71,6 @@ export function ClusterHeader({
   onShowDbStatus,
   onLogout,
   isSRE,
-  isSquad,
   isAdmin,
   currentUser,
   clusterName,
@@ -81,6 +79,14 @@ export function ClusterHeader({
   crashPodCount = 0,
 }: ClusterHeaderProps) {
   const [showInfo, setShowInfo] = useState(false);
+  const [appVersion, setAppVersion] = useState<string>("...");
+
+  useEffect(() => {
+    fetch("/api/version")
+      .then(r => r.json())
+      .then(d => setAppVersion(d.version || "?"))
+      .catch(() => setAppVersion("?"));
+  }, []);
 
   const criticalCount = stats?.criticalPods ?? 0;
   const warningCount  = stats?.warningPods  ?? 0;
@@ -124,7 +130,7 @@ export function ClusterHeader({
               letterSpacing: "0.04em",
             }}
           >
-            K8s Pods Visualizer v3.5
+            K8s Pods Visualizer v{appVersion}
           </span>
         </div>
         {/* Badge compacto para telas menores */}
@@ -136,7 +142,7 @@ export function ClusterHeader({
             color: "oklch(0.62 0.16 260)",
           }}
         >
-          v3.5
+          v{appVersion}
         </span>
       </div>
 
@@ -500,11 +506,11 @@ export function ClusterHeader({
           </button>
         )}
 
-        {(isSRE || isSquad) && onShowResourceEditor && (
+        {isSRE && onShowResourceEditor && (
           <button
             onClick={onShowResourceEditor}
             className="p-2 rounded-lg transition-all hover:bg-white/5"
-            title={isSRE ? "Editor de Recursos K8s (SRE)" : "Visão da Aplicação"}
+            title="Editor de Recursos K8s (SRE)"
             style={{ color: "oklch(0.65 0.22 280)" }}
           >
             <Code2 size={14} />

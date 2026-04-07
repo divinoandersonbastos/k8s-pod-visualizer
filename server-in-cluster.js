@@ -41,11 +41,20 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ── Versão da aplicação (lida do package.json ou variável APP_VERSION) ───────────────
+let _APP_VERSION = "unknown";
+try {
+  const _pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
+  _APP_VERSION = process.env.APP_VERSION || _pkg.version || "unknown";
+} catch { _APP_VERSION = process.env.APP_VERSION || "unknown"; }
+
 const PORT = process.env.PORT || 3000;
 const K8S_API = process.env.K8S_API_URL || "https://kubernetes.default.svc";
 const SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token";
 const SA_CA_PATH    = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt";
 const SA_NS_PATH    = "/var/run/secrets/kubernetes.io/serviceaccount/namespace";
+// ── Histórico circular de métricas JVM por pod (máx 120 amostras ≈ 1h) ──────
+const _jvmHistoryMap = new Map(); // key: "namespace/pod" → Array<{timestamp, heapPct, oldGenPct, youngGcTimeSec, metaspaceMib}>
 
 // ── Helpers de autenticação ───────────────────────────────────────────────────
 function getToken() {
@@ -956,9 +965,14 @@ const server = http.createServer(async (req, res) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
-
-  // ── /api/pods ──────────────────────────────────────────────────────────────
+   if (req.method === "OPTIONS") { res.writeHead(204); res.end(); return; }
+  // ── /api/version ─────────────────────────────────────────────────────────────────────────────
+  if (url.pathname === "/api/version") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ version: _APP_VERSION }));
+    return;
+  }
+  // ── /api/pods ─────────────────────────────────────────────────────────────────────────────
   if (url.pathname === "/api/pods") {
     requireAuth(req, res, async () => {
       try {
@@ -1066,6 +1080,126 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ error: err.message }));
     }
+    return;
+  }
+
+  // ── /api/pod-describe/:namespace/:pod ─────────────────────────────────────────
+  // NOVO endpoint (v5.19.1) — retorna dados do pod formatados como texto descritivo.
+  // Não altera nenhum endpoint existente.
+  const describeMatch = url.pathname.match(/^\/api\/pod-describe\/([^/]+)\/([^/]+)$/);
+  if (describeMatch) {
+    requireAuth(req, res, async () => {
+      const [, descNs, descPodRaw] = describeMatch;
+      const descPod = decodeURIComponent(descPodRaw);
+      try {
+        const podData = await k8sGet(`/api/v1/namespaces/${encodeURIComponent(descNs)}/pods/${encodeURIComponent(descPod)}`);
+        let eventsText = "";
+        try {
+          const evData = await k8sGet(`/api/v1/namespaces/${encodeURIComponent(descNs)}/events?fieldSelector=involvedObject.name%3D${encodeURIComponent(descPod)}`);
+          if (evData?.items?.length > 0) {
+            eventsText = evData.items.map(ev =>
+              `  ${(ev.lastTimestamp || ev.eventTime || "").slice(0,19).replace("T"," ")}  ${(ev.type || "").padEnd(9)}  ${(ev.reason || "").padEnd(20)}  ${ev.message || ""}`
+            ).join("\n");
+          }
+        } catch { /* eventos são opcionais */ }
+
+        const p = podData;
+        const meta   = p.metadata || {};
+        const spec   = p.spec    || {};
+        const status = p.status  || {};
+
+        const fmtTime = (t) => t ? t.slice(0,19).replace("T"," ") + " UTC" : "<unknown>";
+        const fmtMap  = (obj, indent) => {
+          const ind = indent || "  ";
+          return obj && Object.keys(obj).length > 0
+            ? Object.entries(obj).map(([k,v]) => `${ind}${k}=${v}`).join("\n")
+            : `${ind}<none>`;
+        };
+
+        const containers = (spec.containers || []).map(c => {
+          const cs = (status.containerStatuses || []).find(s => s.name === c.name) || {};
+          const stateKey = Object.keys(cs.state || {})[0] || "unknown";
+          const stateVal = (cs.state || {})[stateKey] || {};
+          const limits   = c.resources?.limits   || {};
+          const requests = c.resources?.requests || {};
+          const ports    = (c.ports || []).map(p2 => `${p2.containerPort}/${p2.protocol||"TCP"}`).join(", ") || "<none>";
+          const envVars  = (c.env || []).map(e => `      ${e.name}:  ${e.value !== undefined ? e.value : (e.valueFrom ? "<valueFrom>" : "")}`).join("\n");
+          const mounts   = (c.volumeMounts || []).map(m => `      ${m.mountPath} from ${m.name}${m.readOnly ? " (ro)" : ""}`).join("\n");
+          return [
+            `  ${c.name}:`,
+            `    Image:          ${c.image || "<unknown>"}`,
+            `    Image ID:       ${cs.imageID || "<none>"}`,
+            `    Ports:          ${ports}`,
+            `    Ready:          ${cs.ready ?? "<unknown>"}`,
+            `    Restart Count:  ${cs.restartCount ?? 0}`,
+            `    State:          ${stateKey}`,
+            stateVal.startedAt  ? `      Started:      ${fmtTime(stateVal.startedAt)}`  : null,
+            stateVal.finishedAt ? `      Finished:     ${fmtTime(stateVal.finishedAt)}` : null,
+            stateVal.reason     ? `      Reason:       ${stateVal.reason}`               : null,
+            stateVal.message    ? `      Message:      ${stateVal.message}`              : null,
+            `    Limits:`,
+            `      cpu:     ${limits.cpu    || "<none>"}`,
+            `      memory:  ${limits.memory || "<none>"}`,
+            `    Requests:`,
+            `      cpu:     ${requests.cpu    || "<none>"}`,
+            `      memory:  ${requests.memory || "<none>"}`,
+            envVars ? `    Environment:\n${envVars}` : `    Environment:    <none>`,
+            mounts  ? `    Mounts:\n${mounts}`       : `    Mounts:         <none>`,
+          ].filter(l => l !== null).join("\n");
+        }).join("\n");
+
+        const initContainers = (spec.initContainers || []).map(c => `  ${c.name}:\n    Image: ${c.image}`).join("\n");
+        const volumes = (spec.volumes || []).map(v => {
+          const type = Object.keys(v).find(k => k !== "name") || "unknown";
+          return `  ${v.name}:\n    Type: ${type}`;
+        }).join("\n");
+        const conditions = (status.conditions || []).map(c2 =>
+          `  ${(c2.type||"").padEnd(20)} ${(c2.status||"").padEnd(8)} ${fmtTime(c2.lastTransitionTime)}`
+        ).join("\n");
+        const tolerations = (spec.tolerations || []).map(t2 =>
+          `  ${t2.key || "<all>"}:${t2.operator||"Exists"}${t2.effect ? " for "+t2.effect : ""}`
+        ).join("\n");
+
+        const lines = [
+          `Name:             ${meta.name || descPod}`,
+          `Namespace:        ${meta.namespace || descNs}`,
+          `Priority:         ${spec.priority ?? 0}`,
+          `Service Account:  ${spec.serviceAccountName || "default"}`,
+          `Node:             ${spec.nodeName || "<none>"}/${status.hostIP || "<none>"}`,
+          `Start Time:       ${fmtTime(status.startTime)}`,
+          `Labels:`,
+          fmtMap(meta.labels),
+          `Annotations:`,
+          fmtMap(meta.annotations),
+          `Status:           ${status.phase || "<unknown>"}`,
+          `IP:               ${status.podIP || "<none>"}`,
+          `IPs:`,
+          ...(status.podIPs || []).map(ip => `  IP:  ${ip.ip}`),
+          initContainers ? `Init Containers:\n${initContainers}` : null,
+          `Containers:`,
+          containers,
+          `Conditions:`,
+          `  Type                 Status   Last Transition`,
+          conditions || "  <none>",
+          `Volumes:`,
+          volumes || "  <none>",
+          `QoS Class:        ${status.qosClass || "<unknown>"}`,
+          `Node-Selectors:`,
+          fmtMap(spec.nodeSelector),
+          `Tolerations:`,
+          tolerations || "  <none>",
+          eventsText
+            ? `Events:\n  TIMESTAMP            TYPE       REASON                MESSAGE\n${eventsText}`
+            : `Events:           <none>`,
+        ].filter(l => l !== null).join("\n");
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ text: lines }));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
     return;
   }
 
@@ -1233,194 +1367,6 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(events));
       } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
-    return;
-  }
-
-  // ── /api/jvm/:namespace/:pod — Métricas JVM via kubectl exec (jstat/jcmd) ──────
-  // Suporta pods Java com jstat/jcmd disponíveis (WildFly, Spring Boot, etc.)
-  // Retorna: heap, oldgen, metaspace, gc, threads, jvm_version
-  const jvmMatch = url.pathname.match(/^\/api\/jvm\/([^/]+)\/([^/]+)$/);
-  if (jvmMatch && req.method === "GET") {
-    const [, namespace, podName] = jvmMatch;
-    const container = url.searchParams.get("container") || "";
-    requireAuth(req, res, async () => {
-      try {
-        const token  = getToken();
-        const ca     = getCA();
-        const parsed = parseK8sApiUrl(K8S_API);
-        const isHttps = parsed.isHttps;
-        const apiHost = parsed.hostname;
-        const apiPort = parsed.port;
-
-        // Executa um comando no pod via K8s Exec API (sem WebSocket — usa HTTP SPDY/upgrade)
-        // Para simplicidade, usamos o padrão de exec one-shot via stdout capture
-        async function execInPod(cmd) {
-          return new Promise((resolve, reject) => {
-            const cmdParts = ["/bin/sh", "-c", cmd];
-            const cmdQuery = cmdParts.map(c => `command=${encodeURIComponent(c)}`).join("&");
-            const containerQuery = container ? `&container=${encodeURIComponent(container)}` : "";
-            const path = `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}/exec?stdin=false&stdout=true&stderr=true&tty=false&${cmdQuery}${containerQuery}`;
-
-            const proto = isHttps ? https : http;
-            const options = {
-              hostname: apiHost,
-              port: apiPort,
-              path,
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(token ? { Authorization: `Bearer ${token}` } : {}),
-                // Solicitar upgrade para SPDY/websocket — K8s suporta ambos
-                Connection: "Upgrade",
-                Upgrade: "SPDY/3.1",
-              },
-              ...(ca ? { ca } : { rejectUnauthorized: false }),
-            };
-
-            // Fallback: usar WebSocket v4.channel.k8s.io para exec one-shot
-            const { WebSocket: _WS } = await import("ws");
-            const wsProto = isHttps ? "wss" : "ws";
-            const wsUrl = `${wsProto}://${apiHost}:${apiPort}${path.replace("POST", "")}`.replace(/\?.*/, "") +
-              `?stdin=false&stdout=true&stderr=true&tty=false&${cmdQuery}${containerQuery}`;
-
-            const ws = new _WS(wsUrl, ["v4.channel.k8s.io"], {
-              headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-              ...(ca ? { ca } : { rejectUnauthorized: false }),
-            });
-
-            let output = "";
-            const timer = setTimeout(() => {
-              ws.terminate();
-              reject(new Error("exec timeout"));
-            }, 8000);
-
-            ws.on("message", (data) => {
-              if (!Buffer.isBuffer(data) || data.length < 1) return;
-              const channel = data[0];
-              if (channel === 1 || channel === 2) {
-                output += data.slice(1).toString("utf8");
-              }
-            });
-            ws.on("close", () => { clearTimeout(timer); resolve(output.trim()); });
-            ws.on("error", (err) => { clearTimeout(timer); reject(err); });
-          });
-        }
-
-        // 1. Descobrir o PID do processo Java
-        const jpsOut = await execInPod(
-          "PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jps -l 2>/dev/null | grep -v Jps | head -1"
-        );
-        const pid = jpsOut.split(/\s+/)[0];
-        if (!pid || isNaN(parseInt(pid))) {
-          res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "Nenhum processo Java encontrado no pod", notJava: true }));
-          return;
-        }
-
-        // 2. Executar jstat -gc e jstat -gcutil em paralelo
-        const [gcRaw, gcUtilRaw, heapRaw, vmVersionRaw, threadCountRaw] = await Promise.allSettled([
-          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jstat -gc ${pid} 1 1 2>/dev/null`),
-          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jstat -gcutil ${pid} 1 1 2>/dev/null`),
-          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jcmd ${pid} GC.heap_info 2>/dev/null`),
-          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jcmd ${pid} VM.version 2>/dev/null`),
-          execInPod(`PATH=/opt/aghu/java/bin:/usr/lib/jvm/java/bin:/usr/bin:$PATH jcmd ${pid} Thread.print 2>/dev/null | grep -c "java.lang.Thread" || echo 0`),
-        ]);
-
-        // 3. Parsear jstat -gc (linha de header + linha de dados)
-        // Colunas: S0C S1C S0U S1U EC EU OC OU MC MU CCSC CCSU YGC YGCT FGC FGCT GCT
-        let gcData = {};
-        if (gcRaw.status === "fulfilled") {
-          const lines = gcRaw.value.split("\n").filter(l => l.trim());
-          if (lines.length >= 2) {
-            const headers = lines[0].trim().split(/\s+/);
-            const values  = lines[1].trim().split(/\s+/);
-            headers.forEach((h, i) => { gcData[h] = parseFloat(values[i]) || 0; });
-          }
-        }
-
-        // 4. Parsear jstat -gcutil (percentuais)
-        // Colunas: S0 S1 E O M CCS YGC YGCT FGC FGCT GCT
-        let gcUtil = {};
-        if (gcUtilRaw.status === "fulfilled") {
-          const lines = gcUtilRaw.value.split("\n").filter(l => l.trim());
-          if (lines.length >= 2) {
-            const headers = lines[0].trim().split(/\s+/);
-            const values  = lines[1].trim().split(/\s+/);
-            headers.forEach((h, i) => { gcUtil[h] = parseFloat(values[i]) || 0; });
-          }
-        }
-
-        // 5. Parsear heap info do jcmd
-        let heapInfo = { gcType: "Unknown", heapTotal: 0, heapUsed: 0, metaspaceUsed: 0, metaspaceCommitted: 0 };
-        if (heapRaw.status === "fulfilled") {
-          const h = heapRaw.value;
-          // "garbage-first heap   total 7217152K, used 3725572K"
-          // "ZGC heap             total 4096M, used 1024M"
-          // "PSYoungGen  total 2048K, used 512K"
-          const gcTypeMatch = h.match(/(garbage-first|ZGC|Shenandoah|parallel scavenge|serial|cms|G1)/i);
-          heapInfo.gcType = gcTypeMatch ? gcTypeMatch[1].toUpperCase().replace("GARBAGE-FIRST", "G1GC") : "Unknown";
-          const totalMatch = h.match(/total\s+(\d+)K/i);
-          const usedMatch  = h.match(/used\s+(\d+)K/i);
-          const metaUsed   = h.match(/Metaspace\s+used\s+(\d+)K/i);
-          const metaComm   = h.match(/committed\s+(\d+)K/i);
-          if (totalMatch) heapInfo.heapTotal = Math.round(parseInt(totalMatch[1]) / 1024); // MiB
-          if (usedMatch)  heapInfo.heapUsed  = Math.round(parseInt(usedMatch[1])  / 1024);
-          if (metaUsed)   heapInfo.metaspaceUsed      = Math.round(parseInt(metaUsed[1]) / 1024);
-          if (metaComm)   heapInfo.metaspaceCommitted  = Math.round(parseInt(metaComm[1]) / 1024);
-        }
-
-        // 6. Parsear versão JVM
-        let jvmVersion = "Unknown";
-        if (vmVersionRaw.status === "fulfilled") {
-          const vMatch = vmVersionRaw.value.match(/JDK\s+([\d._]+)/i) ||
-                         vmVersionRaw.value.match(/version\s+([\d._]+)/i);
-          if (vMatch) jvmVersion = vMatch[1];
-        }
-
-        // 7. Thread count
-        let threadCount = 0;
-        if (threadCountRaw.status === "fulfilled") {
-          threadCount = parseInt(threadCountRaw.value.trim()) || 0;
-        }
-
-        // 8. Montar resposta
-        const result = {
-          pid: parseInt(pid),
-          jvmVersion,
-          gcType: heapInfo.gcType,
-          heap: {
-            totalMiB:   heapInfo.heapTotal || Math.round((gcData["OC"] || 0 + gcData["EC"] || 0 + gcData["S0C"] || 0 + gcData["S1C"] || 0) / 1024),
-            usedMiB:    heapInfo.heapUsed  || Math.round((gcData["OU"] || 0 + gcData["EU"] || 0 + gcData["S0U"] || 0 + gcData["S1U"] || 0) / 1024),
-            oldGenPct:  gcUtil["O"]  || 0,
-            edenPct:    gcUtil["E"]  || 0,
-            survivorPct: Math.max(gcUtil["S0"] || 0, gcUtil["S1"] || 0),
-          },
-          metaspace: {
-            usedMiB:      heapInfo.metaspaceUsed      || Math.round((gcData["MU"] || 0) / 1024),
-            committedMiB: heapInfo.metaspaceCommitted || Math.round((gcData["MC"] || 0) / 1024),
-            pct:          gcUtil["M"] || 0,
-          },
-          gc: {
-            youngGcCount: gcData["YGC"]  || 0,
-            youngGcTimeSec: gcData["YGCT"] || 0,
-            fullGcCount:  gcData["FGC"]  || 0,
-            fullGcTimeSec: gcData["FGCT"] || 0,
-            totalGcTimeSec: gcData["GCT"] || 0,
-          },
-          threads: {
-            live: threadCount,
-          },
-          timestamp: new Date().toISOString(),
-        };
-
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(result));
-      } catch (err) {
-        console.error(`[error] /api/jvm/${namespace}/${podName}:`, err.message);
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
       }
@@ -2442,35 +2388,13 @@ const server = http.createServer(async (req, res) => {
       }
       try {
         let k8sPath;
-        // Menu Principal
-        if      (kind === "pod")           k8sPath = `/api/v1/namespaces/${namespace}/pods/${name}`;
-        else if (kind === "deployment")    k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
-        else if (kind === "statefulset")   k8sPath = `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`;
-        else if (kind === "daemonset")     k8sPath = `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`;
-        else if (kind === "job")           k8sPath = `/apis/batch/v1/namespaces/${namespace}/jobs/${name}`;
-        else if (kind === "cronjob")       k8sPath = `/apis/batch/v1/namespaces/${namespace}/cronjobs/${name}`;
-        else if (kind === "service")       k8sPath = `/api/v1/namespaces/${namespace}/services/${name}`;
-        else if (kind === "ingress")       k8sPath = `/apis/networking.k8s.io/v1/namespaces/${namespace}/ingresses/${name}`;
-        else if (kind === "configmap")     k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
-        else if (kind === "secret")        k8sPath = `/api/v1/namespaces/${namespace}/secrets/${name}`;
-        else if (kind === "pvc")           k8sPath = `/api/v1/namespaces/${namespace}/persistentvolumeclaims/${name}`;
-        else if (kind === "pv")            k8sPath = `/api/v1/persistentvolumes/${name}`;
-        else if (kind === "storageclass")  k8sPath = `/apis/storage.k8s.io/v1/storageclasses/${name}`;
-        // Menu Avançado
-        else if (kind === "replicaset")                     k8sPath = `/apis/apps/v1/namespaces/${namespace}/replicasets/${name}`;
-        else if (kind === "resourcequota")                  k8sPath = `/api/v1/namespaces/${namespace}/resourcequotas/${name}`;
-        else if (kind === "limitrange")                     k8sPath = `/api/v1/namespaces/${namespace}/limitranges/${name}`;
-        else if (kind === "hpa")                            k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
-        else if (kind === "pdb")                            k8sPath = `/apis/policy/v1/namespaces/${namespace}/poddisruptionbudgets/${name}`;
-        else if (kind === "priorityclass")                  k8sPath = `/apis/scheduling.k8s.io/v1/priorityclasses/${name}`;
-        else if (kind === "endpoints")                      k8sPath = `/api/v1/namespaces/${namespace}/endpoints/${name}`;
-        else if (kind === "ingressclass")                   k8sPath = `/apis/networking.k8s.io/v1/ingressclasses/${name}`;
-        else if (kind === "networkpolicy")                  k8sPath = `/apis/networking.k8s.io/v1/namespaces/${namespace}/networkpolicies/${name}`;
-        else if (kind === "runtimeclass")                   k8sPath = `/apis/node.k8s.io/v1/runtimeclasses/${name}`;
-        else if (kind === "lease")                          k8sPath = `/apis/coordination.k8s.io/v1/namespaces/${namespace}/leases/${name}`;
-        else if (kind === "mutatingwebhookconfiguration")   k8sPath = `/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations/${name}`;
-        else if (kind === "validatingwebhookconfiguration") k8sPath = `/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations/${name}`;
-        else if (kind === "replicationcontroller")          k8sPath = `/api/v1/namespaces/${namespace}/replicationcontrollers/${name}`;
+        if      (kind === "deployment")   k8sPath = `/apis/apps/v1/namespaces/${namespace}/deployments/${name}`;
+        else if (kind === "statefulset")  k8sPath = `/apis/apps/v1/namespaces/${namespace}/statefulsets/${name}`;
+        else if (kind === "daemonset")    k8sPath = `/apis/apps/v1/namespaces/${namespace}/daemonsets/${name}`;
+        else if (kind === "service")      k8sPath = `/api/v1/namespaces/${namespace}/services/${name}`;
+        else if (kind === "secret")       k8sPath = `/api/v1/namespaces/${namespace}/secrets/${name}`;
+        else if (kind === "configmap")    k8sPath = `/api/v1/namespaces/${namespace}/configmaps/${name}`;
+        else if (kind === "hpa")          k8sPath = `/apis/autoscaling/v2/namespaces/${namespace}/horizontalpodautoscalers/${name}`;
         else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
         const data = await k8sRequest(k8sPath);
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -2746,35 +2670,13 @@ const server = http.createServer(async (req, res) => {
       const ns   = url.searchParams.get("namespace") || "";
       try {
         let k8sPath;
-        // Menu Principal
-        if      (kind === "pod")           k8sPath = ns ? `/api/v1/namespaces/${ns}/pods?limit=200`                                            : `/api/v1/pods?limit=200`;
-        else if (kind === "deployment")    k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/deployments?limit=200`                              : `/apis/apps/v1/deployments?limit=200`;
-        else if (kind === "statefulset")   k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/statefulsets?limit=200`                             : `/apis/apps/v1/statefulsets?limit=200`;
-        else if (kind === "daemonset")     k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/daemonsets?limit=200`                               : `/apis/apps/v1/daemonsets?limit=200`;
-        else if (kind === "job")           k8sPath = ns ? `/apis/batch/v1/namespaces/${ns}/jobs?limit=200`                                    : `/apis/batch/v1/jobs?limit=200`;
-        else if (kind === "cronjob")       k8sPath = ns ? `/apis/batch/v1/namespaces/${ns}/cronjobs?limit=200`                                : `/apis/batch/v1/cronjobs?limit=200`;
-        else if (kind === "service")       k8sPath = ns ? `/api/v1/namespaces/${ns}/services?limit=200`                                       : `/api/v1/services?limit=200`;
-        else if (kind === "ingress")       k8sPath = ns ? `/apis/networking.k8s.io/v1/namespaces/${ns}/ingresses?limit=200`                   : `/apis/networking.k8s.io/v1/ingresses?limit=200`;
-        else if (kind === "configmap")     k8sPath = ns ? `/api/v1/namespaces/${ns}/configmaps?limit=200`                                     : `/api/v1/configmaps?limit=200`;
-        else if (kind === "secret")        k8sPath = ns ? `/api/v1/namespaces/${ns}/secrets?limit=200`                                        : `/api/v1/secrets?limit=200`;
-        else if (kind === "pvc")           k8sPath = ns ? `/api/v1/namespaces/${ns}/persistentvolumeclaims?limit=200`                         : `/api/v1/persistentvolumeclaims?limit=200`;
-        else if (kind === "pv")            k8sPath = `/api/v1/persistentvolumes?limit=200`;
-        else if (kind === "storageclass")  k8sPath = `/apis/storage.k8s.io/v1/storageclasses?limit=200`;
-        // Menu Avançado
-        else if (kind === "replicaset")                     k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/replicasets?limit=200`                                           : `/apis/apps/v1/replicasets?limit=200`;
-        else if (kind === "resourcequota")                  k8sPath = ns ? `/api/v1/namespaces/${ns}/resourcequotas?limit=200`                                              : `/api/v1/resourcequotas?limit=200`;
-        else if (kind === "limitrange")                     k8sPath = ns ? `/api/v1/namespaces/${ns}/limitranges?limit=200`                                                 : `/api/v1/limitranges?limit=200`;
-        else if (kind === "hpa")                            k8sPath = ns ? `/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=200`                       : `/apis/autoscaling/v2/horizontalpodautoscalers?limit=200`;
-        else if (kind === "pdb")                            k8sPath = ns ? `/apis/policy/v1/namespaces/${ns}/poddisruptionbudgets?limit=200`                                : `/apis/policy/v1/poddisruptionbudgets?limit=200`;
-        else if (kind === "priorityclass")                  k8sPath = `/apis/scheduling.k8s.io/v1/priorityclasses?limit=200`;
-        else if (kind === "endpoints")                      k8sPath = ns ? `/api/v1/namespaces/${ns}/endpoints?limit=200`                                                   : `/api/v1/endpoints?limit=200`;
-        else if (kind === "ingressclass")                   k8sPath = `/apis/networking.k8s.io/v1/ingressclasses?limit=200`;
-        else if (kind === "networkpolicy")                  k8sPath = ns ? `/apis/networking.k8s.io/v1/namespaces/${ns}/networkpolicies?limit=200`                          : `/apis/networking.k8s.io/v1/networkpolicies?limit=200`;
-        else if (kind === "runtimeclass")                   k8sPath = `/apis/node.k8s.io/v1/runtimeclasses?limit=200`;
-        else if (kind === "lease")                          k8sPath = ns ? `/apis/coordination.k8s.io/v1/namespaces/${ns}/leases?limit=200`                                 : `/apis/coordination.k8s.io/v1/leases?limit=200`;
-        else if (kind === "mutatingwebhookconfiguration")   k8sPath = `/apis/admissionregistration.k8s.io/v1/mutatingwebhookconfigurations?limit=200`;
-        else if (kind === "validatingwebhookconfiguration") k8sPath = `/apis/admissionregistration.k8s.io/v1/validatingwebhookconfigurations?limit=200`;
-        else if (kind === "replicationcontroller")          k8sPath = ns ? `/api/v1/namespaces/${ns}/replicationcontrollers?limit=200`                                      : `/api/v1/replicationcontrollers?limit=200`;
+        if      (kind === "deployment")   k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/deployments?limit=200`        : `/apis/apps/v1/deployments?limit=200`;
+        else if (kind === "statefulset")  k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/statefulsets?limit=200`       : `/apis/apps/v1/statefulsets?limit=200`;
+        else if (kind === "daemonset")    k8sPath = ns ? `/apis/apps/v1/namespaces/${ns}/daemonsets?limit=200`         : `/apis/apps/v1/daemonsets?limit=200`;
+        else if (kind === "configmap")    k8sPath = ns ? `/api/v1/namespaces/${ns}/configmaps?limit=200`               : `/api/v1/configmaps?limit=200`;
+        else if (kind === "secret")       k8sPath = ns ? `/api/v1/namespaces/${ns}/secrets?limit=200`                  : `/api/v1/secrets?limit=200`;
+        else if (kind === "service")      k8sPath = ns ? `/api/v1/namespaces/${ns}/services?limit=200`                 : `/api/v1/services?limit=200`;
+        else if (kind === "hpa")          k8sPath = ns ? `/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=200` : `/apis/autoscaling/v2/horizontalpodautoscalers?limit=200`;
         else { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: `Tipo não suportado: ${kind}` })); }
         const data = await k8sRequest(k8sPath);
         const items = (data.body?.items || []).map(i => ({
@@ -2784,152 +2686,6 @@ const server = http.createServer(async (req, res) => {
         }));
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(items));
-      } catch (err) {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
-      }
-    });
-    return;
-  }
-  // ── /api/resources/app-overview — Visão operacional completa de uma aplicação ──
-  if (url.pathname === "/api/resources/app-overview" && req.method === "GET") {
-    requireAuth(req, res, async () => {
-      try {
-        const ns = url.searchParams.get("namespace") || "";
-        const appLabel = url.searchParams.get("appLabel") || "";
-        if (!ns) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "namespace obrigatório" })); }
-
-        const labelSel = appLabel ? `?labelSelector=app%3D${encodeURIComponent(appLabel)}&limit=100` : "?limit=100";
-
-        const [pods, deployments, statefulsets, daemonsets, services, ingresses, endpoints, pvcs, configmaps, secrets, hpas, pdbs] = await Promise.allSettled([
-          k8sRequest(`/api/v1/namespaces/${ns}/pods${labelSel}`),
-          k8sRequest(`/apis/apps/v1/namespaces/${ns}/deployments?limit=100`),
-          k8sRequest(`/apis/apps/v1/namespaces/${ns}/statefulsets?limit=100`),
-          k8sRequest(`/apis/apps/v1/namespaces/${ns}/daemonsets?limit=100`),
-          k8sRequest(`/api/v1/namespaces/${ns}/services?limit=100`),
-          k8sRequest(`/apis/networking.k8s.io/v1/namespaces/${ns}/ingresses?limit=100`),
-          k8sRequest(`/api/v1/namespaces/${ns}/endpoints?limit=100`),
-          k8sRequest(`/api/v1/namespaces/${ns}/persistentvolumeclaims?limit=100`),
-          k8sRequest(`/api/v1/namespaces/${ns}/configmaps?limit=100`),
-          k8sRequest(`/api/v1/namespaces/${ns}/secrets?limit=100`),
-          k8sRequest(`/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=100`),
-          k8sRequest(`/apis/policy/v1/namespaces/${ns}/poddisruptionbudgets?limit=100`),
-        ]);
-
-        const extract = (result) => {
-          if (result.status !== "fulfilled") return [];
-          return result.value?.body?.items || [];
-        };
-
-        const matchesApp = (item) => {
-          if (!appLabel) return true;
-          const labels = item.metadata?.labels || {};
-          return labels.app === appLabel || labels["app.kubernetes.io/name"] === appLabel || labels["app.kubernetes.io/instance"] === appLabel;
-        };
-
-        const mapBase = (item) => ({
-          name: item.metadata?.name,
-          namespace: item.metadata?.namespace,
-          labels: item.metadata?.labels || {},
-          creationTimestamp: item.metadata?.creationTimestamp,
-          uid: item.metadata?.uid,
-        });
-
-        const result = {
-          namespace: ns,
-          appLabel,
-          pods: extract(pods).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            status: item.status?.phase,
-            ready: (item.status?.containerStatuses || []).filter(c => c.ready).length,
-            total: (item.spec?.containers || []).length,
-            restarts: (item.status?.containerStatuses || []).reduce((s, c) => s + (c.restartCount || 0), 0),
-            node: item.spec?.nodeName,
-            podIP: item.status?.podIP,
-            images: (item.spec?.containers || []).map(c => c.image),
-          })),
-          deployments: extract(deployments).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            replicas: item.spec?.replicas,
-            readyReplicas: item.status?.readyReplicas || 0,
-            availableReplicas: item.status?.availableReplicas || 0,
-            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
-            selector: item.spec?.selector?.matchLabels || {},
-          })),
-          statefulsets: extract(statefulsets).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            replicas: item.spec?.replicas,
-            readyReplicas: item.status?.readyReplicas || 0,
-            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
-          })),
-          daemonsets: extract(daemonsets).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            desiredNumberScheduled: item.status?.desiredNumberScheduled || 0,
-            numberReady: item.status?.numberReady || 0,
-            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
-          })),
-          services: extract(services).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            type: item.spec?.type,
-            clusterIP: item.spec?.clusterIP,
-            ports: (item.spec?.ports || []).map(p => ({ name: p.name, port: p.port, targetPort: p.targetPort, protocol: p.protocol })),
-            selector: item.spec?.selector || {},
-          })),
-          ingresses: extract(ingresses).map(item => ({
-            ...mapBase(item),
-            rules: (item.spec?.rules || []).map(r => ({
-              host: r.host,
-              paths: (r.http?.paths || []).map(p => ({
-                path: p.path,
-                service: p.backend?.service?.name || p.backend?.serviceName,
-                port: p.backend?.service?.port?.number || p.backend?.servicePort,
-              })),
-            })),
-            tls: (item.spec?.tls || []).map(t => ({ hosts: t.hosts, secretName: t.secretName })),
-          })),
-          endpoints: extract(endpoints).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            ready: (item.subsets || []).flatMap(s => s.addresses || []).map(a => a.ip),
-            notReady: (item.subsets || []).flatMap(s => s.notReadyAddresses || []).map(a => a.ip),
-            ports: (item.subsets || []).flatMap(s => s.ports || []),
-          })),
-          pvcs: extract(pvcs).map(item => ({
-            ...mapBase(item),
-            status: item.status?.phase,
-            capacity: item.status?.capacity?.storage,
-            storageClass: item.spec?.storageClassName,
-            accessModes: item.spec?.accessModes,
-            volumeName: item.spec?.volumeName,
-          })),
-          configmaps: extract(configmaps).filter(cm => !cm.metadata?.name?.startsWith("kube-")).map(item => ({
-            ...mapBase(item),
-            keys: Object.keys(item.data || {}),
-            dataCount: Object.keys(item.data || {}).length,
-          })),
-          secrets: extract(secrets).filter(s => !["default-token", "kube-"].some(p => s.metadata?.name?.startsWith(p))).map(item => ({
-            ...mapBase(item),
-            type: item.type,
-            keys: Object.keys(item.data || {}),
-            dataCount: Object.keys(item.data || {}).length,
-          })),
-          hpas: extract(hpas).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            minReplicas: item.spec?.minReplicas,
-            maxReplicas: item.spec?.maxReplicas,
-            currentReplicas: item.status?.currentReplicas,
-            targetRef: item.spec?.scaleTargetRef,
-          })),
-          pdbs: extract(pdbs).filter(matchesApp).map(item => ({
-            ...mapBase(item),
-            minAvailable: item.spec?.minAvailable,
-            maxUnavailable: item.spec?.maxUnavailable,
-            currentHealthy: item.status?.currentHealthy,
-            desiredHealthy: item.status?.desiredHealthy,
-          })),
-        };
-
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(result));
       } catch (err) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
@@ -3390,6 +3146,636 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+
+
+  // ── /api/jvm/:namespace/:pod — Métricas JVM via jstat/jcmd (v5.17.0) ─────────────────────────
+  // Coleta: jps → PID → jstat -gc → jstat -gcutil → jcmd GC.heap_info → jcmd Thread.print → jcmd VM.version
+  if (url.pathname.startsWith("/api/jvm/") && req.method === "GET") {
+    const _jvmParts = url.pathname.replace("/api/jvm/", "").split("/");
+    const _jvmNs  = decodeURIComponent(_jvmParts[0] || "");
+    const _jvmPod = decodeURIComponent(_jvmParts[1] || "");
+    if (!_jvmNs || !_jvmPod) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "namespace e pod são obrigatórios" }));
+      return;
+    }
+    return requireAuth(req, res, async () => {
+      try {
+        // Helper: executa comando no pod via K8s Exec API (WebSocket one-shot, sem TTY)
+        const _runJvmCmd = (cmd, container) => new Promise((resolve) => {
+          const _token   = getToken();
+          const _ca      = getCA();
+          const _apiHost = K8S_API.replace(/^https?:\/\//, "");
+          const _isHttps = K8S_API.startsWith("https");
+          const _wsProto = _isHttps ? "wss" : "ws";
+          const _cmdParts = ["/bin/sh", "-c", cmd];
+          const _cmdQuery = _cmdParts.map(c => `command=${encodeURIComponent(c)}`).join("&");
+          const _cQuery   = container ? `&container=${encodeURIComponent(container)}` : "";
+          const _execUrl  = `${_wsProto}://${_apiHost}/api/v1/namespaces/${encodeURIComponent(_jvmNs)}/pods/${encodeURIComponent(_jvmPod)}/exec?stdin=false&stdout=true&stderr=true&tty=false&${_cmdQuery}${_cQuery}`;
+          const _ws = new _WSExec(_execUrl, ["v4.channel.k8s.io"], {
+            headers: { ...(_token ? { Authorization: `Bearer ${_token}` } : {}) },
+            ...(_ca ? { ca: _ca } : { rejectUnauthorized: false }),
+          });
+          _ws.binaryType = "nodebuffer";
+          let _stdout = "", _stderr = "";
+          const _timeout = setTimeout(() => { _ws.terminate(); resolve({ stdout: _stdout, stderr: _stderr, timedOut: true }); }, 15000);
+          _ws.on("message", (data) => {
+            if (!Buffer.isBuffer(data) || data.length < 1) return;
+            const ch = data[0]; const payload = data.slice(1).toString("utf8");
+            if (ch === 1) _stdout += payload;
+            else if (ch === 2 || ch === 3) _stderr += payload;
+          });
+          _ws.on("close", () => { clearTimeout(_timeout); resolve({ stdout: _stdout, stderr: _stderr, timedOut: false }); });
+          _ws.on("error", (e) => { clearTimeout(_timeout); resolve({ stdout: _stdout, stderr: _stderr, error: e.message }); });
+        });
+
+        // ── Detecta container Java (preferência: wildfly, jboss, aghu, java, spring, quarkus) ──
+        let _jvmContainer = null;
+        try {
+          const _podInfo = await k8sRequest(`/api/v1/namespaces/${encodeURIComponent(_jvmNs)}/pods/${encodeURIComponent(_jvmPod)}`);
+          if (_podInfo.status === 200 && _podInfo.body?.spec?.containers) {
+            const _containers = _podInfo.body.spec.containers.map(c => c.name);
+            const _javaNames = ["wildfly", "jboss", "aghu", "java", "spring", "quarkus", "tomcat", "payara", "glassfish"];
+            _jvmContainer = _containers.find(n => _javaNames.some(j => n.toLowerCase().includes(j))) || _containers[0] || null;
+          }
+        } catch {}
+
+        // ── 1. Encontra o binário jps/jstat/jcmd ──────────────────────────
+        const _javaBinPaths = [
+          "/opt/aghu/java/bin",
+          "/usr/lib/jvm/java-8-oracle/bin",
+          "/usr/lib/jvm/java-11-openjdk-amd64/bin",
+          "/usr/lib/jvm/java-17-openjdk-amd64/bin",
+          "/usr/bin",
+          "/usr/local/bin",
+        ];
+        const _findBin = await _runJvmCmd(
+          `for p in ${_javaBinPaths.join(" ")}; do [ -f "$p/jps" ] && echo "$p" && break; done`,
+          _jvmContainer
+        );
+        const _javaBin = _findBin.stdout.trim();
+        if (!_javaBin) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ notJava: true, error: "jps não encontrado nos caminhos padrão" }));
+          return;
+        }
+
+        // ── 2. Obtém PID via jps ──────────────────────────────────────────
+        const _jpsResult = await _runJvmCmd(`${_javaBin}/jps -l 2>/dev/null | grep -v Jps | head -1`, _jvmContainer);
+        const _pidMatch = _jpsResult.stdout.trim().match(/^(\d+)/);
+        if (!_pidMatch) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ notJava: true, error: "Nenhum processo Java encontrado via jps" }));
+          return;
+        }
+        const _pid = parseInt(_pidMatch[1], 10);
+
+        // ── 3. jstat -gc (bytes) ──────────────────────────────────────────
+        const _gcResult = await _runJvmCmd(`${_javaBin}/jstat -gc ${_pid} 1 1 2>/dev/null`, _jvmContainer);
+        const _gcLines = _gcResult.stdout.trim().split("\n").filter(l => l.trim() && !l.trim().startsWith("S0C"));
+        const _gcVals = _gcLines[0] ? _gcLines[0].trim().split(/\s+/).map(Number) : [];
+        // S0C S1C S0U S1U EC EU OC OU MC MU CCSC CCSU YGC YGCT FGC FGCT GCT
+        const [_S0C=0,_S1C=0,_S0U=0,_S1U=0,_EC=0,_EU=0,_OC=0,_OU=0,_MC=0,_MU=0,_CCSC=0,_CCSU=0,_YGC=0,_YGCT=0,_FGC=0,_FGCT=0,_GCT=0] = _gcVals;
+
+        // ── 4. jstat -gcutil (percentuais) ───────────────────────────────
+        const _utilResult = await _runJvmCmd(`${_javaBin}/jstat -gcutil ${_pid} 1 1 2>/dev/null`, _jvmContainer);
+        const _utilLines = _utilResult.stdout.trim().split("\n").filter(l => l.trim() && !l.trim().startsWith("S0"));
+        const _utilVals = _utilLines[0] ? _utilLines[0].trim().split(/\s+/).map(Number) : [];
+        // S0 S1 E O M CCS YGC YGCT FGC FGCT GCT
+        const [_S0pct=0,_S1pct=0,_Epct=0,_Opct=0,_Mpct=0,_CCSpct=0] = _utilVals;
+
+        // ── 5. jcmd GC.heap_info ─────────────────────────────────────────
+        const _heapResult = await _runJvmCmd(`${_javaBin}/jcmd ${_pid} GC.heap_info 2>/dev/null`, _jvmContainer);
+        const _heapText = _heapResult.stdout;
+        const _heapTotalMatch = _heapText.match(/total\s+(\d+)K/);
+        const _heapUsedMatch  = _heapText.match(/used\s+(\d+)K/);
+        const _metaUsedMatch  = _heapText.match(/Metaspace\s+used\s+(\d+)K/);
+        const _metaCapMatch   = _heapText.match(/Metaspace\s+used\s+\d+K,\s+capacity\s+(\d+)K/);
+        const _metaCommMatch  = _heapText.match(/committed\s+(\d+)K/);
+        const _gcTypeMatch    = _heapText.match(/garbage-first|G1GC|parallel|cms|shenandoah|zgc/i);
+
+        // ── 6. jcmd Thread.print (contagem) ─────────────────────────────
+        const _threadResult = await _runJvmCmd(`${_javaBin}/jcmd ${_pid} Thread.print 2>/dev/null | grep -c "java.lang.Thread"`, _jvmContainer);
+        const _threadCount = parseInt(_threadResult.stdout.trim(), 10) || null;
+
+        // ── 7. jcmd VM.version ───────────────────────────────────────────
+        const _vmResult = await _runJvmCmd(`${_javaBin}/jcmd ${_pid} VM.version 2>/dev/null`, _jvmContainer);
+        const _vmVersion = _vmResult.stdout.trim().split("\n").find(l => l.includes("JDK") || l.includes("version")) || null;
+
+        // ── Calcula métricas ─────────────────────────────────────────────
+        const _heapTotalKb = _heapTotalMatch ? parseInt(_heapTotalMatch[1]) : ((_EC + _OC + _S0C + _S1C) || 0);
+        const _heapUsedKb  = _heapUsedMatch  ? parseInt(_heapUsedMatch[1])  : ((_EU + _OU + _S0U + _S1U) || 0);
+        const _heapTotalMib = Math.round(_heapTotalKb / 1024);
+        const _heapUsedMib  = Math.round(_heapUsedKb  / 1024);
+        const _heapPct = _heapTotalMib > 0 ? parseFloat(((_heapUsedMib / _heapTotalMib) * 100).toFixed(1)) : null;
+
+        const _metaUsedKb  = _metaUsedMatch ? parseInt(_metaUsedMatch[1]) : Math.round(_MU);
+        const _metaCommKb  = _metaCommMatch ? parseInt(_metaCommMatch[1]) : Math.round(_MC);
+        const _metaCapKb   = _metaCapMatch  ? parseInt(_metaCapMatch[1])  : Math.round(_MC);
+        const _metaUsedMib = Math.round(_metaUsedKb / 1024);
+        const _metaCommMib = Math.round(_metaCommKb / 1024);
+        const _metaPct = _metaCapKb > 0 ? parseFloat(((_metaUsedKb / _metaCapKb) * 100).toFixed(1)) : (_Mpct || null);
+
+        const _gcType = _gcTypeMatch ? _gcTypeMatch[0].toUpperCase().replace("GARBAGE-FIRST", "G1GC") : null;
+
+        const _metrics = {
+          pid:                  _pid,
+          heapUsedMib:          _heapUsedMib,
+          heapTotalMib:         _heapTotalMib,
+          heapPct:              _heapPct,
+          oldGenPct:            _Opct || null,
+          edenPct:              _Epct || null,
+          survivorPct:          Math.max(_S0pct, _S1pct) || null,
+          metaspaceMib:         _metaUsedMib,
+          metaspaceCommittedMib: _metaCommMib,
+          metaspacePct:         _metaPct,
+          youngGcCount:         _YGC || null,
+          youngGcTimeSec:       _YGCT || null,
+          fullGcCount:          _FGC || null,
+          fullGcTimeSec:        _FGCT || null,
+          gcOverheadPct:        _GCT || null,
+          threadCount:          _threadCount,
+          jvmVersion:           _vmVersion,
+          gcType:               _gcType,
+          timestamp:            new Date().toISOString(),
+          notJava:              false,
+        };
+
+        // ── Persiste no histórico circular ───────────────────────────────
+        const _hKey = `${_jvmNs}/${_jvmPod}`;
+        if (!_jvmHistoryMap.has(_hKey)) _jvmHistoryMap.set(_hKey, []);
+        const _hist = _jvmHistoryMap.get(_hKey);
+        _hist.push({
+          timestamp:     _metrics.timestamp,
+          heapPct:       _metrics.heapPct,
+          oldGenPct:     _metrics.oldGenPct,
+          youngGcTimeSec: _metrics.youngGcTimeSec,
+          metaspaceMib:  _metrics.metaspaceMib,
+        });
+        if (_hist.length > 120) _hist.splice(0, _hist.length - 120);
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(_metrics));
+      } catch (err) {
+        console.error("[error] /api/jvm:", err.message);
+        if (!res.headersSent) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: err.message, notJava: false }));
+        }
+      }
+    });
+    return;
+  }
+
+  // ── /api/jvm-history/:namespace/:pod — Histórico circular + análise de Metaspace ──────────────
+  if (url.pathname.startsWith("/api/jvm-history/") && req.method === "GET") {
+    const _hParts = url.pathname.replace("/api/jvm-history/", "").split("/");
+    const _hNs  = decodeURIComponent(_hParts[0] || "");
+    const _hPod = decodeURIComponent(_hParts[1] || "");
+    return requireAuth(req, res, async () => {
+      const _hKey = `${_hNs}/${_hPod}`;
+      const _hist = _jvmHistoryMap.get(_hKey) || [];
+      let _analysis = null;
+      if (_hist.length >= 3) {
+        const _metaVals = _hist.map(h => h.metaspaceMib).filter(v => v !== null && v > 0);
+        if (_metaVals.length >= 3) {
+          const _minMib  = Math.min(..._metaVals);
+          const _maxMib  = Math.max(..._metaVals);
+          const _curMib  = _metaVals[_metaVals.length - 1];
+          const _commMib = _hist[_hist.length - 1]?.metaspaceCommittedMib || _maxMib;
+          // Regressão linear simples para tendência
+          const n = _metaVals.length;
+          const xMean = (n - 1) / 2;
+          const yMean = _metaVals.reduce((a, b) => a + b, 0) / n;
+          let num = 0, den = 0;
+          _metaVals.forEach((y, i) => { num += (i - xMean) * (y - yMean); den += (i - xMean) ** 2; });
+          const _slopePerSample = den > 0 ? num / den : 0;
+          // 1 amostra a cada 30s → 120 amostras/hora
+          const _trendMibPerHour = parseFloat((_slopePerSample * 120).toFixed(2));
+          const _proj24h = Math.round(_curMib + _trendMibPerHour * 24);
+          // Sugestão: max * 1.4, arredondado para múltiplo de 64
+          const _raw = Math.ceil(_maxMib * 1.4);
+          const _suggestedMib = Math.ceil(_raw / 64) * 64;
+          _analysis = {
+            samples:          _hist.length,
+            minMib:           _minMib,
+            maxMib:           _maxMib,
+            currentMib:       _curMib,
+            committedMib:     _commMib,
+            trendMibPerHour:  _trendMibPerHour,
+            projection24hMib: _proj24h,
+            suggestedMaxMib:  _suggestedMib,
+            suggestedFlag:    `-XX:MaxMetaspaceSize=${_suggestedMib}m`,
+          };
+        }
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ history: _hist, analysis: _analysis }));
+    });
+    return;
+  }
+
+  // ── /api/db-metrics/:namespace/:pod — Pool JDBC + conexões TCP ativas (v5.18.0) ──────────────
+  // Estratégia multicamada:
+  //   1. WildFly CLI (jboss-cli.sh) → pool stats, JDBC stats por datasource
+  //   2. Variáveis de ambiente → JDBC URL, DB_HOST, DB_PORT
+  //   3. ss/netstat → conexões TCP ativas para portas de banco (1521, 5432, 3306…)
+  const _dbMetricsMatch = url.pathname.match(/^\/api\/db-metrics\/([^/]+)\/([^/]+)$/);
+  if (_dbMetricsMatch && req.method === "GET") {
+    const [, _dbNs, _dbPod] = _dbMetricsMatch;
+    const _dbContainer = url.searchParams.get("container") || "wildfly";
+    return requireAuth(req, res, async () => {
+      try {
+        // Helper: executa comando no pod via K8s Exec API (WebSocket one-shot, sem TTY)
+        const _runCmd = (cmd) => new Promise((resolve) => {
+          const _token   = getToken();
+          const _ca      = getCA();
+          const _apiHost = K8S_API.replace(/^https?:\/\//, "");
+          const _isHttps = K8S_API.startsWith("https");
+          const _wsProto = _isHttps ? "wss" : "ws";
+          const _cmdParts = ["/bin/sh", "-c", cmd];
+          const _cmdQuery = _cmdParts.map(c => `command=${encodeURIComponent(c)}`).join("&");
+          const _cQuery   = _dbContainer ? `&container=${encodeURIComponent(_dbContainer)}` : "";
+          const _execUrl  = `${_wsProto}://${_apiHost}/api/v1/namespaces/${encodeURIComponent(_dbNs)}/pods/${encodeURIComponent(_dbPod)}/exec?stdin=false&stdout=true&stderr=true&tty=false&${_cmdQuery}${_cQuery}`;
+          const _ws = new _WSExec(_execUrl, ["v4.channel.k8s.io"], {
+            headers: { ...(_token ? { Authorization: `Bearer ${_token}` } : {}) },
+            ...(_ca ? { ca: _ca } : { rejectUnauthorized: false }),
+          });
+          _ws.binaryType = "nodebuffer";
+          let _stdout = "", _stderr = "";
+          const _timeout = setTimeout(() => { _ws.terminate(); resolve({ stdout: _stdout, stderr: _stderr, timedOut: true }); }, 12000);
+          _ws.on("message", (data) => {
+            if (!Buffer.isBuffer(data) || data.length < 1) return;
+            const ch = data[0]; const payload = data.slice(1).toString("utf8");
+            if (ch === 1) _stdout += payload;
+            else if (ch === 2 || ch === 3) _stderr += payload;
+          });
+          _ws.on("close", () => { clearTimeout(_timeout); resolve({ stdout: _stdout, stderr: _stderr, timedOut: false }); });
+          _ws.on("error", (e) => { clearTimeout(_timeout); resolve({ stdout: _stdout, stderr: _stderr, error: e.message }); });
+        });
+
+        // ── 1. Detecta path do WildFly CLI ──────────────────────────────────
+        const _cliPaths = [
+          "/opt/aghu/wildfly/bin/jboss-cli.sh",
+          "/opt/wildfly/bin/jboss-cli.sh",
+          "/opt/jboss/wildfly/bin/jboss-cli.sh",
+          "/wildfly/bin/jboss-cli.sh",
+        ];
+        const _findCliResult = await _runCmd(
+          `for p in ${_cliPaths.join(" ")}; do [ -f "$p" ] && echo "$p" && break; done`
+        );
+        const _cliPath = _findCliResult.stdout.trim();
+
+        let _datasources = [];
+        let _jdbcUrl = null;
+        let _dbHost = null;
+        let _dbPort = null;
+        let _dbName = null;
+        let _collectionMethod = "none";
+
+        if (_cliPath) {
+          _collectionMethod = "wildfly-cli";
+          const _listDs = await _runCmd(
+            `${_cliPath} --connect --command="ls /subsystem=datasources/data-source" 2>/dev/null`
+          );
+          const _dsNames = _listDs.stdout.split("\n").map(s => s.trim()).filter(Boolean);
+
+          for (const _dsName of _dsNames.slice(0, 5)) {
+            const _dsUrl = await _runCmd(
+              `${_cliPath} --connect --command="/subsystem=datasources/data-source=${_dsName}:read-attribute(name=connection-url)" 2>/dev/null`
+            );
+            const _urlMatch = _dsUrl.stdout.match(/"result"\s*=>\s*"([^"]+)"/);
+            // Ignorar ExampleDS e datasources H2 (padrao WildFly) para o banco principal
+            const _isH2 = _urlMatch && _urlMatch[1].toLowerCase().includes("jdbc:h2");
+            const _isExample = _dsName === "ExampleDS";
+            if (_urlMatch && !_isH2 && !_isExample && !_jdbcUrl) _jdbcUrl = _urlMatch[1];
+
+            const _poolStats = await _runCmd(
+              `${_cliPath} --connect --command="/subsystem=datasources/data-source=${_dsName}/statistics=pool:read-resource(include-runtime=true)" 2>/dev/null`
+            );
+            const _reqStats = await _runCmd(
+              `${_cliPath} --connect --command="/subsystem=datasources/data-source=${_dsName}/statistics=jdbc:read-resource(include-runtime=true)" 2>/dev/null`
+            );
+            const _pa = (text, attr) => {
+              const m = text.match(new RegExp(`"${attr}"\\s*=>\\s*([\\d]+)`));
+              return m ? parseInt(m[1]) : null;
+            };
+            _datasources.push({
+              name: _dsName,
+              jdbcUrl: _urlMatch ? _urlMatch[1] : null,
+              pool: {
+                activeCount:    _pa(_poolStats.stdout, "ActiveCount"),
+                availableCount: _pa(_poolStats.stdout, "AvailableCount"),
+                maxUsedCount:   _pa(_poolStats.stdout, "MaxUsedCount"),
+                timedOut:       _pa(_poolStats.stdout, "TimedOut"),
+                totalGetTime:   _pa(_poolStats.stdout, "TotalGetTime"),
+                waitCount:      _pa(_poolStats.stdout, "WaitCount"),
+                createdCount:   _pa(_poolStats.stdout, "CreatedCount"),
+                destroyedCount: _pa(_poolStats.stdout, "DestroyedCount"),
+              },
+              jdbc: {
+                cacheAccess: _pa(_reqStats.stdout, "PreparedStatementCacheAccessCount"),
+                cacheMiss:   _pa(_reqStats.stdout, "PreparedStatementCacheMissCount"),
+                cacheHit:    _pa(_reqStats.stdout, "PreparedStatementCacheHitCount"),
+              },
+            });
+          }
+        }
+
+        // ── 2. Fallback: variáveis de ambiente ───────────────────────────────
+        if (_datasources.length === 0) {
+          _collectionMethod = "env-vars";
+          const _envResult = await _runCmd(
+            "env 2>/dev/null | grep -iE 'jdbc|db_url|database_url|db_host|db_port|db_name|datasource' | head -30"
+          );
+          const _envMap = {};
+          for (const line of _envResult.stdout.split("\n").filter(Boolean)) {
+            const [k, ...vParts] = line.split("=");
+            if (k) _envMap[k.trim()] = vParts.join("=").trim();
+          }
+          // Prioridade: postgresql > oracle > mysql > sqlserver > h2/outros
+          const _jdbcPriority = ["postgresql", "oracle", "mysql", "sqlserver"];
+          let _bestJdbc = null;
+          let _bestPriority = 99;
+          for (const [, v] of Object.entries(_envMap)) {
+            if (v && v.startsWith("jdbc:")) {
+              const _p = _jdbcPriority.findIndex(db => v.includes(db));
+              const _score = _p === -1 ? 50 : _p; // H2/outros ficam com score 50
+              if (_score < _bestPriority) { _bestPriority = _score; _bestJdbc = v; }
+            }
+          }
+          if (_bestJdbc) _jdbcUrl = _bestJdbc;
+          if (_envMap["DB_HOST"] || _envMap["POSTGRES_HOST"] || _envMap["ORACLE_HOST"])
+            _dbHost = _envMap["DB_HOST"] || _envMap["POSTGRES_HOST"] || _envMap["ORACLE_HOST"];
+          if (_envMap["DB_PORT"] || _envMap["POSTGRES_PORT"])
+            _dbPort = parseInt(_envMap["DB_PORT"] || _envMap["POSTGRES_PORT"]);
+          if (_envMap["DB_NAME"] || _envMap["POSTGRES_DB"] || _envMap["ORACLE_SID"])
+            _dbName = _envMap["DB_NAME"] || _envMap["POSTGRES_DB"] || _envMap["ORACLE_SID"];
+          if (_jdbcUrl || _dbHost) {
+            _datasources.push({
+              name: "datasource-env", jdbcUrl: _jdbcUrl,
+              pool: { activeCount: null, availableCount: null, maxUsedCount: null, timedOut: null, totalGetTime: null, waitCount: null, createdCount: null, destroyedCount: null },
+              jdbc: { cacheAccess: null, cacheMiss: null, cacheHit: null },
+            });
+          }
+        }
+
+        // ── 3. Conexões TCP ativas para portas de banco ──────────────────────
+        const _netstatResult = await _runCmd(
+          "ss -tn state established 2>/dev/null || netstat -tn 2>/dev/null | grep ESTABLISHED"
+        );
+        const _dbPorts = new Set([1521, 5432, 3306, 1433, 5433, 1522]);
+        const _activeConns = [];
+        for (const line of _netstatResult.stdout.split("\n").filter(l => l.includes("ESTAB") || l.includes("ESTABLISHED"))) {
+          const parts = line.trim().split(/\s+/);
+          const peerAddr = parts[parts.length - 1] || parts[4] || "";
+          const lastColon = peerAddr.lastIndexOf(":");
+          if (lastColon < 0) continue;
+          const peerPort = parseInt(peerAddr.slice(lastColon + 1));
+          const peerHost = peerAddr.slice(0, lastColon);
+          if (_dbPorts.has(peerPort)) {
+            _activeConns.push({ host: peerHost, port: peerPort });
+            if (!_dbHost) { _dbHost = peerHost; _dbPort = peerPort; }
+          }
+        }
+
+        // ── 4. Detecta tipo de banco ─────────────────────────────────────────
+        let _dbType = "unknown";
+        if (_jdbcUrl) {
+          if (_jdbcUrl.includes("oracle")) _dbType = "oracle";
+          else if (_jdbcUrl.includes("postgresql")) _dbType = "postgresql";
+          else if (_jdbcUrl.includes("mysql")) _dbType = "mysql";
+          else if (_jdbcUrl.includes("sqlserver")) _dbType = "sqlserver";
+        } else if (_dbPort === 1521 || _dbPort === 1522) _dbType = "oracle";
+        else if (_dbPort === 5432 || _dbPort === 5433) _dbType = "postgresql";
+        else if (_dbPort === 3306) _dbType = "mysql";
+        else if (_dbPort === 1433) _dbType = "sqlserver";
+
+        // ── Parsing completo da JDBC URL ─────────────────────────────────
+        if (_jdbcUrl) {
+          // Oracle thin:@//host:port/service  (formato moderno)
+          const _oraNew = _jdbcUrl.match(/jdbc:oracle:thin:@\/\/([^:/]+):(\d+)\/([^?]+)/);
+          // Oracle thin:@host:port:sid        (formato legado)
+          const _oraOld = _jdbcUrl.match(/jdbc:oracle:thin:@([^:/]+):(\d+):([^?/]+)/);
+          // Oracle TNS string HOST=...PORT=...SERVICE_NAME/SID=...
+          const _oraTns = _jdbcUrl.match(/HOST=([^)]+)\).*?PORT=(\d+).*?(?:SERVICE_NAME|SID)=([^)]+)/i);
+          // PostgreSQL
+          const _pgM = _jdbcUrl.match(/jdbc:postgresql:\/\/([^:/]+):?(\d*)\/([^?]*)/);
+          // MySQL
+          const _myM = _jdbcUrl.match(/jdbc:mysql:\/\/([^:/]+):?(\d*)\/([^?]*)/);
+          // SQL Server
+          const _ssM = _jdbcUrl.match(/jdbc:sqlserver:\/\/([^:/;]+):?(\d*);.*?databaseName=([^;]+)/i);
+
+          if (!_dbHost) {
+            if (_oraNew)      { _dbHost = _oraNew[1];  _dbPort = parseInt(_oraNew[2]);  _dbName = _dbName || _oraNew[3]; }
+            else if (_oraOld) { _dbHost = _oraOld[1];  _dbPort = parseInt(_oraOld[2]);  _dbName = _dbName || _oraOld[3]; }
+            else if (_oraTns) { _dbHost = _oraTns[1];  _dbPort = parseInt(_oraTns[2]);  _dbName = _dbName || _oraTns[3]; }
+            else if (_pgM)    { _dbHost = _pgM[1];     _dbPort = parseInt(_pgM[2]) || 5432; _dbName = _dbName || _pgM[3]; }
+            else if (_myM)    { _dbHost = _myM[1];     _dbPort = parseInt(_myM[2]) || 3306; _dbName = _dbName || _myM[3]; }
+            else if (_ssM)    { _dbHost = _ssM[1];     _dbPort = parseInt(_ssM[2]) || 1433; _dbName = _dbName || _ssM[3]; }
+          } else if (!_dbName) {
+            if (_oraNew) _dbName = _oraNew[3];
+            else if (_oraOld) _dbName = _oraOld[3];
+            else if (_oraTns) _dbName = _oraTns[3];
+            else if (_pgM) _dbName = _pgM[3];
+            else if (_myM) _dbName = _myM[3];
+            else if (_ssM) _dbName = _ssM[3];
+          }
+        }
+        // Fallback: extrai dbName do último segmento da JDBC URL
+        if (!_dbName && _jdbcUrl) {
+          const _lastSeg = _jdbcUrl.split(/[/:@]/).filter(Boolean).pop();
+          if (_lastSeg && !/^\d+$/.test(_lastSeg) && _lastSeg.length > 1) _dbName = _lastSeg;
+        }
+
+        // ── Resolve hostname → IP via getent/nslookup ────────────────────
+        let _dbIp = null;
+        if (_dbHost && /^\d+\.\d+\.\d+\.\d+$/.test(_dbHost)) {
+          _dbIp = _dbHost; // já é IP
+        } else if (_dbHost) {
+          const _resolveResult = await _runCmd(
+            `getent hosts ${_dbHost} 2>/dev/null | awk '{print $1}' | head -1`
+          );
+          _dbIp = _resolveResult.stdout.trim() || null;
+        }
+        // Para conexões TCP, o host já é IP (ss -tn retorna IPs)
+        if (!_dbIp && _activeConns.length > 0) {
+          _dbIp = _activeConns[0].host;
+        }
+
+        // ── Monta string de conexão legível: IP:porta/banco ───────────────
+        const _connHost = _dbIp || _dbHost || (_activeConns[0]?.host) || null;
+        const _connPort = _dbPort || (_activeConns[0]?.port) || null;
+        const _dbConnStr = _connHost
+          ? `${_connHost}:${_connPort || "?"}${_dbName ? "/" + _dbName : ""}`
+          : null;
+
+        res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+        res.end(JSON.stringify({
+          pod: _dbPod, namespace: _dbNs, container: _dbContainer,
+          collectionMethod: _collectionMethod, dbType: _dbType,
+          dbHost: _dbHost, dbIp: _dbIp, dbPort: _dbPort, dbName: _dbName,
+          dbConnStr: _dbConnStr, jdbcUrl: _jdbcUrl,
+          datasources: _datasources, activeConnections: _activeConns,
+          tcpConnectionCount: _activeConns.length,
+          timestamp: new Date().toISOString(),
+          notDb: _datasources.length === 0 && _activeConns.length === 0 && !_jdbcUrl,
+        }));
+      } catch (err) {
+        console.error("[error] /api/db-metrics:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+  }
+
+  // ── /api/resources/app-overview — Visão operacional completa de uma aplicação ──
+  if (url.pathname === "/api/resources/app-overview" && req.method === "GET") {
+    requireAuth(req, res, async () => {
+      try {
+        const ns = url.searchParams.get("namespace") || "";
+        const appLabel = url.searchParams.get("appLabel") || "";
+        if (!ns) { res.writeHead(400, { "Content-Type": "application/json" }); return res.end(JSON.stringify({ error: "namespace obrigatório" })); }
+
+        const labelSel = appLabel ? `?labelSelector=app%3D${encodeURIComponent(appLabel)}&limit=100` : "?limit=100";
+
+        const [pods, deployments, statefulsets, daemonsets, services, ingresses, endpoints, pvcs, configmaps, secrets, hpas, pdbs] = await Promise.allSettled([
+          k8sRequest(`/api/v1/namespaces/${ns}/pods${labelSel}`),
+          k8sRequest(`/apis/apps/v1/namespaces/${ns}/deployments?limit=100`),
+          k8sRequest(`/apis/apps/v1/namespaces/${ns}/statefulsets?limit=100`),
+          k8sRequest(`/apis/apps/v1/namespaces/${ns}/daemonsets?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/services?limit=100`),
+          k8sRequest(`/apis/networking.k8s.io/v1/namespaces/${ns}/ingresses?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/endpoints?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/persistentvolumeclaims?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/configmaps?limit=100`),
+          k8sRequest(`/api/v1/namespaces/${ns}/secrets?limit=100`),
+          k8sRequest(`/apis/autoscaling/v2/namespaces/${ns}/horizontalpodautoscalers?limit=100`),
+          k8sRequest(`/apis/policy/v1/namespaces/${ns}/poddisruptionbudgets?limit=100`),
+        ]);
+
+        const extract = (result) => {
+          if (result.status !== "fulfilled") return [];
+          return result.value?.body?.items || [];
+        };
+
+        const matchesApp = (item) => {
+          if (!appLabel) return true;
+          const labels = item.metadata?.labels || {};
+          return labels.app === appLabel || labels["app.kubernetes.io/name"] === appLabel || labels["app.kubernetes.io/instance"] === appLabel;
+        };
+
+        const mapBase = (item) => ({
+          name: item.metadata?.name,
+          namespace: item.metadata?.namespace,
+          labels: item.metadata?.labels || {},
+          creationTimestamp: item.metadata?.creationTimestamp,
+          uid: item.metadata?.uid,
+        });
+
+        const result = {
+          namespace: ns,
+          appLabel,
+          pods: extract(pods).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            status: item.status?.phase,
+            ready: (item.status?.containerStatuses || []).filter(c => c.ready).length,
+            total: (item.spec?.containers || []).length,
+            restarts: (item.status?.containerStatuses || []).reduce((s, c) => s + (c.restartCount || 0), 0),
+            node: item.spec?.nodeName,
+            podIP: item.status?.podIP,
+            images: (item.spec?.containers || []).map(c => c.image),
+          })),
+          deployments: extract(deployments).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            replicas: item.spec?.replicas,
+            readyReplicas: item.status?.readyReplicas || 0,
+            availableReplicas: item.status?.availableReplicas || 0,
+            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
+            selector: item.spec?.selector?.matchLabels || {},
+          })),
+          statefulsets: extract(statefulsets).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            replicas: item.spec?.replicas,
+            readyReplicas: item.status?.readyReplicas || 0,
+            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
+          })),
+          daemonsets: extract(daemonsets).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            desiredNumberScheduled: item.status?.desiredNumberScheduled || 0,
+            numberReady: item.status?.numberReady || 0,
+            images: (item.spec?.template?.spec?.containers || []).map(c => c.image),
+          })),
+          services: extract(services).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            type: item.spec?.type,
+            clusterIP: item.spec?.clusterIP,
+            ports: (item.spec?.ports || []).map(p => ({ name: p.name, port: p.port, targetPort: p.targetPort, protocol: p.protocol })),
+            selector: item.spec?.selector || {},
+          })),
+          ingresses: extract(ingresses).map(item => ({
+            ...mapBase(item),
+            rules: (item.spec?.rules || []).map(r => ({
+              host: r.host,
+              paths: (r.http?.paths || []).map(p => ({
+                path: p.path,
+                service: p.backend?.service?.name || p.backend?.serviceName,
+                port: p.backend?.service?.port?.number || p.backend?.servicePort,
+              })),
+            })),
+            tls: (item.spec?.tls || []).map(t => ({ hosts: t.hosts, secretName: t.secretName })),
+          })),
+          endpoints: extract(endpoints).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            ready: (item.subsets || []).flatMap(s => s.addresses || []).map(a => a.ip),
+            notReady: (item.subsets || []).flatMap(s => s.notReadyAddresses || []).map(a => a.ip),
+            ports: (item.subsets || []).flatMap(s => s.ports || []),
+          })),
+          pvcs: extract(pvcs).map(item => ({
+            ...mapBase(item),
+            status: item.status?.phase,
+            capacity: item.status?.capacity?.storage,
+            storageClass: item.spec?.storageClassName,
+            accessModes: item.spec?.accessModes,
+            volumeName: item.spec?.volumeName,
+          })),
+          configmaps: extract(configmaps).filter(cm => !cm.metadata?.name?.startsWith("kube-")).map(item => ({
+            ...mapBase(item),
+            keys: Object.keys(item.data || {}),
+            dataCount: Object.keys(item.data || {}).length,
+          })),
+          secrets: extract(secrets).filter(s => !["default-token", "kube-"].some(p => s.metadata?.name?.startsWith(p))).map(item => ({
+            ...mapBase(item),
+            type: item.type,
+            keys: Object.keys(item.data || {}),
+            dataCount: Object.keys(item.data || {}).length,
+          })),
+          hpas: extract(hpas).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            minReplicas: item.spec?.minReplicas,
+            maxReplicas: item.spec?.maxReplicas,
+            currentReplicas: item.status?.currentReplicas,
+            targetRef: item.spec?.scaleTargetRef,
+          })),
+          pdbs: extract(pdbs).filter(matchesApp).map(item => ({
+            ...mapBase(item),
+            minAvailable: item.spec?.minAvailable,
+            maxUnavailable: item.spec?.maxUnavailable,
+            currentHealthy: item.status?.currentHealthy,
+            desiredHealthy: item.status?.desiredHealthy,
+          })),
+        };
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
 
   // ── Arquivos estáticos ─────────────────────────────────────────────────────────────────────────────
   let filePath = path.join(

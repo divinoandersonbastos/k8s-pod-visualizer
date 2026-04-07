@@ -46,7 +46,7 @@ import type { ViewMode, LayoutMode } from "@/components/BubbleCanvas";
 
 export default function Home() {
   const [viewMode, setViewMode] = useState<ViewMode>("cpu");
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>("free");
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>("constellation");
   const [displayMode, setDisplayMode] = useState<"canvas" | "app">("canvas");
   const [selectedNamespace, setSelectedNamespace] = useState("");
   const [selectedNode, setSelectedNode] = useState("");
@@ -67,8 +67,7 @@ export default function Home() {
   const [showDbStatus, setShowDbStatus] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
-  const [restartingPodId, setRestartingPodId] = useState<string | null>(null);
-  const { user, isSRE, isSquad, isAdmin, logout } = useAuth();
+  const { user, isSRE, isAdmin, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
@@ -76,6 +75,9 @@ export default function Home() {
   const [apiUrl, setApiUrl] = useState("");
   const [clusterName, setClusterName] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("");
+  // NOVO v5.20.0 — aba inicial do PodDetailPanel (para atalho Describe no tooltip)
+  const [podInitialTab, setPodInitialTab] = useState<"details" | "describe">("details");
+
   const [allNamespaces, setAllNamespaces] = useState<string[]>([]);
 
   const { theme } = useThemeCustomizer();
@@ -253,6 +255,8 @@ export default function Home() {
 
   // Cor e label do banner de destaque
   const bannerConfig = useMemo(() => {
+    // Não exibir banner quando não há pods no filtro (evita banner "0 pods críticos" na abertura)
+    if (statusFilter === "critical" && criticalInView === 0 && pods.length === 0) return null;
     if (statusFilter === "critical") return {
       color: "oklch(0.62 0.22 25)",
       bg: "oklch(0.62 0.22 25 / 0.12)",
@@ -291,30 +295,70 @@ export default function Home() {
   };
 
   if (loading) {
+    // Skeleton que imita o layout real do dashboard para melhorar percepção de velocidade
     return (
-      <div
-        className="min-h-screen flex items-center justify-center grid-bg"
-        style={{ background: theme.canvasBg }}
-      >
-        <div className="text-center space-y-4">
-          <div className="relative w-16 h-16 mx-auto">
-            <div
-              className="absolute inset-0 rounded-full border-2 animate-spin"
-              style={{ borderColor: "oklch(0.72 0.18 142) transparent transparent transparent" }}
-            />
-            <div
-              className="absolute inset-2 rounded-full border-2 animate-spin"
-              style={{
-                borderColor: "oklch(0.55 0.22 260) transparent transparent transparent",
-                animationDirection: "reverse",
-                animationDuration: "0.8s",
-              }}
-            />
+      <div className="min-h-screen flex flex-col overflow-hidden" style={{ background: theme.canvasBg, height: "100vh" }}>
+        {/* Header skeleton */}
+        <div className="shrink-0 flex items-center gap-2 px-4 h-14" style={{ background: "oklch(0.13 0.018 250 / 0.95)", borderBottom: "1px solid oklch(0.22 0.03 250)" }}>
+          <div className="w-32 h-8 rounded animate-pulse" style={{ background: "oklch(0.22 0.03 250)" }} />
+          <div className="w-16 h-5 rounded-full animate-pulse" style={{ background: "oklch(0.22 0.03 250)" }} />
+          <div className="w-20 h-5 rounded-full animate-pulse" style={{ background: "oklch(0.22 0.03 250)" }} />
+          <div className="w-20 h-5 rounded-full animate-pulse" style={{ background: "oklch(0.22 0.03 250)" }} />
+          <div className="flex-1" />
+          <div className="w-48 h-7 rounded animate-pulse" style={{ background: "oklch(0.22 0.03 250)" }} />
+        </div>
+        {/* Body skeleton */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Sidebar skeleton */}
+          <div className="w-40 shrink-0 flex flex-col gap-3 p-3" style={{ background: "oklch(0.11 0.015 250)", borderRight: "1px solid oklch(0.18 0.025 250)" }}>
+            {[...Array(6)].map((_, i) => (
+              <div key={i} className="h-7 rounded animate-pulse" style={{ background: "oklch(0.18 0.025 250)", animationDelay: `${i * 80}ms` }} />
+            ))}
           </div>
-          <div className="font-mono text-sm" style={{ color: "oklch(0.72 0.18 142)" }}>
-            Carregando pods...
+          {/* Canvas skeleton com bolhas animadas */}
+          <div className="flex-1 relative overflow-hidden grid-bg">
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="relative w-full h-full">
+                {/* Simula grupos de namespace como no modo Constelações */}
+                {[
+                  { x: 15, y: 25, r: 60, count: 3 },
+                  { x: 35, y: 20, r: 50, count: 2 },
+                  { x: 55, y: 30, r: 80, count: 5 },
+                  { x: 75, y: 22, r: 55, count: 3 },
+                  { x: 20, y: 65, r: 45, count: 2 },
+                  { x: 45, y: 60, r: 70, count: 4 },
+                  { x: 70, y: 65, r: 90, count: 6 },
+                ].map((g, gi) => (
+                  <div key={gi} className="absolute" style={{ left: `${g.x}%`, top: `${g.y}%`, transform: "translate(-50%,-50%)" }}>
+                    {/* Label do namespace */}
+                    <div className="mb-2 mx-auto h-3 rounded animate-pulse" style={{ width: `${40 + gi * 10}px`, background: "oklch(0.28 0.04 250)", animationDelay: `${gi * 120}ms` }} />
+                    {/* Bolhas */}
+                    <div className="flex flex-wrap gap-2 justify-center" style={{ maxWidth: `${g.r * 2}px` }}>
+                      {[...Array(g.count)].map((_, bi) => (
+                        <div key={bi} className="rounded-full animate-pulse"
+                          style={{
+                            width: `${28 + Math.sin(gi + bi) * 10}px`,
+                            height: `${28 + Math.sin(gi + bi) * 10}px`,
+                            background: "oklch(0.25 0.06 142 / 0.5)",
+                            animationDelay: `${(gi * 3 + bi) * 100}ms`,
+                            boxShadow: "0 0 12px oklch(0.55 0.18 142 / 0.15)",
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Indicador de carregamento */}
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 font-mono text-xs" style={{ color: "oklch(0.55 0.12 142)" }}>
+              <div className="w-3 h-3 rounded-full animate-ping" style={{ background: "oklch(0.72 0.18 142)" }} />
+              Conectando ao cluster...
+            </div>
           </div>
         </div>
+        {/* Footer skeleton */}
+        <div className="shrink-0 h-24" style={{ background: "oklch(0.09 0.012 250)", borderTop: "1px solid oklch(0.18 0.025 250)" }} />
       </div>
     );
   }
@@ -350,7 +394,6 @@ export default function Home() {
         onShowDbStatus={() => setShowDbStatus(true)}
         onLogout={logout}
         isSRE={isSRE}
-        isSquad={isSquad}
         isAdmin={isAdmin}
         currentUser={user ? { displayName: user.displayName, username: user.username, role: user.role } : undefined}
         clusterName={effectiveClusterName}
@@ -396,9 +439,8 @@ export default function Home() {
           allNamespaces={allNamespaces.length > 0 ? allNamespaces : undefined}
         />
 
-        {/* Canvas principal */}
+         {/* Canvas principal */}
         <main className="flex-1 relative overflow-hidden grid-bg scanlines">
-
           {/* ── Alerta de Spot Eviction iminente ──────────────────────────── */}
           <SpotEvictionAlert
             nodes={nodeMonitor.nodes}
@@ -497,8 +539,7 @@ export default function Home() {
               onSelectPod={setSelectedPod}
               selectedPodId={selectedPod?.id}
               securityMode={securityMode}
-              restartingPodId={restartingPodId}
-              showResourceBadge={isSRE || isSquad}
+              onDescribePod={(pod) => { setPodInitialTab("describe"); setSelectedPod(pod); }}
             />
           ) : (
             <div className="absolute inset-0 flex items-center justify-center">
@@ -529,7 +570,7 @@ export default function Home() {
           {/* Painel de detalhes */}
           <PodDetailPanel
             pod={selectedPod}
-            onClose={() => setSelectedPod(null)}
+            onClose={() => { setSelectedPod(null); setPodInitialTab("details"); }}
             apiUrl={apiUrl}
             inCluster={inCluster}
             getHistory={getHistory}
@@ -538,8 +579,7 @@ export default function Home() {
             oomRisk={selectedPod ? oomRisk.getRiskForPod(selectedPod.id) : null}
             isSRE={isSRE}
             isAdmin={isAdmin}
-            onRestartStart={(podId) => setRestartingPodId(podId)}
-            onRestartEnd={() => setRestartingPodId(null)}
+            initialTab={podInitialTab}
           />
 
           {/* Banner de risco de OOMKill */}
@@ -634,14 +674,13 @@ export default function Home() {
             )}
           </AnimatePresence>
 
-          {/* Editor de Recursos (SRE + SQUAD) */}
+          {/* Editor de Recursos (SRE only) */}
           <AnimatePresence>
-            {showResourceEditor && (isSRE || isSquad) && (
+            {showResourceEditor && isSRE && (
               <ResourceEditorPanel
                 onClose={() => setShowResourceEditor(false)}
-                isSRE={isSRE}
                 initialAppNamespace={selectedPod?.namespace}
-                initialAppLabel={selectedPod?.labels?.['app'] || selectedPod?.labels?.['app.kubernetes.io/name'] || selectedPod?.labels?.['k8s-app']}
+                initialAppLabel={selectedPod?.labels?.app}
               />
             )}
           </AnimatePresence>

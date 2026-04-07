@@ -7,7 +7,8 @@ import {
   Server, Activity, Layers, ShieldAlert, Zap,
   RefreshCw, X, ChevronRight, AlertTriangle, CheckCircle,
   XCircle, Clock, Cpu, MemoryStick, Container, TrendingUp,
-  AlertCircle, Info, ArrowLeft, Download
+  AlertCircle, Info, ArrowLeft, Download, Copy, Wrench, Play,
+  Edit3, EyeOff, Sparkles, ChevronDown, ChevronUp, ExternalLink
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -25,6 +26,15 @@ interface NodeOverview {
   conditions: Array<{ type: string; status: string; reason: string; message: string; lastTransitionTime: string }>;
   taints: Array<{ key: string; value: string; effect: string }>;
   labels: Record<string, string>;
+}
+interface GovernanceDetail {
+  pod: string; namespace: string; container: string;
+  workloadKind: string; workloadName: string;
+  currentResources: { cpuRequest: string | null; memRequest: string | null; cpuLimit: string | null; memLimit: string | null; cpuReqM: number | null; memReqMb: number | null; cpuLimM: number | null; memLimMb: number | null };
+  currentQoS: string;
+  realUsage: { cpuNow: number | null; memNow: number | null };
+  suggestion: { cpuRequest: string; cpuLimit: string; memRequest: string; memLimit: string; projectedQoS: string; reasoning: string[] };
+  patchYaml: string;
 }
 interface GovernanceIssue {
   pod: string; namespace: string; node: string; container: string; workload: string;
@@ -799,10 +809,275 @@ function WorkloadsTab({ data }: { data: WorkloadsByNode | null }) {
   );
 }
 
+// ── GovernanceDrawer ─────────────────────────────────────────────────────────
+function GovernanceDrawer({ issue, apiUrl, getAuthHeaders, onClose }: {
+  issue: GovernanceIssue;
+  apiUrl: string;
+  getAuthHeaders: () => Record<string, string>;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<GovernanceDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editValues, setEditValues] = useState({ cpuRequest: "", memRequest: "", cpuLimit: "", memLimit: "" });
+  const [applying, setApplying] = useState(false);
+  const [applyResult, setApplyResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [showReasoning, setShowReasoning] = useState(false);
+  const [ignored, setIgnored] = useState(false);
+
+  useEffect(() => {
+    setLoading(true); setError(null); setDetail(null); setApplyResult(null);
+    fetch(`${apiUrl}/api/nodes/governance-detail?namespace=${encodeURIComponent(issue.namespace)}&pod=${encodeURIComponent(issue.pod)}&container=${encodeURIComponent(issue.container)}`, { headers: getAuthHeaders() })
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { setError(d.error); } else {
+          setDetail(d);
+          setEditValues({ cpuRequest: d.suggestion.cpuRequest, memRequest: d.suggestion.memRequest, cpuLimit: d.suggestion.cpuLimit, memLimit: d.suggestion.memLimit });
+        }
+        setLoading(false);
+      })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [issue.pod, issue.container, issue.namespace]);
+
+  function qosColor(q: string) {
+    if (q === "Guaranteed") return "text-green-400 bg-green-900/40";
+    if (q === "Burstable") return "text-yellow-400 bg-yellow-900/40";
+    return "text-red-400 bg-red-900/40";
+  }
+
+  function fmtCpuDisplay(m: number | null) {
+    if (m === null) return "—";
+    return m >= 1000 ? `${(m/1000).toFixed(2)} vCPU` : `${m}m`;
+  }
+  function fmtMemDisplay(mb: number | null) {
+    if (mb === null) return "—";
+    return mb >= 1024 ? `${(mb/1024).toFixed(1)} GiB` : `${mb} MiB`;
+  }
+
+  async function handleApply() {
+    if (!detail) return;
+    setApplying(true); setApplyResult(null);
+    const vals = editMode ? editValues : detail.suggestion;
+    try {
+      const r = await fetch(`${apiUrl}/api/nodes/governance-apply`, {
+        method: "POST",
+        headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({ namespace: issue.namespace, workloadKind: detail.workloadKind, workloadName: detail.workloadName, container: issue.container, cpuRequest: vals.cpuRequest, memRequest: vals.memRequest, cpuLimit: vals.cpuLimit, memLimit: vals.memLimit }),
+      });
+      const d = await r.json();
+      if (d.success) setApplyResult({ success: true, message: `Patch aplicado em ${detail.workloadKind}/${detail.workloadName}` });
+      else setApplyResult({ success: false, message: d.error || "Erro ao aplicar" });
+    } catch (e: any) { setApplyResult({ success: false, message: e.message }); }
+    setApplying(false);
+  }
+
+  function copyYaml() {
+    if (!detail) return;
+    navigator.clipboard.writeText(detail.patchYaml);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  }
+
+  const vals = editMode ? editValues : (detail?.suggestion || { cpuRequest: "", memRequest: "", cpuLimit: "", memLimit: "", projectedQoS: "" });
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="relative w-full max-w-xl bg-gray-950 border-l border-gray-700 h-full overflow-y-auto flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 py-4 border-b border-gray-800 sticky top-0 bg-gray-950 z-10">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Wrench size={14} className="text-blue-400" />
+              <span className="text-sm font-semibold text-white">Diagnóstico & Remediação</span>
+            </div>
+            <div className="text-xs text-gray-400 font-mono truncate max-w-[340px]">{issue.pod} / <span className="text-blue-300">{issue.container}</span></div>
+            <div className="text-xs text-gray-500 mt-0.5">{issue.namespace}</div>
+          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors mt-1"><X size={16} /></button>
+        </div>
+
+        {loading && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex flex-col items-center gap-3 text-gray-500">
+              <RefreshCw size={24} className="animate-spin" />
+              <span className="text-sm">Carregando detalhes...</span>
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="m-5 p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
+            <div className="flex items-center gap-2 text-red-400 text-sm"><AlertTriangle size={14} />{error}</div>
+          </div>
+        )}
+
+        {detail && !loading && (
+          <div className="flex-1 flex flex-col gap-4 p-5">
+            {/* Workload controlador */}
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+              <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Workload controlador</div>
+              <div className="flex items-center gap-2">
+                <span className="px-2 py-0.5 rounded text-xs bg-blue-900/50 text-blue-300 font-mono">{detail.workloadKind}</span>
+                <span className="text-sm text-white font-medium">{detail.workloadName}</span>
+              </div>
+              <div className="text-xs text-gray-500 mt-1">Namespace: {detail.namespace}</div>
+            </div>
+
+            {/* Uso real */}
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+              <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Uso real (agora)</div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <div className="text-xs text-gray-500 mb-0.5">CPU</div>
+                  <div className={`text-sm font-semibold ${detail.realUsage.cpuNow !== null ? "text-green-400" : "text-gray-500"}`}>
+                    {fmtCpuDisplay(detail.realUsage.cpuNow)}
+                  </div>
+                  {detail.realUsage.cpuNow === null && <div className="text-xs text-gray-600">metrics-server indisponível</div>}
+                </div>
+                <div>
+                  <div className="text-xs text-gray-500 mb-0.5">Memória</div>
+                  <div className={`text-sm font-semibold ${detail.realUsage.memNow !== null ? "text-green-400" : "text-gray-500"}`}>
+                    {fmtMemDisplay(detail.realUsage.memNow)}
+                  </div>
+                  {detail.realUsage.memNow === null && <div className="text-xs text-gray-600">metrics-server indisponível</div>}
+                </div>
+              </div>
+            </div>
+
+            {/* Configuração atual vs sugerida */}
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+              <div className="text-xs text-gray-500 uppercase tracking-wider mb-3">Configuração de recursos</div>
+              <div className="grid grid-cols-3 gap-1 text-xs mb-2">
+                <div className="text-gray-600"></div>
+                <div className="text-center text-gray-500 font-medium">Atual</div>
+                <div className="text-center text-blue-400 font-medium">Sugerido</div>
+              </div>
+              {[
+                { label: "CPU Request", curr: detail.currentResources.cpuRequest, sug: editMode ? editValues.cpuRequest : detail.suggestion.cpuRequest, field: "cpuRequest" as const },
+                { label: "CPU Limit",   curr: detail.currentResources.cpuLimit,   sug: editMode ? editValues.cpuLimit   : detail.suggestion.cpuLimit,   field: "cpuLimit"  as const },
+                { label: "MEM Request", curr: detail.currentResources.memRequest, sug: editMode ? editValues.memRequest : detail.suggestion.memRequest, field: "memRequest" as const },
+                { label: "MEM Limit",   curr: detail.currentResources.memLimit,   sug: editMode ? editValues.memLimit   : detail.suggestion.memLimit,   field: "memLimit"  as const },
+              ].map(({ label, curr, sug, field }) => (
+                <div key={label} className="grid grid-cols-3 gap-1 items-center py-1.5 border-b border-gray-800/60 last:border-0">
+                  <div className="text-xs text-gray-400">{label}</div>
+                  <div className="text-center">
+                    <span className={`text-xs font-mono ${curr ? "text-gray-300" : "text-red-500"}`}>{curr || "não definido"}</span>
+                  </div>
+                  <div className="text-center">
+                    {editMode ? (
+                      <input
+                        value={editValues[field]}
+                        onChange={e => setEditValues(v => ({ ...v, [field]: e.target.value }))}
+                        className="w-full text-center text-xs font-mono bg-gray-800 border border-blue-600/50 rounded px-1 py-0.5 text-blue-300 focus:outline-none focus:border-blue-400"
+                      />
+                    ) : (
+                      <span className="text-xs font-mono text-blue-300">{sug}</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+              {/* QoS preview */}
+              <div className="mt-3 flex items-center justify-between">
+                <div className="text-xs text-gray-500">QoS</div>
+                <div className="flex items-center gap-2">
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${qosColor(detail.currentQoS)}`}>{detail.currentQoS}</span>
+                  <ChevronRight size={12} className="text-gray-600" />
+                  <span className={`px-1.5 py-0.5 rounded text-xs ${qosColor(detail.suggestion.projectedQoS)}`}>{detail.suggestion.projectedQoS}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Lógica da recomendação */}
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg overflow-hidden">
+              <button
+                onClick={() => setShowReasoning(v => !v)}
+                className="w-full flex items-center justify-between px-3 py-2.5 text-xs text-gray-400 hover:text-white hover:bg-gray-800/50 transition-colors"
+              >
+                <div className="flex items-center gap-2"><Sparkles size={12} className="text-yellow-400" />Lógica da recomendação</div>
+                {showReasoning ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {showReasoning && (
+                <div className="px-3 pb-3 space-y-1.5 border-t border-gray-800">
+                  {detail.suggestion.reasoning.map((r, i) => (
+                    <div key={i} className="flex items-start gap-2 text-xs text-gray-400">
+                      <span className="text-yellow-500 mt-0.5">·</span>
+                      <span>{r}</span>
+                    </div>
+                  ))}
+                  <div className="mt-2 pt-2 border-t border-gray-800/50 text-xs text-gray-600">
+                    Fórmula: request = uso real × 1.3 · limit CPU = uso real × 2.0 · limit MEM = uso real × 1.5
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* YAML patch */}
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs text-gray-500 uppercase tracking-wider">YAML patch</div>
+                <button onClick={copyYaml} className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors">
+                  <Copy size={11} />{copied ? "Copiado!" : "Copiar"}
+                </button>
+              </div>
+              <pre className="text-xs font-mono text-green-300 bg-gray-950 rounded p-2 overflow-x-auto whitespace-pre">{detail.patchYaml}</pre>
+            </div>
+
+            {/* Resultado da ação */}
+            {applyResult && (
+              <div className={`p-3 rounded-lg border text-sm flex items-center gap-2 ${applyResult.success ? "bg-green-900/30 border-green-700/50 text-green-300" : "bg-red-900/30 border-red-700/50 text-red-300"}`}>
+                {applyResult.success ? <CheckCircle size={14} /> : <XCircle size={14} />}
+                {applyResult.message}
+              </div>
+            )}
+
+            {/* Ações */}
+            {!ignored && (
+              <div className="flex flex-col gap-2 mt-auto pt-2">
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleApply}
+                    disabled={applying || !!applyResult?.success}
+                    className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-medium transition-colors"
+                  >
+                    {applying ? <RefreshCw size={14} className="animate-spin" /> : <Play size={14} />}
+                    {applying ? "Aplicando..." : "Aplicar sugestão"}
+                  </button>
+                  <button
+                    onClick={() => setEditMode(v => !v)}
+                    className={`px-4 py-2.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${editMode ? "bg-yellow-600 hover:bg-yellow-500 text-white" : "bg-gray-800 hover:bg-gray-700 text-gray-300"}`}
+                  >
+                    <Edit3 size={14} />{editMode ? "Confirmar" : "Editar"}
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={copyYaml} className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">
+                    <Copy size={12} />Copiar YAML
+                  </button>
+                  <button onClick={() => setIgnored(true)} className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs transition-colors">
+                    <EyeOff size={12} />Ignorar
+                  </button>
+                </div>
+              </div>
+            )}
+            {ignored && (
+              <div className="p-3 rounded-lg bg-gray-800/50 border border-gray-700/30 text-xs text-gray-500 flex items-center gap-2">
+                <EyeOff size={12} />Issue marcada como ignorada nesta sessão
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Tab: Governança ───────────────────────────────────────────────────────────
-function GovernanceTab({ issues, topRisk }: { issues: GovernanceIssue[]; topRisk: Array<{ ns: string; count: number; critical: number; oomKilled: number }> }) {
+function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: GovernanceIssue[]; topRisk: Array<{ ns: string; count: number; critical: number; oomKilled: number }>; apiUrl: string; getAuthHeaders: () => Record<string, string> }) {
   const [nsFilter, setNsFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState<"all" | "critical" | "high" | "medium">("all");
+  const [selectedIssue, setSelectedIssue] = useState<GovernanceIssue | null>(null);
   const namespaces = ["all", ...Array.from(new Set(issues.map((i) => i.namespace))).sort()];
   const filtered = issues.filter((i) => {
     if (nsFilter !== "all" && i.namespace !== nsFilter) return false;
@@ -869,44 +1144,81 @@ function GovernanceTab({ issues, topRisk }: { issues: GovernanceIssue[]; topRisk
         </button>
       </div>
 
+      {/* Hint de clique */}
+      <div className="flex items-center gap-2 text-xs text-gray-600 -mt-1">
+        <Wrench size={11} className="text-blue-500/60" />
+        <span>Clique em qualquer linha para abrir o painel de diagnóstico e remediação</span>
+      </div>
+
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-gray-800 text-gray-500">
-              <th className="text-left py-2 pr-3" style={{width:"180px",minWidth:"140px"}}>Pod / Container</th>
-              <th className="text-left py-2 pr-3" style={{width:"130px",minWidth:"90px"}}>Namespace</th>
-              <th className="text-left py-2 pr-3" style={{width:"85px"}}>QoS</th>
-              <th className="text-left py-2 pr-3" style={{width:"75px"}}>Risco</th>
+              <th className="text-left py-2 pr-3" style={{width:"170px",minWidth:"130px"}}>Pod / Container</th>
+              <th className="text-left py-2 pr-3" style={{width:"110px",minWidth:"80px"}}>Namespace</th>
+              <th className="text-left py-2 pr-3" style={{width:"80px"}}>QoS</th>
+              <th className="text-left py-2 pr-3" style={{width:"70px"}}>Risco</th>
               <th className="text-left py-2 pr-3">Faltando</th>
-              <th className="text-right py-2 pr-3" style={{width:"65px"}}>Restarts</th>
-              <th className="text-right py-2" style={{width:"45px",minWidth:"45px"}}>OOM</th>
+              <th className="text-left py-2 pr-3" style={{width:"120px"}}>Recomendação</th>
+              <th className="text-right py-2 pr-3" style={{width:"55px"}}>Restarts</th>
+              <th className="text-right py-2" style={{width:"40px",minWidth:"40px"}}>OOM</th>
+              <th className="text-center py-2" style={{width:"60px"}}>Ação</th>
             </tr>
           </thead>
           <tbody>
             {filtered.slice(0, 200).map((i, idx) => (
-              <tr key={idx} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                <td className="py-2 pr-3" style={{width:"180px",minWidth:"140px"}}>
-                  <div className="text-white truncate" style={{maxWidth:"170px"}} title={i.pod}>{i.pod}</div>
-                  <div className="text-gray-500 truncate" style={{maxWidth:"170px"}}>{i.container}</div>
+              <tr
+                key={idx}
+                onClick={() => setSelectedIssue(i)}
+                className={`border-b border-gray-800/50 hover:bg-blue-900/10 cursor-pointer transition-colors group ${selectedIssue?.pod === i.pod && selectedIssue?.container === i.container ? "bg-blue-900/15 border-blue-800/30" : ""}`}
+              >
+                <td className="py-2 pr-3" style={{width:"170px",minWidth:"130px"}}>
+                  <div className="text-white truncate group-hover:text-blue-200 transition-colors" style={{maxWidth:"160px"}} title={i.pod}>{i.pod}</div>
+                  <div className="text-gray-500 truncate font-mono" style={{maxWidth:"160px"}}>{i.container}</div>
                 </td>
-                <td className="py-2 pr-3 text-gray-400 truncate" style={{width:"130px",minWidth:"90px",maxWidth:"130px"}}>{i.namespace}</td>
+                <td className="py-2 pr-3 text-gray-400 truncate" style={{width:"110px",minWidth:"80px",maxWidth:"110px"}}>{i.namespace}</td>
                 <td className="py-2 pr-3">
                   <span className={`px-1.5 py-0.5 rounded text-xs ${i.qos === "Guaranteed" ? "bg-green-900/50 text-green-300" : i.qos === "Burstable" ? "bg-yellow-900/50 text-yellow-300" : "bg-red-900/50 text-red-300"}`}>{i.qos}</span>
                 </td>
                 <td className="py-2 pr-3"><RiskBadge risk={i.risk} /></td>
                 <td className="py-2 pr-3">
-                  <div className="flex gap-1 flex-wrap" style={{maxWidth:"260px"}}>
+                  <div className="flex gap-1 flex-wrap" style={{maxWidth:"200px"}}>
                     {i.missing.map((m) => <span key={m} className="px-1 py-0.5 rounded bg-gray-800 text-gray-400 text-xs whitespace-nowrap">{m.replace("_", " ")}</span>)}
                   </div>
                 </td>
-                <td className={`py-2 pr-3 text-right ${i.restarts > 5 ? "text-red-400" : i.restarts > 0 ? "text-yellow-400" : "text-gray-500"}`} style={{width:"65px"}}>{i.restarts}</td>
-                <td className={`py-2 text-right ${i.oomKilled ? "text-red-400 font-semibold" : "text-gray-600"}`} style={{width:"45px",minWidth:"45px"}}>{i.oomKilled ? "✕" : "—"}</td>
+                <td className="py-2 pr-3" style={{width:"120px"}}>
+                  <div className="flex items-center gap-1">
+                    <Sparkles size={10} className="text-yellow-500/70 shrink-0" />
+                    <span className="text-yellow-300/80 text-xs">Ver sugestão</span>
+                  </div>
+                  {i.oomKilled && <div className="text-xs text-red-400 mt-0.5">+ ajuste OOM</div>}
+                </td>
+                <td className={`py-2 pr-3 text-right ${i.restarts > 5 ? "text-red-400" : i.restarts > 0 ? "text-yellow-400" : "text-gray-500"}`} style={{width:"55px"}}>{i.restarts}</td>
+                <td className={`py-2 text-right ${i.oomKilled ? "text-red-400 font-semibold" : "text-gray-600"}`} style={{width:"40px",minWidth:"40px"}}>{i.oomKilled ? <span className="flex items-center justify-end gap-0.5"><AlertTriangle size={10} />✕</span> : "—"}</td>
+                <td className="py-2 text-center" style={{width:"60px"}}>
+                  <button
+                    onClick={e => { e.stopPropagation(); setSelectedIssue(i); }}
+                    className="px-2 py-1 rounded text-xs bg-blue-900/40 text-blue-300 hover:bg-blue-700/50 transition-colors flex items-center gap-1 mx-auto"
+                  >
+                    <Wrench size={10} />Fix
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
         {filtered.length > 200 && <div className="text-xs text-gray-500 mt-2 text-center">Mostrando 200 de {filtered.length} issues</div>}
       </div>
+
+      {/* Drawer de diagnóstico */}
+      {selectedIssue && (
+        <GovernanceDrawer
+          issue={selectedIssue}
+          apiUrl={apiUrl}
+          getAuthHeaders={getAuthHeaders}
+          onClose={() => setSelectedIssue(null)}
+        />
+      )}
     </div>
   );
 }
@@ -1152,7 +1464,7 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
           <WorkloadsTab data={workloadsData} />
         )}
         {activeTab === "governance" && governanceData && (
-          <GovernanceTab issues={governanceData.issues} topRisk={governanceData.topRiskNamespaces} />
+          <GovernanceTab issues={governanceData.issues} topRisk={governanceData.topRiskNamespaces} apiUrl={apiUrl} getAuthHeaders={getAuthHeaders} />
         )}
         {activeTab === "spot" && (
           <SpotTab data={spotData} />

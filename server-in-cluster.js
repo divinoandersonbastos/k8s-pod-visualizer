@@ -1418,6 +1418,105 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── /api/nodes/governance-detail — Detalhes de um pod/container para remediação ─────
+  if (url.pathname === "/api/nodes/governance-detail") {
+    requireAuth(req, res, async () => {
+      try {
+        const ns        = url.searchParams.get("namespace");
+        const podName   = url.searchParams.get("pod");
+        const container = url.searchParams.get("container");
+        if (!ns || !podName || !container) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "namespace, pod e container são obrigatórios" })); return; }
+        const [podRes, metricsRes] = await Promise.allSettled([
+          k8sRequest(`/api/v1/namespaces/${ns}/pods/${podName}`),
+          k8sRequest(`/apis/metrics.k8s.io/v1beta1/namespaces/${ns}/pods/${podName}`),
+        ]);
+        const pod = podRes.status === "fulfilled" ? podRes.value.body : null;
+        const metrics = metricsRes.status === "fulfilled" ? metricsRes.value.body : null;
+        if (!pod || pod.kind !== "Pod") { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Pod não encontrado" })); return; }
+        const cont = (pod.spec?.containers || []).find((c) => c.name === container);
+        if (!cont) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Container não encontrado" })); return; }
+        const metricsCont = (metrics?.containers || []).find((c) => c.name === container);
+        const cpuRealNow = metricsCont ? parseCPU(metricsCont.usage?.cpu || "0") * 1000 : null;
+        const memRealNow = metricsCont ? parseMem(metricsCont.usage?.memory || "0") : null;
+        const cpuReq = cont.resources?.requests?.cpu || null;
+        const memReq = cont.resources?.requests?.memory || null;
+        const cpuLim = cont.resources?.limits?.cpu || null;
+        const memLim = cont.resources?.limits?.memory || null;
+        const cpuReqM = cpuReq ? parseCPU(cpuReq) * 1000 : null;
+        const memReqMb = memReq ? parseMem(memReq) : null;
+        const cpuLimM = cpuLim ? parseCPU(cpuLim) * 1000 : null;
+        const memLimMb = memLim ? parseMem(memLim) : null;
+        const ownerRef = pod.metadata?.ownerReferences?.[0];
+        let workloadKind = ownerRef?.kind || "Pod";
+        let workloadName = ownerRef?.name || podName;
+        if (workloadKind === "ReplicaSet") {
+          try {
+            const rsRes = await k8sRequest(`/apis/apps/v1/namespaces/${ns}/replicasets/${workloadName}`);
+            const rsOwner = rsRes.body?.metadata?.ownerReferences?.[0];
+            if (rsOwner?.kind === "Deployment") { workloadKind = "Deployment"; workloadName = rsOwner.name; }
+          } catch (_) {}
+        }
+        function calcQoS(cReq, mReq, cLim, mLim) {
+          if (cReq && mReq && cLim && mLim) { const cpuEq = parseCPU(cReq) === parseCPU(cLim); const memEq = parseMem(mReq) === parseMem(mLim); if (cpuEq && memEq) return "Guaranteed"; }
+          if (cReq || mReq || cLim || mLim) return "Burstable";
+          return "BestEffort";
+        }
+        const currentQoS = pod.status?.qosClass || calcQoS(cpuReq, memReq, cpuLim, memLim);
+        const cpuRealBase = cpuRealNow || cpuReqM || 50;
+        const memRealBase = memRealNow || memReqMb || 64;
+        const sugCpuReqM  = Math.max(10,  Math.ceil(cpuRealBase * 1.3));
+        const sugCpuLimM  = Math.max(50,  Math.ceil(cpuRealBase * 2.0));
+        const sugMemReqMb = Math.max(32,  Math.ceil(memRealBase * 1.3));
+        const sugMemLimMb = Math.max(64,  Math.ceil(memRealBase * 1.5));
+        function fmtCpuK8s(m) { return m >= 1000 ? `${(m/1000).toFixed(1)}` : `${m}m`; }
+        function fmtMemK8s(mb) { return mb >= 1024 ? `${Math.ceil(mb/1024)}Gi` : `${mb}Mi`; }
+        const sugCpuReq = fmtCpuK8s(sugCpuReqM);
+        const sugCpuLim = fmtCpuK8s(sugCpuLimM);
+        const sugMemReq = fmtMemK8s(sugMemReqMb);
+        const sugMemLim = fmtMemK8s(sugMemLimMb);
+        const projectedQoS = calcQoS(sugCpuReq, sugMemReq, sugCpuLim, sugMemLim);
+        const reasoning = [
+          cpuRealNow ? `CPU request = uso real (${Math.round(cpuRealNow)}m) × 1.3 = ${sugCpuReqM}m` : `CPU request = fallback mínimo (sem métricas)`,
+          cpuRealNow ? `CPU limit = uso real (${Math.round(cpuRealNow)}m) × 2.0 = ${sugCpuLimM}m (headroom para picos)` : `CPU limit = fallback mínimo`,
+          memRealNow ? `MEM request = uso real (${Math.round(memRealNow)}Mi) × 1.3 = ${sugMemReqMb}Mi` : `MEM request = fallback mínimo (sem métricas)`,
+          memRealNow ? `MEM limit = uso real (${Math.round(memRealNow)}Mi) × 1.5 = ${sugMemLimMb}Mi (proteção OOMKill)` : `MEM limit = fallback mínimo`,
+        ];
+        const patchYaml = `spec:\n  template:\n    spec:\n      containers:\n      - name: ${container}\n        resources:\n          requests:\n            cpu: "${sugCpuReq}"\n            memory: "${sugMemReq}"\n          limits:\n            cpu: "${sugCpuLim}"\n            memory: "${sugMemLim}"`;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ pod: podName, namespace: ns, container, workloadKind, workloadName, currentResources: { cpuRequest: cpuReq, memRequest: memReq, cpuLimit: cpuLim, memLimit: memLim, cpuReqM, memReqMb, cpuLimM, memLimMb }, currentQoS, realUsage: { cpuNow: cpuRealNow, memNow: memRealNow }, suggestion: { cpuRequest: sugCpuReq, cpuLimit: sugCpuLim, memRequest: sugMemReq, memLimit: sugMemLim, projectedQoS, reasoning }, patchYaml, timestamp: Date.now() }));
+      } catch (err) { console.error("[error] /api/nodes/governance-detail:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
+  // ── /api/nodes/governance-apply — Aplica patch de resources em um workload ─────
+  if (url.pathname === "/api/nodes/governance-apply" && req.method === "POST") {
+    requireAuth(req, res, async () => {
+      try {
+        let body = "";
+        req.on("data", (chunk) => (body += chunk));
+        req.on("end", async () => {
+          try {
+            const { namespace, workloadKind, workloadName, container, cpuRequest, memRequest, cpuLimit, memLimit } = JSON.parse(body);
+            if (!namespace || !workloadKind || !workloadName || !container) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Parâmetros obrigatórios ausentes" })); return; }
+            const kindPath = workloadKind === "Deployment" ? "deployments" : workloadKind === "StatefulSet" ? "statefulsets" : workloadKind === "DaemonSet" ? "daemonsets" : workloadKind === "ReplicaSet" ? "replicasets" : null;
+            if (!kindPath) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: `Tipo de workload não suportado: ${workloadKind}` })); return; }
+            const wlRes = await k8sRequest(`/apis/apps/v1/namespaces/${namespace}/${kindPath}/${workloadName}`);
+            const wl = wlRes.body;
+            if (!wl || wl.kind !== workloadKind) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "Workload não encontrado" })); return; }
+            const containers = wl.spec?.template?.spec?.containers || [];
+            const contIdx = containers.findIndex((c) => c.name === container);
+            if (contIdx === -1) { res.writeHead(404, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: `Container '${container}' não encontrado` })); return; }
+            const patch = { spec: { template: { spec: { containers: containers.map((c, idx) => idx === contIdx ? { ...c, resources: { requests: { cpu: cpuRequest, memory: memRequest }, limits: { cpu: cpuLimit, memory: memLimit } } } : c) } } } };
+            await k8sPatch(`/apis/apps/v1/namespaces/${namespace}/${kindPath}/${workloadName}`, patch);
+            try { await insertAuditLog({ user: "sre", action: "governance-apply", resource: `${workloadKind}/${workloadName}`, namespace, detail: `container=${container} cpu=${cpuRequest}/${cpuLimit} mem=${memRequest}/${memLimit}` }); } catch (_) {}
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: true, workload: `${workloadKind}/${workloadName}`, container, applied: { cpuRequest, memRequest, cpuLimit, memLimit }, timestamp: Date.now() }));
+          } catch (innerErr) { res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: innerErr.message })); }
+        });
+      } catch (err) { console.error("[error] /api/nodes/governance-apply:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
   if (logsMatch) {

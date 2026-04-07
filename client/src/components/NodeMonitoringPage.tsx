@@ -655,7 +655,7 @@ type TabId = "overview" | "nodes" | "workloads" | "governance" | "spot";
 
 export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps) {
   const [activeTab, setActiveTab] = useState<TabId>("overview");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [overviewData, setOverviewData] = useState<{ nodes: NodeOverview[]; topNamespaces: Array<{ ns: string; cpu: number }> } | null>(null);
   const [governanceData, setGovernanceData] = useState<{ issues: GovernanceIssue[]; topRiskNamespaces: Array<{ ns: string; count: number; critical: number; oomKilled: number }> } | null>(null);
@@ -758,6 +758,12 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
           <div className="flex flex-col items-center justify-center py-20 text-gray-500">
             <RefreshCw size={24} className="animate-spin mb-3" />
             <span className="text-sm">Carregando dados do cluster...</span>
+          </div>
+        )}
+        {!loading && !overviewData && !error && (
+          <div className="flex flex-col items-center justify-center py-20 text-gray-500">
+            <Server size={32} className="mb-3 opacity-40" />
+            <span className="text-sm">Nenhum dado disponível. Clique em Atualizar para tentar novamente.</span>
           </div>
         )}
       </div>

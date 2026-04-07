@@ -1344,6 +1344,80 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── /api/nodes/oom-pods — Lista detalhada de pods OOMKilled por node ──────────
+  if (url.pathname === "/api/nodes/oom-pods") {
+    requireAuth(req, res, async () => {
+      try {
+        const [podsRes, metricsRes] = await Promise.allSettled([
+          k8sRequest("/api/v1/pods"),
+          k8sRequest("/apis/metrics.k8s.io/v1beta1/pods"),
+        ]);
+        const pods = podsRes.status === "fulfilled" ? (podsRes.value.body?.items || []) : [];
+        const podMetrics = metricsRes.status === "fulfilled" ? (metricsRes.value.body?.items || []) : [];
+        const metricsMap = {};
+        for (const pm of podMetrics) {
+          const key = `${pm.metadata.namespace}/${pm.metadata.name}`;
+          metricsMap[key] = pm.containers || [];
+        }
+        const oomPods = [];
+        for (const p of pods) {
+          const containers = p.spec?.containers || [];
+          const containerStatuses = p.status?.containerStatuses || [];
+          for (const cs of containerStatuses) {
+            const isOOM = cs.lastState?.terminated?.reason === "OOMKilled";
+            if (!isOOM) continue;
+            const specContainer = containers.find((c) => c.name === cs.name) || {};
+            const cpuReq = specContainer.resources?.requests?.cpu || null;
+            const memReq = specContainer.resources?.requests?.memory || null;
+            const cpuLim = specContainer.resources?.limits?.cpu || null;
+            const memLim = specContainer.resources?.limits?.memory || null;
+            const memLimMb = memLim ? parseMem(memLim) : null;
+            const oomTime = cs.lastState?.terminated?.finishedAt || null;
+            const oomExitCode = cs.lastState?.terminated?.exitCode || 137;
+            // Uso real atual do container
+            const podKey = `${p.metadata.namespace}/${p.metadata.name}`;
+            const realContainers = metricsMap[podKey] || [];
+            const realC = realContainers.find((c) => c.name === cs.name);
+            const realMemMb = realC ? parseMem(realC.usage?.memory) : null;
+            // Recomendação: sugerir limit = 1.5x do uso real ou 1.3x do limit atual
+            let recommendedMemLim = null;
+            if (realMemMb && realMemMb > 0) {
+              recommendedMemLim = Math.ceil(realMemMb * 1.5);
+            } else if (memLimMb && memLimMb > 0) {
+              recommendedMemLim = Math.ceil(memLimMb * 1.3);
+            }
+            oomPods.push({
+              pod: p.metadata.name,
+              namespace: p.metadata.namespace,
+              node: p.spec?.nodeName || "—",
+              container: cs.name,
+              workload: p.metadata.labels?.["app"] || p.metadata.labels?.["app.kubernetes.io/name"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name,
+              phase: p.status?.phase || "Unknown",
+              restarts: cs.restartCount || 0,
+              oomTime,
+              oomExitCode,
+              currentMemLimitMb: memLimMb,
+              currentMemRequestMb: memReq ? parseMem(memReq) : null,
+              currentCpuRequest: cpuReq,
+              currentCpuLimit: cpuLim,
+              realMemMb,
+              recommendedMemLimitMb: recommendedMemLim,
+              qos: p.status?.qosClass || "BestEffort",
+            });
+          }
+        }
+        // Agrupar por node
+        const byNode = {};
+        for (const op of oomPods) {
+          if (!byNode[op.node]) byNode[op.node] = [];
+          byNode[op.node].push(op);
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ oomPods, byNode, total: oomPods.length, timestamp: Date.now() }));
+      } catch (err) { console.error("[error] /api/nodes/oom-pods:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
   if (logsMatch) {

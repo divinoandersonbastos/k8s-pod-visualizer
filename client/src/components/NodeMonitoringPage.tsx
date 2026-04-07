@@ -75,7 +75,17 @@ function timeAgo(ts: string | number) {
   return `${Math.floor(h / 24)}d atrás`;
 }
 
-// ── Sub-components ─────────────────────────────────────────────────────────────
+// ── Types adicionais ─────────────────────────────────────────────────────
+interface OomPodDetail {
+  pod: string; namespace: string; node: string; container: string; workload: string;
+  phase: string; restarts: number; oomTime: string | null; oomExitCode: number;
+  currentMemLimitMb: number | null; currentMemRequestMb: number | null;
+  currentCpuRequest: string | null; currentCpuLimit: string | null;
+  realMemMb: number | null; recommendedMemLimitMb: number | null;
+  qos: string;
+}
+
+// ── Sub-components ─────────────────────────────────────────────────────
 function UsageBar({ used, total, colorClass }: { used: number; total: number; colorClass: string }) {
   const p = pct(used, total);
   const color = p > 85 ? "bg-red-500" : p > 65 ? "bg-yellow-500" : colorClass;
@@ -96,6 +106,157 @@ function RiskBadge({ risk }: { risk: string }) {
   if (risk === "critical") return <span className="px-1.5 py-0.5 rounded text-xs bg-red-900/60 text-red-300 border border-red-700/50">Crítico</span>;
   if (risk === "high")     return <span className="px-1.5 py-0.5 rounded text-xs bg-orange-900/60 text-orange-300 border border-orange-700/50">Alto</span>;
   return <span className="px-1.5 py-0.5 rounded text-xs bg-yellow-900/60 text-yellow-300 border border-yellow-700/50">Médio</span>;
+}
+
+// ── Circular Gauge (relógio) ─────────────────────────────────────────────────────
+function CircularGauge({ value, total, label, sublabel, colorClass, size = 80 }: {
+  value: number; total: number; label: string; sublabel?: string;
+  colorClass: string; size?: number;
+}) {
+  const p = total > 0 ? Math.min(100, Math.round((value / total) * 100)) : 0;
+  const r = (size - 10) / 2;
+  const circumference = 2 * Math.PI * r;
+  const strokeDashoffset = circumference - (p / 100) * circumference;
+  const strokeColor = p > 85 ? "#ef4444" : p > 65 ? "#eab308" : colorClass;
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <div style={{ width: size, height: size, position: "relative" }}>
+        <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="#1f2937" strokeWidth={8} />
+          <circle
+            cx={size / 2} cy={size / 2} r={r} fill="none"
+            stroke={strokeColor} strokeWidth={8}
+            strokeDasharray={circumference}
+            strokeDashoffset={strokeDashoffset}
+            strokeLinecap="round"
+          />
+        </svg>
+        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <span style={{ fontSize: size < 70 ? 11 : 13, fontWeight: 700, color: strokeColor, lineHeight: 1 }}>{p}%</span>
+        </div>
+      </div>
+      <div className="text-center">
+        <div className="text-xs text-gray-300 font-medium">{label}</div>
+        {sublabel && <div className="text-xs text-gray-500">{sublabel}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── OOM Pods Modal ────────────────────────────────────────────────────────────────
+function OomPodsModal({ pods, nodeName, onClose }: { pods: OomPodDetail[]; nodeName: string; onClose: () => void }) {
+  const filtered = nodeName ? pods.filter((p) => p.node === nodeName) : pods;
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.75)" }}>
+      <div className="bg-gray-900 border border-red-800/50 rounded-xl w-full max-w-3xl max-h-[80vh] flex flex-col shadow-2xl">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+          <div className="flex items-center gap-2">
+            <AlertTriangle size={16} className="text-red-400" />
+            <span className="text-white font-semibold">Pods OOMKilled</span>
+            {nodeName && <span className="text-xs text-gray-400 ml-1">em {nodeName}</span>}
+            <span className="ml-2 px-2 py-0.5 rounded-full bg-red-900/60 text-red-300 text-xs">{filtered.length}</span>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-gray-800">
+            <X size={16} />
+          </button>
+        </div>
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 p-4 space-y-3">
+          {filtered.length === 0 && (
+            <div className="text-center py-8 text-gray-500">Nenhum pod OOMKilled encontrado neste node</div>
+          )}
+          {filtered.map((p, i) => (
+            <div key={i} className="bg-gray-800/60 border border-red-900/40 rounded-lg p-4">
+              <div className="flex items-start justify-between mb-2">
+                <div>
+                  <div className="text-white font-medium text-sm">{p.pod}</div>
+                  <div className="text-gray-400 text-xs mt-0.5">
+                    container: <span className="text-orange-300">{p.container}</span>
+                    {" · "}{p.namespace}
+                    {" · "}<span className="text-gray-500">{p.node}</span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="px-1.5 py-0.5 rounded text-xs bg-red-900/60 text-red-300 border border-red-700/50">OOMKilled</span>
+                  {p.oomTime && <span className="text-xs text-gray-500">{timeAgo(p.oomTime)}</span>}
+                </div>
+              </div>
+              {/* Resources grid */}
+              <div className="grid grid-cols-2 gap-3 mt-3">
+                <div className="bg-gray-900/60 rounded-lg p-3">
+                  <div className="text-xs text-gray-400 font-semibold mb-2 uppercase tracking-wider">Configuração Atual</div>
+                  <div className="space-y-1 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">MEM Request</span>
+                      <span className={p.currentMemRequestMb ? "text-gray-300" : "text-red-400"}>{p.currentMemRequestMb ? fmtMem(p.currentMemRequestMb) : "não definido"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">MEM Limit</span>
+                      <span className={p.currentMemLimitMb ? "text-gray-300" : "text-red-400"}>{p.currentMemLimitMb ? fmtMem(p.currentMemLimitMb) : "não definido"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">CPU Request</span>
+                      <span className={p.currentCpuRequest ? "text-gray-300" : "text-red-400"}>{p.currentCpuRequest || "não definido"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">CPU Limit</span>
+                      <span className={p.currentCpuLimit ? "text-gray-300" : "text-red-400"}>{p.currentCpuLimit || "não definido"}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">QoS</span>
+                      <span className={p.qos === "Guaranteed" ? "text-green-400" : p.qos === "Burstable" ? "text-yellow-400" : "text-red-400"}>{p.qos}</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="bg-green-950/30 border border-green-800/30 rounded-lg p-3">
+                  <div className="text-xs text-green-400 font-semibold mb-2 uppercase tracking-wider">Recomendação</div>
+                  <div className="space-y-1 text-xs">
+                    {p.realMemMb && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Uso real atual</span>
+                        <span className="text-blue-300">{fmtMem(p.realMemMb)}</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between">
+                      <span className="text-gray-500">MEM Limit sugerido</span>
+                      <span className="text-green-300 font-semibold">
+                        {p.recommendedMemLimitMb ? fmtMem(p.recommendedMemLimitMb) : "aumentar limit"}
+                      </span>
+                    </div>
+                    {p.recommendedMemLimitMb && p.currentMemLimitMb && (
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Aumento</span>
+                        <span className="text-orange-300">+{Math.round(((p.recommendedMemLimitMb - p.currentMemLimitMb) / p.currentMemLimitMb) * 100)}%</span>
+                      </div>
+                    )}
+                    <div className="mt-2 pt-2 border-t border-gray-700/50">
+                      <div className="text-gray-500 text-xs leading-relaxed">
+                        {p.realMemMb
+                          ? `Uso real: ${fmtMem(p.realMemMb)}. Sugerimos limit = 1.5x do uso real.`
+                          : p.currentMemLimitMb
+                          ? `Limit atual: ${fmtMem(p.currentMemLimitMb)}. Sugerimos aumentar 30%.`
+                          : "Defina memory limit e request para evitar OOMKill."}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {/* kubectl patch command */}
+              {p.recommendedMemLimitMb && (
+                <div className="mt-3">
+                  <div className="text-xs text-gray-500 mb-1">Comando sugerido:</div>
+                  <div className="bg-gray-950 rounded px-3 py-2 font-mono text-xs text-green-300 overflow-x-auto whitespace-nowrap">
+                    kubectl set resources deploy/{p.workload} -n {p.namespace} --containers={p.container} --limits=memory={fmtMem(p.recommendedMemLimitMb)}
+                  </div>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── Tab: Visão Geral ──────────────────────────────────────────────────────────
@@ -218,9 +379,32 @@ function OverviewTab({ nodes, topNamespaces }: { nodes: NodeOverview[]; topNames
 }
 
 // ── Tab: Nodes Detalhado ──────────────────────────────────────────────────────
-function NodesTab({ nodes }: { nodes: NodeOverview[] }) {
+function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) {
   const [selected, setSelected] = useState<NodeOverview | null>(null);
   const [filter, setFilter] = useState<"all" | "critical" | "warning" | "spot">("all");
+  const [oomModal, setOomModal] = useState<{ nodeName: string } | null>(null);
+  const [oomPods, setOomPods] = useState<OomPodDetail[]>([]);
+  const [oomLoading, setOomLoading] = useState(false);
+
+  const base = apiUrl.replace(/\/$/, "");
+  const TOKEN_KEY = "k8s-viz-token";
+  const getAuthHeaders = (): Record<string, string> => {
+    const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+    return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+  };
+
+  const openOomModal = async (nodeName: string) => {
+    setOomModal({ nodeName });
+    if (oomPods.length === 0) {
+      setOomLoading(true);
+      try {
+        const res = await fetch(`${base}/api/nodes/oom-pods`, { headers: getAuthHeaders() });
+        const data = await res.json();
+        setOomPods(data.oomPods || []);
+      } catch { /* ignore */ }
+      setOomLoading(false);
+    }
+  };
 
   const filtered = nodes.filter((n) => {
     if (filter === "critical") return n.health === "critical";
@@ -232,41 +416,86 @@ function NodesTab({ nodes }: { nodes: NodeOverview[] }) {
   if (selected) {
     return (
       <div className="space-y-4">
+        {oomModal && (
+          <OomPodsModal
+            pods={oomLoading ? [] : oomPods}
+            nodeName={oomModal.nodeName}
+            onClose={() => setOomModal(null)}
+          />
+        )}
         <button onClick={() => setSelected(null)} className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors">
           <ArrowLeft size={14} /> Voltar para lista
         </button>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Recursos */}
-          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4 space-y-3">
-            <h4 className="text-sm font-semibold text-white flex items-center gap-2"><Cpu size={14} className="text-blue-400" />Recursos</h4>
-            {[
-              { label: "CPU Real", used: selected.realUsage.cpu, total: selected.allocatable.cpu, fmt: fmtCPU, color: "bg-green-500" },
-              { label: "CPU Requests", used: selected.requests.cpu, total: selected.allocatable.cpu, fmt: fmtCPU, color: "bg-blue-500" },
-              { label: "CPU Limits", used: selected.limits.cpu, total: selected.allocatable.cpu, fmt: fmtCPU, color: "bg-blue-300" },
-              { label: "MEM Real", used: selected.realUsage.memory, total: selected.allocatable.memory, fmt: fmtMem, color: "bg-green-500" },
-              { label: "MEM Requests", used: selected.requests.memory, total: selected.allocatable.memory, fmt: fmtMem, color: "bg-purple-500" },
-              { label: "MEM Limits", used: selected.limits.memory, total: selected.allocatable.memory, fmt: fmtMem, color: "bg-purple-300" },
-            ].map((r) => (
-              <div key={r.label}>
-                <div className="flex justify-between text-xs text-gray-400 mb-1">
-                  <span>{r.label}</span>
-                  <span>{r.fmt(r.used)} / {r.fmt(r.total)} ({pct(r.used, r.total)}%)</span>
-                </div>
-                <div className="w-full bg-gray-800 rounded-full h-2">
-                  <div className={`h-2 rounded-full ${pct(r.used, r.total) > 85 ? "bg-red-500" : pct(r.used, r.total) > 65 ? "bg-yellow-500" : r.color}`} style={{ width: `${pct(r.used, r.total)}%` }} />
-                </div>
-              </div>
-            ))}
+          {/* Recursos com gauges circulares */}
+          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Cpu size={14} className="text-blue-400" />Recursos
+              </h4>
+              <span className="text-xs text-red-400 font-mono font-semibold truncate max-w-[200px]" title={selected.name}>{selected.name}</span>
+            </div>
+            {/* Gauges circulares - CPU */}
+            <div className="grid grid-cols-3 gap-4 mb-5">
+              <CircularGauge
+                value={selected.realUsage.cpu} total={selected.allocatable.cpu}
+                label="CPU Real" sublabel={`${fmtCPU(selected.realUsage.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                colorClass="#22c55e" size={88}
+              />
+              <CircularGauge
+                value={selected.requests.cpu} total={selected.allocatable.cpu}
+                label="CPU Req" sublabel={`${fmtCPU(selected.requests.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                colorClass="#3b82f6" size={88}
+              />
+              <CircularGauge
+                value={selected.limits.cpu} total={selected.allocatable.cpu}
+                label="CPU Lim" sublabel={`${fmtCPU(selected.limits.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                colorClass="#93c5fd" size={88}
+              />
+            </div>
+            {/* Gauges circulares - MEM */}
+            <div className="grid grid-cols-3 gap-4">
+              <CircularGauge
+                value={selected.realUsage.memory} total={selected.allocatable.memory}
+                label="MEM Real" sublabel={`${fmtMem(selected.realUsage.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                colorClass="#22c55e" size={88}
+              />
+              <CircularGauge
+                value={selected.requests.memory} total={selected.allocatable.memory}
+                label="MEM Req" sublabel={`${fmtMem(selected.requests.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                colorClass="#a855f7" size={88}
+              />
+              <CircularGauge
+                value={selected.limits.memory} total={selected.allocatable.memory}
+                label="MEM Lim" sublabel={`${fmtMem(selected.limits.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                colorClass="#d8b4fe" size={88}
+              />
+            </div>
           </div>
-          {/* Pod statuses */}
-          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4 space-y-3">
+          {/* Pod statuses com OOMKilled clicável */}
+          <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4 space-y-2">
             <h4 className="text-sm font-semibold text-white flex items-center gap-2"><Container size={14} className="text-green-400" />Pods ({selected.podCount})</h4>
-            {Object.entries(selected.podStatuses).map(([k, v]) => (
-              <div key={k} className="flex justify-between text-sm">
-                <span className="text-gray-400 capitalize">{k === "oomKilled" ? "OOMKilled" : k === "crashLoop" ? "CrashLoop" : k}</span>
-                <span className={v > 0 && (k === "oomKilled" || k === "crashLoop" || k === "failed") ? "text-red-400 font-semibold" : "text-white"}>{v}</span>
-              </div>
-            ))}
+            {Object.entries(selected.podStatuses).map(([k, v]) => {
+              const isOom = k === "oomKilled";
+              const isBad = v > 0 && (isOom || k === "crashLoop" || k === "failed");
+              const label = k === "oomKilled" ? "OOMKilled" : k === "crashLoop" ? "CrashLoop" : k.charAt(0).toUpperCase() + k.slice(1);
+              return (
+                <div key={k} className={`flex justify-between items-center text-sm py-1.5 px-2 rounded ${isOom && v > 0 ? "border border-red-800/40 bg-red-950/20" : ""}`}>
+                  <span className="text-gray-400">{label}</span>
+                  {isOom && v > 0 ? (
+                    <button
+                      onClick={() => openOomModal(selected.name)}
+                      className="flex items-center gap-1.5 text-red-400 font-semibold hover:text-red-300 hover:underline transition-colors"
+                      title="Clique para ver quais pods sofreram OOMKill"
+                    >
+                      {v} <AlertTriangle size={12} />
+                    </button>
+                  ) : (
+                    <span className={isBad ? "text-red-400 font-semibold" : "text-white"}>{v}</span>
+                  )}
+                </div>
+              );
+            })}
           </div>
           {/* Conditions */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">
@@ -303,6 +532,13 @@ function NodesTab({ nodes }: { nodes: NodeOverview[] }) {
 
   return (
     <div className="space-y-3">
+      {oomModal && (
+        <OomPodsModal
+          pods={oomLoading ? [] : oomPods}
+          nodeName={oomModal.nodeName}
+          onClose={() => setOomModal(null)}
+        />
+      )}
       <div className="flex gap-2">
         {(["all", "critical", "warning", "spot"] as const).map((f) => (
           <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1 rounded text-xs transition-colors ${filter === f ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>
@@ -338,7 +574,17 @@ function NodesTab({ nodes }: { nodes: NodeOverview[] }) {
                 <td className={`py-2 pr-3 text-right ${pct(n.requests.cpu, n.allocatable.cpu) > 85 ? "text-red-400" : pct(n.requests.cpu, n.allocatable.cpu) > 65 ? "text-yellow-400" : "text-gray-300"}`}>{pct(n.requests.cpu, n.allocatable.cpu)}%</td>
                 <td className={`py-2 pr-3 text-right ${pct(n.requests.memory, n.allocatable.memory) > 85 ? "text-red-400" : pct(n.requests.memory, n.allocatable.memory) > 65 ? "text-yellow-400" : "text-gray-300"}`}>{pct(n.requests.memory, n.allocatable.memory)}%</td>
                 <td className="py-2 pr-3 text-right text-gray-300">{n.podCount}</td>
-                <td className={`py-2 pr-3 text-right ${n.podStatuses.oomKilled > 0 ? "text-red-400 font-semibold" : "text-gray-600"}`}>{n.podStatuses.oomKilled || "—"}</td>
+                <td className="py-2 pr-3 text-right">
+                  {n.podStatuses.oomKilled > 0 ? (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openOomModal(n.name); }}
+                      className="text-red-400 font-semibold hover:text-red-300 hover:underline transition-colors"
+                      title="Ver pods OOMKilled"
+                    >
+                      {n.podStatuses.oomKilled}
+                    </button>
+                  ) : <span className="text-gray-600">—</span>}
+                </td>
                 <td className={`py-2 pr-3 text-right ${n.podStatuses.crashLoop > 0 ? "text-orange-400 font-semibold" : "text-gray-600"}`}>{n.podStatuses.crashLoop || "—"}</td>
                 <td className="py-2 text-right text-gray-600">{n.ip}</td>
               </tr>
@@ -669,7 +915,7 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
 
   const base = apiUrl.replace(/\/$/, "");
   const TOKEN_KEY = "k8s-viz-token";
-  const getAuthHeaders = () => {
+  const getAuthHeaders = (): Record<string, string> => {
     const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
     return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
   };
@@ -777,7 +1023,7 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
           <OverviewTab nodes={overviewData.nodes} topNamespaces={overviewData.topNamespaces} />
         )}
         {activeTab === "nodes" && overviewData && (
-          <NodesTab nodes={overviewData.nodes} />
+          <NodesTab nodes={overviewData.nodes} apiUrl={apiUrl} />
         )}
         {activeTab === "workloads" && (
           <WorkloadsTab data={workloadsData} />

@@ -47,19 +47,30 @@ interface WorkloadsByNode {
   }>>;
 }
 // ── Helpers ─────────────────────────────────────────────────────────────────────────────────
-/** Converte millicores para vCPU com formato legível.
- *  Ex: 531 → "0,53 vCPU"  |  12000 → "12 vCPU"  |  250 → "0,25 vCPU" */
+/** Converte millicores para vCPU ou millicores com formato legível.
+ *  < 1 vCPU  → exibe em millicores: "531m"
+ *  >= 1 vCPU → exibe em vCPU: "5,5 vCPU" | "12 vCPU" */
 function fmtCPU(m: number): string {
-  if (!m) return "0 vCPU";
+  if (!m) return "0m";
+  if (m < 1000) return `${Math.round(m)}m`;
   const vcpu = m / 1000;
-  // Se é inteiro exato, sem casas decimais
   if (vcpu === Math.floor(vcpu)) return `${vcpu} vCPU`;
-  // Menos de 1 vCPU: 2 casas decimais
-  if (vcpu < 1) return `${vcpu.toFixed(2).replace(".", ",")} vCPU`;
-  // Entre 1 e 10: 1 casa decimal
   if (vcpu < 10) return `${vcpu.toFixed(1).replace(".", ",")} vCPU`;
-  // Acima de 10: sem casas decimais
   return `${Math.round(vcpu)} vCPU`;
+}
+
+// ── Tooltip simples ───────────────────────────────────────────────────────────
+function Tip({ text, children }: { text: string; children: React.ReactNode }) {
+  return (
+    <span className="relative group cursor-help inline-flex items-center">
+      {children}
+      <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-50 hidden group-hover:flex
+        bg-gray-800 border border-gray-700 text-gray-200 text-xs rounded px-2 py-1 shadow-xl
+        whitespace-nowrap max-w-[220px] text-center pointer-events-none">
+        {text}
+      </span>
+    </span>
+  );
 }
 function fmtMem(mb: number) {
   if (!mb) return "0Mi";
@@ -341,23 +352,39 @@ function OverviewTab({ nodes, topNamespaces }: { nodes: NodeOverview[]; topNames
               </div>
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div>
-                  <div className="flex justify-between text-gray-400">
-                    <span>CPU req</span><span>{pct(n.requests.cpu, n.allocatable.cpu)}%</span>
-                  </div>
+                  <Tip text="CPU reservada para agendamento (requests)">
+                    <div className="flex justify-between text-gray-400 w-full">
+                      <span>CPU reservada</span><span>{pct(n.requests.cpu, n.allocatable.cpu)}%</span>
+                    </div>
+                  </Tip>
                   <UsageBar used={n.requests.cpu} total={n.allocatable.cpu} colorClass="bg-blue-500" />
                 </div>
                 <div>
-                  <div className="flex justify-between text-gray-400">
-                    <span>MEM req</span><span>{pct(n.requests.memory, n.allocatable.memory)}%</span>
-                  </div>
+                  <Tip text="Memória reservada para agendamento (requests)">
+                    <div className="flex justify-between text-gray-400 w-full">
+                      <span>Mem reservada</span><span>{pct(n.requests.memory, n.allocatable.memory)}%</span>
+                    </div>
+                  </Tip>
                   <UsageBar used={n.requests.memory} total={n.allocatable.memory} colorClass="bg-purple-500" />
                 </div>
               </div>
-              <div className="flex justify-between text-xs text-gray-500 mt-2">
-                <span>{n.podCount} pods</span>
-                {n.podStatuses.oomKilled > 0 && <span className="text-red-400">{n.podStatuses.oomKilled} OOM</span>}
-                {n.podStatuses.crashLoop > 0 && <span className="text-orange-400">{n.podStatuses.crashLoop} crash</span>}
-                <span className="text-gray-600">{n.ip}</span>
+              <div className="flex items-center gap-2 text-xs mt-2 flex-wrap">
+                <span className="text-gray-500">{n.podCount} pods</span>
+                {n.podStatuses.oomKilled > 0 && (
+                  <Tip text="OOMKill: container encerrado por exceder o limite de memória">
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-900/50 border border-red-700/50 text-red-300">
+                      <AlertTriangle size={10} />{n.podStatuses.oomKilled} OOMKill
+                    </span>
+                  </Tip>
+                )}
+                {n.podStatuses.crashLoop > 0 && (
+                  <Tip text="CrashLoop: pod reiniciando repetidamente por falha">
+                    <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-900/50 border border-orange-700/50 text-orange-300">
+                      <AlertCircle size={10} />{n.podStatuses.crashLoop} CrashLoop
+                    </span>
+                  </Tip>
+                )}
+                <span className="text-gray-600 ml-auto">{n.ip}</span>
               </div>
             </div>
           ))}
@@ -444,66 +471,124 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
               <span className="text-xs text-red-400 font-mono font-semibold truncate max-w-[200px]" title={selected.name}>{selected.name}</span>
             </div>
             {/* Gauges circulares - CPU */}
+            <div className="mb-1">
+              <div className="flex items-center gap-1 text-xs text-gray-500 mb-3">
+                <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span><span>Uso real</span>
+                <span className="ml-2 w-2 h-2 rounded-full bg-blue-500 inline-block"></span><span>Reservada (request)</span>
+                <span className="ml-2 w-2 h-2 rounded-full bg-blue-300 inline-block"></span><span>Limite</span>
+              </div>
+            </div>
             <div className="grid grid-cols-3 gap-4 mb-5">
-              <CircularGauge
-                value={selected.realUsage.cpu} total={selected.allocatable.cpu}
-                label="CPU Real" sublabel={`${fmtCPU(selected.realUsage.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
-                colorClass="#22c55e" size={88}
-              />
-              <CircularGauge
-                value={selected.requests.cpu} total={selected.allocatable.cpu}
-                label="CPU Req" sublabel={`${fmtCPU(selected.requests.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
-                colorClass="#3b82f6" size={88}
-              />
-              <CircularGauge
-                value={selected.limits.cpu} total={selected.allocatable.cpu}
-                label="CPU Lim" sublabel={`${fmtCPU(selected.limits.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
-                colorClass="#93c5fd" size={88}
-              />
+              <Tip text="Consumo real de CPU medido agora (metrics-server)">
+                <CircularGauge
+                  value={selected.realUsage.cpu} total={selected.allocatable.cpu}
+                  label="CPU — Uso Real" sublabel={`${fmtCPU(selected.realUsage.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                  colorClass="#22c55e" size={88}
+                />
+              </Tip>
+              <Tip text="CPU reservada para agendamento (requests). Afeta onde o pod é alocado.">
+                <CircularGauge
+                  value={selected.requests.cpu} total={selected.allocatable.cpu}
+                  label="CPU — Reservada" sublabel={`${fmtCPU(selected.requests.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                  colorClass="#3b82f6" size={88}
+                />
+              </Tip>
+              <Tip text="CPU máxima que o container pode usar (limits). Exceder causa throttling.">
+                <CircularGauge
+                  value={selected.limits.cpu} total={selected.allocatable.cpu}
+                  label="CPU — Limite" sublabel={`${fmtCPU(selected.limits.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                  colorClass="#93c5fd" size={88}
+                />
+              </Tip>
             </div>
             {/* Gauges circulares - MEM */}
+            <div className="mb-1">
+              <div className="flex items-center gap-1 text-xs text-gray-500 mb-3">
+                <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span><span>Uso real</span>
+                <span className="ml-2 w-2 h-2 rounded-full bg-purple-500 inline-block"></span><span>Reservada (request)</span>
+                <span className="ml-2 w-2 h-2 rounded-full bg-purple-300 inline-block"></span><span>Limite</span>
+              </div>
+            </div>
             <div className="grid grid-cols-3 gap-4">
-              <CircularGauge
-                value={selected.realUsage.memory} total={selected.allocatable.memory}
-                label="MEM Real" sublabel={`${fmtMem(selected.realUsage.memory)} / ${fmtMem(selected.allocatable.memory)}`}
-                colorClass="#22c55e" size={88}
-              />
-              <CircularGauge
-                value={selected.requests.memory} total={selected.allocatable.memory}
-                label="MEM Req" sublabel={`${fmtMem(selected.requests.memory)} / ${fmtMem(selected.allocatable.memory)}`}
-                colorClass="#a855f7" size={88}
-              />
-              <CircularGauge
-                value={selected.limits.memory} total={selected.allocatable.memory}
-                label="MEM Lim" sublabel={`${fmtMem(selected.limits.memory)} / ${fmtMem(selected.allocatable.memory)}`}
-                colorClass="#d8b4fe" size={88}
-              />
+              <Tip text="Consumo real de memória medido agora (metrics-server)">
+                <CircularGauge
+                  value={selected.realUsage.memory} total={selected.allocatable.memory}
+                  label="MEM — Uso Real" sublabel={`${fmtMem(selected.realUsage.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                  colorClass="#22c55e" size={88}
+                />
+              </Tip>
+              <Tip text="Memória reservada para agendamento (requests). Afeta onde o pod é alocado.">
+                <CircularGauge
+                  value={selected.requests.memory} total={selected.allocatable.memory}
+                  label="MEM — Reservada" sublabel={`${fmtMem(selected.requests.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                  colorClass="#a855f7" size={88}
+                />
+              </Tip>
+              <Tip text="Memória máxima que o container pode usar. Exceder causa OOMKill.">
+                <CircularGauge
+                  value={selected.limits.memory} total={selected.allocatable.memory}
+                  label="MEM — Limite" sublabel={`${fmtMem(selected.limits.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                  colorClass="#d8b4fe" size={88}
+                />
+              </Tip>
             </div>
           </div>
           {/* Pod statuses com OOMKilled clicável */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4 space-y-2">
-            <h4 className="text-sm font-semibold text-white flex items-center gap-2"><Container size={14} className="text-green-400" />Pods ({selected.podCount})</h4>
-            {Object.entries(selected.podStatuses).map(([k, v]) => {
-              const isOom = k === "oomKilled";
-              const isBad = v > 0 && (isOom || k === "crashLoop" || k === "failed");
-              const label = k === "oomKilled" ? "OOMKilled" : k === "crashLoop" ? "CrashLoop" : k.charAt(0).toUpperCase() + k.slice(1);
-              return (
-                <div key={k} className={`flex justify-between items-center text-sm py-1.5 px-2 rounded ${isOom && v > 0 ? "border border-red-800/40 bg-red-950/20" : ""}`}>
-                  <span className="text-gray-400">{label}</span>
-                  {isOom && v > 0 ? (
-                    <button
-                      onClick={() => openOomModal(selected.name)}
-                      className="flex items-center gap-1.5 text-red-400 font-semibold hover:text-red-300 hover:underline transition-colors"
-                      title="Clique para ver quais pods sofreram OOMKill"
-                    >
-                      {v} <AlertTriangle size={12} />
-                    </button>
-                  ) : (
-                    <span className={isBad ? "text-red-400 font-semibold" : "text-white"}>{v}</span>
-                  )}
-                </div>
-              );
-            })}
+            {/* Saúde do node */}
+            <div className="flex items-center justify-between mb-1">
+              <h4 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Container size={14} className="text-green-400" />Pods ({selected.podCount})
+              </h4>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">Saúde do node:</span>
+                <HealthBadge health={selected.health} />
+              </div>
+            </div>
+            {/* Linha divisora */}
+            <div className="border-t border-gray-800 pt-2 space-y-1.5">
+              {Object.entries(selected.podStatuses).map(([k, v]) => {
+                const isOom = k === "oomKilled";
+                const isCrash = k === "crashLoop";
+                const isBad = v > 0 && (isOom || isCrash || k === "failed" || k === "evicted");
+                const labelMap: Record<string, string> = {
+                  running: "Running", pending: "Pending",
+                  oomKilled: "OOMKill", crashLoop: "CrashLoop",
+                  evicted: "Evicted", failed: "Failed",
+                };
+                const label = labelMap[k] || k.charAt(0).toUpperCase() + k.slice(1);
+                const tooltipMap: Record<string, string> = {
+                  oomKilled: "OOMKill: container encerrado por exceder o limite de memória",
+                  crashLoop: "CrashLoop: pod reiniciando repetidamente por falha",
+                  evicted: "Pod removido pelo kubelet por pressão de recursos",
+                  failed: "Pod terminou com erro",
+                };
+                return (
+                  <div key={k} className={`flex justify-between items-center text-sm py-1.5 px-2 rounded
+                    ${isOom && v > 0 ? "border border-red-800/40 bg-red-950/20" : ""}
+                    ${isCrash && v > 0 ? "border border-orange-800/40 bg-orange-950/20" : ""}`}>
+                    <Tip text={tooltipMap[k] || label}>
+                      <span className={`text-gray-400 ${isBad ? "font-medium" : ""}`}>{label}</span>
+                    </Tip>
+                    {isOom && v > 0 ? (
+                      <button
+                        onClick={() => openOomModal(selected.name)}
+                        className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-900/60 border border-red-700/50 text-red-300 text-xs font-semibold hover:bg-red-900/80 transition-colors"
+                        title="Clique para ver quais pods sofreram OOMKill"
+                      >
+                        <AlertTriangle size={11} />{v} — ver pods
+                      </button>
+                    ) : isCrash && v > 0 ? (
+                      <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-orange-900/60 border border-orange-700/50 text-orange-300 text-xs font-semibold">
+                        <AlertCircle size={11} />{v}
+                      </span>
+                    ) : (
+                      <span className={isBad ? "text-red-400 font-semibold" : "text-white"}>{v}</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
           {/* Conditions */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">
@@ -560,11 +645,19 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
             <tr className="border-b border-gray-800 text-gray-500">
               <th className="text-left py-2 pr-3">Node</th>
               <th className="text-left py-2 pr-3">Saúde</th>
-              <th className="text-right py-2 pr-3">CPU Req%</th>
-              <th className="text-right py-2 pr-3">MEM Req%</th>
+              <th className="text-right py-2 pr-3">
+                <Tip text="CPU reservada para agendamento (requests)">CPU Reservada%</Tip>
+              </th>
+              <th className="text-right py-2 pr-3">
+                <Tip text="Memória reservada para agendamento (requests)">Mem Reservada%</Tip>
+              </th>
               <th className="text-right py-2 pr-3">Pods</th>
-              <th className="text-right py-2 pr-3">OOM</th>
-              <th className="text-right py-2 pr-3">Crash</th>
+              <th className="text-right py-2 pr-3">
+                <Tip text="OOMKill: container encerrado por exceder limite de memória">OOMKill</Tip>
+              </th>
+              <th className="text-right py-2 pr-3">
+                <Tip text="CrashLoop: pod reiniciando repetidamente">CrashLoop</Tip>
+              </th>
               <th className="text-right py-2">IP</th>
             </tr>
           </thead>
@@ -586,14 +679,20 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
                   {n.podStatuses.oomKilled > 0 ? (
                     <button
                       onClick={(e) => { e.stopPropagation(); openOomModal(n.name); }}
-                      className="text-red-400 font-semibold hover:text-red-300 hover:underline transition-colors"
+                      className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-900/50 border border-red-700/50 text-red-300 text-xs hover:bg-red-900/70 transition-colors ml-auto"
                       title="Ver pods OOMKilled"
                     >
-                      {n.podStatuses.oomKilled}
+                      <AlertTriangle size={10} />{n.podStatuses.oomKilled}
                     </button>
                   ) : <span className="text-gray-600">—</span>}
                 </td>
-                <td className={`py-2 pr-3 text-right ${n.podStatuses.crashLoop > 0 ? "text-orange-400 font-semibold" : "text-gray-600"}`}>{n.podStatuses.crashLoop || "—"}</td>
+                <td className="py-2 pr-3 text-right">
+                  {n.podStatuses.crashLoop > 0 ? (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-900/50 border border-orange-700/50 text-orange-300 text-xs">
+                      <AlertCircle size={10} />{n.podStatuses.crashLoop}
+                    </span>
+                  ) : <span className="text-gray-600">—</span>}
+                </td>
                 <td className="py-2 text-right text-gray-600">{n.ip}</td>
               </tr>
             ))}
@@ -633,8 +732,12 @@ function WorkloadsTab({ data }: { data: WorkloadsByNode | null }) {
                 <th className="text-left py-2 pr-3">QoS</th>
                 <th className="text-right py-2 pr-3">Restarts</th>
                 <th className="text-right py-2 pr-3">OOM</th>
-                <th className="text-right py-2 pr-3">CPU Req</th>
-                <th className="text-right py-2">MEM Req</th>
+                <th className="text-right py-2 pr-3">
+                  <Tip text="CPU reservada para agendamento (requests)">CPU Reservada</Tip>
+                </th>
+                <th className="text-right py-2">
+                  <Tip text="Memória reservada para agendamento (requests)">Mem Reservada</Tip>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -672,8 +775,20 @@ function WorkloadsTab({ data }: { data: WorkloadsByNode | null }) {
                 </div>
                 <div className="flex gap-3 text-xs text-gray-400">
                   <span>{nodePods.length} pods</span>
-                  {oomCount > 0 && <span className="text-red-400">{oomCount} OOM</span>}
-                  {crashCount > 0 && <span className="text-orange-400">{crashCount} crash</span>}
+                  {oomCount > 0 && (
+                    <Tip text="OOMKill: container encerrado por exceder limite de memória">
+                      <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-900/50 border border-red-700/50 text-red-300">
+                        <AlertTriangle size={10} />{oomCount} OOMKill
+                      </span>
+                    </Tip>
+                  )}
+                  {crashCount > 0 && (
+                    <Tip text="CrashLoop: pod reiniciando repetidamente">
+                      <span className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-orange-900/50 border border-orange-700/50 text-orange-300">
+                        <AlertCircle size={10} />{crashCount} CrashLoop
+                      </span>
+                    </Tip>
+                  )}
                 </div>
               </div>
             );

@@ -664,16 +664,21 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
   const [error, setError] = useState<string | null>(null);
 
   const base = apiUrl.replace(/\/$/, "");
+  const TOKEN_KEY = "k8s-viz-token";
+  const getAuthHeaders = () => {
+    const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+    return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+  };
 
   const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const [ov, gov, spot, wl] = await Promise.allSettled([
-        fetch(`${base}/api/nodes/overview`, { credentials: "include" }).then((r) => r.json()),
-        fetch(`${base}/api/nodes/governance`, { credentials: "include" }).then((r) => r.json()),
-        fetch(`${base}/api/nodes/spot`, { credentials: "include" }).then((r) => r.json()),
-        fetch(`${base}/api/nodes/workloads`, { credentials: "include" }).then((r) => r.json()),
+        fetch(`${base}/api/nodes/overview`, { headers: getAuthHeaders() }).then((r) => r.json()),
+        fetch(`${base}/api/nodes/governance`, { headers: getAuthHeaders() }).then((r) => r.json()),
+        fetch(`${base}/api/nodes/spot`, { headers: getAuthHeaders() }).then((r) => r.json()),
+        fetch(`${base}/api/nodes/workloads`, { headers: getAuthHeaders() }).then((r) => r.json()),
       ]);
       if (ov.status === "fulfilled" && !ov.value.error) setOverviewData(ov.value);
       if (gov.status === "fulfilled" && !gov.value.error) setGovernanceData(gov.value);

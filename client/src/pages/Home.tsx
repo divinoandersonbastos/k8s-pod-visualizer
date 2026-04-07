@@ -26,6 +26,7 @@ import { ConfigModal } from "@/components/ConfigModal";
 import { AlertsPanel } from "@/components/AlertsPanel";
 import { GlobalEventsDrawer } from "@/components/GlobalEventsDrawer";
 import { NodeMonitorPanel } from "@/components/NodeMonitorPanel";
+import { NodeMonitoringPage } from "@/components/NodeMonitoringPage";
 import { DeploymentMonitorPanel } from "@/components/DeploymentMonitorPanel";
 import { CapacityPlanningPanel } from "@/components/CapacityPlanningPanel";
 import { CustomizerPanel } from "@/components/CustomizerPanel";
@@ -55,6 +56,7 @@ export default function Home() {
   const [showAlerts, setShowAlerts] = useState(false);
   const [showEvents, setShowEvents] = useState(false);
   const [showNodeMonitor, setShowNodeMonitor] = useState(false);
+  const [showNodeMonitoringPage, setShowNodeMonitoringPage] = useState(false);
   const [showDeployMonitor, setShowDeployMonitor] = useState(false);
   const [showCapacity, setShowCapacity] = useState(false);
   const [showCustomizer, setShowCustomizer] = useState(false);
@@ -379,7 +381,7 @@ export default function Home() {
         onShowAlerts={() => setShowAlerts(true)}
         onShowEvents={() => setShowEvents(true)}
         totalEvents={totalEvents}
-        onShowNodeMonitor={() => setShowNodeMonitor(true)}
+        onShowNodeMonitor={() => setShowNodeMonitoringPage(true)}
         nodeAlertCount={nodeMonitor.criticalCount + nodeMonitor.warningCount}
         onShowDeployMonitor={() => setShowDeployMonitor(true)}
         deployAlertCount={deployMonitor.alertCount}
@@ -615,7 +617,15 @@ export default function Home() {
             }}
           />
 
-          {/* Painel de monitoramento de nodes */}
+          {/* Página completa de monitoramento de nodes */}
+          {showNodeMonitoringPage && (
+            <NodeMonitoringPage
+              onClose={() => setShowNodeMonitoringPage(false)}
+              apiUrl={apiUrl || window.location.origin}
+            />
+          )}
+
+          {/* Painel de monitoramento de nodes (legado) */}
           <NodeMonitorPanel
             open={showNodeMonitor}
             onClose={() => setShowNodeMonitor(false)}

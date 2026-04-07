@@ -1203,6 +1203,147 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+
+  // ── /api/nodes/overview — Visão geral do cluster com top nodes/namespaces ────
+  if (url.pathname === "/api/nodes/overview") {
+    requireAuth(req, res, async () => {
+      try {
+        const [nodesRes, podsRes, metricsRes] = await Promise.allSettled([
+          k8sRequest("/api/v1/nodes"),
+          k8sRequest("/api/v1/pods"),
+          k8sRequest("/apis/metrics.k8s.io/v1beta1/nodes"),
+        ]);
+        const nodes = nodesRes.status === "fulfilled" ? (nodesRes.value.body?.items || []) : [];
+        const pods  = podsRes.status  === "fulfilled" ? (podsRes.value.body?.items  || []) : [];
+        const nodeMetrics = metricsRes.status === "fulfilled" ? (metricsRes.value.body?.items || []) : [];
+        const metricsMap = {};
+        for (const nm of nodeMetrics) metricsMap[nm.metadata.name] = { cpu: parseCPU(nm.usage?.cpu) * 1000, memory: parseMem(nm.usage?.memory) };
+        const nodeList = nodes.map((n) => {
+          const labels = n.metadata.labels || {};
+          const conditions = n.status?.conditions || [];
+          const ready = conditions.find((c) => c.type === "Ready");
+          const memP  = conditions.find((c) => c.type === "MemoryPressure");
+          const diskP = conditions.find((c) => c.type === "DiskPressure");
+          const taints = n.spec?.taints || [];
+          const isSpot = labels["kubernetes.azure.com/scalesetpriority"] === "spot" || labels["cloud.google.com/gke-spot"] === "true" || labels["eks.amazonaws.com/capacityType"] === "SPOT" || taints.some((t) => t.key?.includes("spot") || t.key?.includes("preempt"));
+          const unschedulable = n.spec?.unschedulable === true;
+          const cpuAlloc = parseCPU(n.status?.allocatable?.cpu) * 1000;
+          const memAlloc = parseMem(n.status?.allocatable?.memory);
+          const cpuCap   = parseCPU(n.status?.capacity?.cpu) * 1000;
+          const memCap   = parseMem(n.status?.capacity?.memory);
+          const realM = metricsMap[n.metadata.name] || { cpu: 0, memory: 0 };
+          const nodePods = pods.filter((p) => p.spec?.nodeName === n.metadata.name);
+          let cpuReq = 0, memReq = 0, cpuLim = 0, memLim = 0;
+          for (const p of nodePods) for (const c of (p.spec?.containers || [])) {
+            cpuReq += parseCPU(c.resources?.requests?.cpu) * 1000;
+            memReq += parseMem(c.resources?.requests?.memory);
+            cpuLim += parseCPU(c.resources?.limits?.cpu) * 1000;
+            memLim += parseMem(c.resources?.limits?.memory);
+          }
+          const podStatuses = { running: 0, pending: 0, crashLoop: 0, oomKilled: 0, evicted: 0, failed: 0 };
+          for (const p of nodePods) {
+            const phase = p.status?.phase;
+            if (phase === "Running") podStatuses.running++;
+            else if (phase === "Pending") podStatuses.pending++;
+            else if (phase === "Failed") { if (p.status?.reason === "Evicted") podStatuses.evicted++; else podStatuses.failed++; }
+            for (const cs of (p.status?.containerStatuses || [])) {
+              if (cs.state?.waiting?.reason === "CrashLoopBackOff") podStatuses.crashLoop++;
+              if (cs.lastState?.terminated?.reason === "OOMKilled") podStatuses.oomKilled++;
+            }
+          }
+          let health = "healthy";
+          if (ready?.status !== "True") health = "critical";
+          else if (unschedulable || taints.some((t) => t.key === "ToBeDeletedByClusterAutoscaler")) health = "warning";
+          else if (memP?.status === "True" || diskP?.status === "True") health = "warning";
+          return { name: n.metadata.name, health, status: ready?.status === "True" ? "Ready" : "NotReady", isSpot, unschedulable, roles: Object.keys(labels).filter((k) => k.startsWith("node-role.kubernetes.io/")).map((k) => k.replace("node-role.kubernetes.io/", "")).join(",") || "worker", ip: (n.status?.addresses || []).find((a) => a.type === "InternalIP")?.address || "—", capacity: { cpu: cpuCap, memory: memCap }, allocatable: { cpu: cpuAlloc, memory: memAlloc }, realUsage: { cpu: realM.cpu, memory: realM.memory }, requests: { cpu: cpuReq, memory: memReq }, limits: { cpu: cpuLim, memory: memLim }, podCount: nodePods.length, podStatuses, pressure: { memory: memP?.status === "True", disk: diskP?.status === "True" }, conditions: conditions.map((c) => ({ type: c.type, status: c.status, reason: c.reason || "", message: c.message || "", lastTransitionTime: c.lastTransitionTime })), taints: taints.map((t) => ({ key: t.key, value: t.value || "", effect: t.effect })), labels };
+        });
+        const nsCpuMap = {};
+        for (const p of pods) { const ns = p.metadata?.namespace || "default"; for (const c of (p.spec?.containers || [])) nsCpuMap[ns] = (nsCpuMap[ns] || 0) + parseCPU(c.resources?.requests?.cpu) * 1000; }
+        const topNamespaces = Object.entries(nsCpuMap).map(([ns, cpu]) => ({ ns, cpu })).sort((a, b) => b.cpu - a.cpu).slice(0, 5);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ nodes: nodeList, topNamespaces, timestamp: Date.now() }));
+      } catch (err) { console.error("[error] /api/nodes/overview:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
+  // ── /api/nodes/governance — Pods sem requests/limits ───────────────────────
+  if (url.pathname === "/api/nodes/governance") {
+    requireAuth(req, res, async () => {
+      try {
+        const podsRes = await k8sRequest("/api/v1/pods");
+        const pods = podsRes.body?.items || [];
+        const issues = [];
+        for (const p of pods) {
+          if (p.status?.phase !== "Running" && p.status?.phase !== "Pending") continue;
+          for (const c of (p.spec?.containers || [])) {
+            const cpuReq = c.resources?.requests?.cpu, memReq = c.resources?.requests?.memory;
+            const cpuLim = c.resources?.limits?.cpu,   memLim = c.resources?.limits?.memory;
+            const missing = [];
+            if (!cpuReq) missing.push("cpu_request"); if (!memReq) missing.push("mem_request");
+            if (!cpuLim) missing.push("cpu_limit");   if (!memLim) missing.push("mem_limit");
+            if (missing.length === 0) continue;
+            let qos = "BestEffort";
+            if (cpuReq && memReq && cpuLim && memLim) qos = "Guaranteed";
+            else if (cpuReq || memReq || cpuLim || memLim) qos = "Burstable";
+            const restarts = (p.status?.containerStatuses || []).find((cs) => cs.name === c.name)?.restartCount || 0;
+            const oomKilled = (p.status?.containerStatuses || []).some((cs) => cs.lastState?.terminated?.reason === "OOMKilled");
+            issues.push({ pod: p.metadata.name, namespace: p.metadata.namespace, node: p.spec?.nodeName || "—", container: c.name, workload: p.metadata.labels?.["app"] || p.metadata.labels?.["app.kubernetes.io/name"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name, missing, cpuRequest: cpuReq || null, memRequest: memReq || null, cpuLimit: cpuLim || null, memLimit: memLim || null, qos, restarts, oomKilled, risk: missing.length >= 3 ? "critical" : missing.length >= 2 ? "high" : "medium" });
+          }
+        }
+        const nsRisk = {};
+        for (const i of issues) { if (!nsRisk[i.namespace]) nsRisk[i.namespace] = { ns: i.namespace, count: 0, critical: 0, oomKilled: 0 }; nsRisk[i.namespace].count++; if (i.risk === "critical") nsRisk[i.namespace].critical++; if (i.oomKilled) nsRisk[i.namespace].oomKilled++; }
+        const topRiskNamespaces = Object.values(nsRisk).sort((a, b) => b.critical - a.critical || b.count - a.count).slice(0, 10);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ issues, topRiskNamespaces, timestamp: Date.now() }));
+      } catch (err) { console.error("[error] /api/nodes/governance:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
+  // ── /api/nodes/spot — Nodes spot e eventos de substituição ───────────────────
+  if (url.pathname === "/api/nodes/spot") {
+    requireAuth(req, res, async () => {
+      try {
+        const [nodesRes, eventsRes, podsRes] = await Promise.allSettled([ k8sRequest("/api/v1/nodes"), k8sRequest("/api/v1/events?fieldSelector=type%3DWarning"), k8sRequest("/api/v1/pods") ]);
+        const nodes  = nodesRes.status  === "fulfilled" ? (nodesRes.value.body?.items  || []) : [];
+        const events = eventsRes.status === "fulfilled" ? (eventsRes.value.body?.items  || []) : [];
+        const pods   = podsRes.status   === "fulfilled" ? (podsRes.value.body?.items    || []) : [];
+        const spotNodes = nodes.filter((n) => { const l = n.metadata.labels || {}; const t = n.spec?.taints || []; return l["kubernetes.azure.com/scalesetpriority"] === "spot" || l["cloud.google.com/gke-spot"] === "true" || l["eks.amazonaws.com/capacityType"] === "SPOT" || t.some((x) => x.key?.includes("spot") || x.key?.includes("preempt")); });
+        const onDemandCount = nodes.length - spotNodes.length;
+        const spotEvents = events.filter((e) => ["SpotInterruption","PreemptingNode","NodePreempting","ToBeDeletedByClusterAutoscaler","DeletionCandidateOfClusterAutoscaler"].includes(e.reason || "")).map((e) => ({ node: e.involvedObject?.name || "—", reason: e.reason, message: e.message, firstTime: e.firstTimestamp || e.eventTime, lastTime: e.lastTimestamp || e.eventTime, count: e.count || 1 }));
+        const spotNodeNames = new Set(spotNodes.map((n) => n.metadata.name));
+        const impactedPods = pods.filter((p) => spotNodeNames.has(p.spec?.nodeName)).map((p) => ({ name: p.metadata.name, namespace: p.metadata.namespace, node: p.spec?.nodeName, phase: p.status?.phase, workload: p.metadata.labels?.["app"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name }));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ spotCount: spotNodes.length, onDemandCount, spotNodes: spotNodes.map((n) => ({ name: n.metadata.name, status: (n.status?.conditions || []).find((c) => c.type === "Ready")?.status === "True" ? "Ready" : "NotReady", unschedulable: n.spec?.unschedulable === true, createdAt: n.metadata.creationTimestamp, nodegroup: n.metadata.labels?.["eks.amazonaws.com/nodegroup"] || n.metadata.labels?.["cloud.google.com/gke-nodepool"] || n.metadata.labels?.["agentpool"] || "—", labels: n.metadata.labels || {} })), spotEvents, impactedPods, timestamp: Date.now() }));
+      } catch (err) { console.error("[error] /api/nodes/spot:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
+  // ── /api/nodes/workloads — Workloads por node com consumo real ──────────────
+  if (url.pathname === "/api/nodes/workloads") {
+    requireAuth(req, res, async () => {
+      try {
+        const [podsRes, podMetricsRes] = await Promise.allSettled([ k8sRequest("/api/v1/pods"), k8sRequest("/apis/metrics.k8s.io/v1beta1/pods") ]);
+        const pods = podsRes.status === "fulfilled" ? (podsRes.value.body?.items || []) : [];
+        const podMetrics = podMetricsRes.status === "fulfilled" ? (podMetricsRes.value.body?.items || []) : [];
+        const metricsMap = {};
+        for (const pm of podMetrics) metricsMap[`${pm.metadata.namespace}/${pm.metadata.name}`] = pm.containers || [];
+        const byNode = {};
+        for (const p of pods) {
+          if (p.status?.phase !== "Running") continue;
+          const nodeName = p.spec?.nodeName || "unknown";
+          if (!byNode[nodeName]) byNode[nodeName] = [];
+          const key = `${p.metadata.namespace}/${p.metadata.name}`;
+          const containers = (p.spec?.containers || []).map((c) => { const mc = (metricsMap[key] || []).find((m) => m.name === c.name); return { name: c.name, cpuRequest: parseCPU(c.resources?.requests?.cpu) * 1000, memRequest: parseMem(c.resources?.requests?.memory), cpuLimit: parseCPU(c.resources?.limits?.cpu) * 1000, memLimit: parseMem(c.resources?.limits?.memory), cpuReal: mc ? parseCPU(mc.usage?.cpu) * 1000 : null, memReal: mc ? parseMem(mc.usage?.memory) : null }; });
+          const restarts = (p.status?.containerStatuses || []).reduce((a, cs) => a + (cs.restartCount || 0), 0);
+          const oomKilled = (p.status?.containerStatuses || []).some((cs) => cs.lastState?.terminated?.reason === "OOMKilled");
+          byNode[nodeName].push({ pod: p.metadata.name, namespace: p.metadata.namespace, workload: p.metadata.labels?.["app"] || p.metadata.labels?.["app.kubernetes.io/name"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name, phase: p.status?.phase, restarts, oomKilled, qosClass: p.status?.qosClass || "BestEffort", containers });
+        }
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ byNode, timestamp: Date.now() }));
+      } catch (err) { console.error("[error] /api/nodes/workloads:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);
   if (logsMatch) {

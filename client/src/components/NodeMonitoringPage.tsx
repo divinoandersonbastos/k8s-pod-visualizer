@@ -504,34 +504,34 @@ function GovernanceTab({ issues, topRisk }: { issues: GovernanceIssue[]; topRisk
         <table className="w-full text-xs">
           <thead>
             <tr className="border-b border-gray-800 text-gray-500">
-              <th className="text-left py-2 pr-3">Pod / Container</th>
-              <th className="text-left py-2 pr-3">Namespace</th>
-              <th className="text-left py-2 pr-3">QoS</th>
-              <th className="text-left py-2 pr-3">Risco</th>
+              <th className="text-left py-2 pr-3" style={{width:"180px",minWidth:"140px"}}>Pod / Container</th>
+              <th className="text-left py-2 pr-3" style={{width:"130px",minWidth:"90px"}}>Namespace</th>
+              <th className="text-left py-2 pr-3" style={{width:"85px"}}>QoS</th>
+              <th className="text-left py-2 pr-3" style={{width:"75px"}}>Risco</th>
               <th className="text-left py-2 pr-3">Faltando</th>
-              <th className="text-right py-2 pr-3">Restarts</th>
-              <th className="text-right py-2">OOM</th>
+              <th className="text-right py-2 pr-3" style={{width:"65px"}}>Restarts</th>
+              <th className="text-right py-2" style={{width:"45px",minWidth:"45px"}}>OOM</th>
             </tr>
           </thead>
           <tbody>
             {filtered.slice(0, 200).map((i, idx) => (
               <tr key={idx} className="border-b border-gray-800/50 hover:bg-gray-800/30 transition-colors">
-                <td className="py-2 pr-3">
-                  <div className="text-white truncate max-w-[180px]" title={i.pod}>{i.pod}</div>
-                  <div className="text-gray-500">{i.container}</div>
+                <td className="py-2 pr-3" style={{width:"180px",minWidth:"140px"}}>
+                  <div className="text-white truncate" style={{maxWidth:"170px"}} title={i.pod}>{i.pod}</div>
+                  <div className="text-gray-500 truncate" style={{maxWidth:"170px"}}>{i.container}</div>
                 </td>
-                <td className="py-2 pr-3 text-gray-400">{i.namespace}</td>
+                <td className="py-2 pr-3 text-gray-400 truncate" style={{width:"130px",minWidth:"90px",maxWidth:"130px"}}>{i.namespace}</td>
                 <td className="py-2 pr-3">
                   <span className={`px-1.5 py-0.5 rounded text-xs ${i.qos === "Guaranteed" ? "bg-green-900/50 text-green-300" : i.qos === "Burstable" ? "bg-yellow-900/50 text-yellow-300" : "bg-red-900/50 text-red-300"}`}>{i.qos}</span>
                 </td>
                 <td className="py-2 pr-3"><RiskBadge risk={i.risk} /></td>
                 <td className="py-2 pr-3">
-                  <div className="flex gap-1 flex-wrap">
-                    {i.missing.map((m) => <span key={m} className="px-1 py-0.5 rounded bg-gray-800 text-gray-400 text-xs">{m.replace("_", " ")}</span>)}
+                  <div className="flex gap-1 flex-wrap" style={{maxWidth:"260px"}}>
+                    {i.missing.map((m) => <span key={m} className="px-1 py-0.5 rounded bg-gray-800 text-gray-400 text-xs whitespace-nowrap">{m.replace("_", " ")}</span>)}
                   </div>
                 </td>
-                <td className={`py-2 pr-3 text-right ${i.restarts > 5 ? "text-red-400" : i.restarts > 0 ? "text-yellow-400" : "text-gray-500"}`}>{i.restarts}</td>
-                <td className={`py-2 text-right ${i.oomKilled ? "text-red-400 font-semibold" : "text-gray-600"}`}>{i.oomKilled ? "✕" : "—"}</td>
+                <td className={`py-2 pr-3 text-right ${i.restarts > 5 ? "text-red-400" : i.restarts > 0 ? "text-yellow-400" : "text-gray-500"}`} style={{width:"65px"}}>{i.restarts}</td>
+                <td className={`py-2 text-right ${i.oomKilled ? "text-red-400 font-semibold" : "text-gray-600"}`} style={{width:"45px",minWidth:"45px"}}>{i.oomKilled ? "✕" : "—"}</td>
               </tr>
             ))}
           </tbody>
@@ -657,6 +657,10 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
   const [activeTab, setActiveTab] = useState<TabId>("overview");
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [countdown, setCountdown] = useState(30);
+  const autoRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [overviewData, setOverviewData] = useState<{ nodes: NodeOverview[]; topNamespaces: Array<{ ns: string; cpu: number }> } | null>(null);
   const [governanceData, setGovernanceData] = useState<{ issues: GovernanceIssue[]; topRiskNamespaces: Array<{ ns: string; count: number; critical: number; oomKilled: number }> } | null>(null);
   const [spotData, setSpotData] = useState<SpotData | null>(null);
@@ -694,6 +698,22 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  // Auto-refresh logic
+  useEffect(() => {
+    if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
+    if (countdownRef.current) clearInterval(countdownRef.current);
+    if (!autoRefresh) { setCountdown(30); return; }
+    setCountdown(30);
+    countdownRef.current = setInterval(() => {
+      setCountdown((c) => { if (c <= 1) { return 30; } return c - 1; });
+    }, 1000);
+    autoRefreshRef.current = setInterval(() => { fetchAll(); setCountdown(30); }, 30000);
+    return () => {
+      if (autoRefreshRef.current) clearInterval(autoRefreshRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+    };
+  }, [autoRefresh, fetchAll]);
+
   const tabs: Array<{ id: TabId; label: string; icon: React.ReactNode; badge?: number }> = [
     { id: "overview",    label: "Visão Geral",  icon: <TrendingUp size={14} /> },
     { id: "nodes",       label: "Nodes",        icon: <Server size={14} />,       badge: overviewData?.nodes.filter((n) => n.health !== "healthy").length },
@@ -715,6 +735,15 @@ export function NodeMonitoringPage({ onClose, apiUrl }: NodeMonitoringPageProps)
           )}
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setAutoRefresh((v) => !v)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs transition-colors ${
+              autoRefresh ? "bg-blue-700 text-white hover:bg-blue-600" : "bg-gray-800 text-gray-300 hover:bg-gray-700"
+            }`}
+          >
+            <Activity size={12} />
+            {autoRefresh ? `Auto ${countdown}s` : "Auto"}
+          </button>
           <button onClick={fetchAll} disabled={loading} className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs bg-gray-800 text-gray-300 hover:bg-gray-700 transition-colors disabled:opacity-50">
             <RefreshCw size={12} className={loading ? "animate-spin" : ""} /> Atualizar
           </button>

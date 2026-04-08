@@ -1719,6 +1719,248 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── /api/nodes/rbac-overview — Inventário RBAC: identidades, roles, bindings ─
+  if (url.pathname === "/api/nodes/rbac-overview") {
+    try {
+      const k8sJSON = (apiPath) => new Promise((resolve, reject) => {
+        const token = getToken(); const ca = getCA();
+        const apiHost = K8S_API.replace(/^https?:\/\//, "");
+        const isHttps = K8S_API.startsWith("https");
+        const opts = {
+          hostname: apiHost, port: isHttps ? 443 : 80, path: apiPath, method: "GET",
+          headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          ...(ca ? { ca } : { rejectUnauthorized: false }),
+        };
+        const proto = isHttps ? https : http;
+        const r = proto.request(opts, (res2) => { let d = ""; res2.on("data", c => d += c); res2.on("end", () => { try { resolve(JSON.parse(d)); } catch { resolve({}); } }); });
+        r.on("error", reject); r.setTimeout(12000, () => r.destroy(new Error("timeout"))); r.end();
+      });
+
+      const [crRes, crbRes, rRes, rbRes, saRes] = await Promise.allSettled([
+        k8sJSON("/apis/rbac.authorization.k8s.io/v1/clusterroles"),
+        k8sJSON("/apis/rbac.authorization.k8s.io/v1/clusterrolebindings"),
+        k8sJSON("/apis/rbac.authorization.k8s.io/v1/roles"),
+        k8sJSON("/apis/rbac.authorization.k8s.io/v1/rolebindings"),
+        k8sJSON("/api/v1/serviceaccounts"),
+      ]);
+
+      const clusterRoles = crRes.status === "fulfilled" ? (crRes.value.items || []) : [];
+      const clusterRoleBindings = crbRes.status === "fulfilled" ? (crbRes.value.items || []) : [];
+      const roles = rRes.status === "fulfilled" ? (rRes.value.items || []) : [];
+      const roleBindings = rbRes.status === "fulfilled" ? (rbRes.value.items || []) : [];
+      const serviceAccounts = saRes.status === "fulfilled" ? (saRes.value.items || []) : [];
+
+      const CRITICAL_ROLES = new Set(["cluster-admin", "system:masters"]);
+      const SENSITIVE_VERBS = new Set(["*", "escalate", "impersonate", "bind"]);
+      const SENSITIVE_RESOURCES = new Set(["*", "secrets", "clusterroles", "clusterrolebindings", "roles", "rolebindings", "nodes", "pods/exec", "pods/portforward"]);
+
+      function calcRoleRisk(rules) {
+        if (!rules || rules.length === 0) return "low";
+        let maxRisk = "low";
+        for (const rule of rules) {
+          const verbs = rule.verbs || [];
+          const resources = rule.resources || [];
+          const hasWildcardVerb = verbs.includes("*");
+          const hasWildcardRes = resources.includes("*");
+          const hasSensitiveVerb = verbs.some(v => SENSITIVE_VERBS.has(v));
+          const hasSensitiveRes = resources.some(r => SENSITIVE_RESOURCES.has(r));
+          if (hasWildcardVerb && hasWildcardRes) return "critical";
+          if (hasSensitiveVerb || (hasWildcardVerb && hasSensitiveRes)) { maxRisk = "critical"; break; }
+          if (hasSensitiveRes && (verbs.includes("get") || verbs.includes("list"))) maxRisk = maxRisk === "critical" ? "critical" : "high";
+          else if (hasWildcardVerb || hasWildcardRes) maxRisk = maxRisk === "critical" ? "critical" : "high";
+          else if (verbs.includes("create") || verbs.includes("delete") || verbs.includes("patch")) maxRisk = maxRisk === "low" ? "medium" : maxRisk;
+        }
+        return maxRisk;
+      }
+
+      function extractPermissions(rules) {
+        if (!rules) return [];
+        return rules.flatMap(rule => {
+          const verbs = rule.verbs || [];
+          const resources = rule.resources || [];
+          const apiGroups = rule.apiGroups || [];
+          return resources.map(res => ({ apiGroup: apiGroups[0] || "", resource: res, verbs }));
+        });
+      }
+
+      const identityMap = new Map();
+
+      function addBinding(subject, roleRef, bindingNamespace, scope, bindingName) {
+        const key = `${subject.kind}:${subject.namespace || bindingNamespace || ""}:${subject.name}`;
+        if (!identityMap.has(key)) {
+          identityMap.set(key, {
+            kind: subject.kind,
+            name: subject.name,
+            namespace: subject.namespace || (subject.kind === "ServiceAccount" ? bindingNamespace : ""),
+            bindings: [],
+          });
+        }
+        const identity = identityMap.get(key);
+        let rules = [];
+        let roleRisk = "low";
+        if (roleRef.kind === "ClusterRole") {
+          const cr = clusterRoles.find(r => r.metadata.name === roleRef.name);
+          if (cr) { rules = cr.rules || []; roleRisk = CRITICAL_ROLES.has(roleRef.name) ? "critical" : calcRoleRisk(rules); }
+        } else {
+          const r = roles.find(r => r.metadata.name === roleRef.name && r.metadata.namespace === bindingNamespace);
+          if (r) { rules = r.rules || []; roleRisk = calcRoleRisk(rules); }
+        }
+        identity.bindings.push({
+          bindingName, bindingKind: scope === "cluster" ? "ClusterRoleBinding" : "RoleBinding",
+          roleRef: roleRef.name, roleKind: roleRef.kind, namespace: bindingNamespace || "",
+          scope, risk: roleRisk, permissions: extractPermissions(rules),
+        });
+      }
+
+      for (const crb of clusterRoleBindings) {
+        for (const subj of (crb.subjects || [])) addBinding(subj, crb.roleRef, "", "cluster", crb.metadata.name);
+      }
+      for (const rb of roleBindings) {
+        for (const subj of (rb.subjects || [])) addBinding(subj, rb.roleRef, rb.metadata.namespace, "namespace", rb.metadata.name);
+      }
+
+      const identities = Array.from(identityMap.values()).map(id => {
+        const risks = id.bindings.map(b => b.risk);
+        const maxRisk = risks.includes("critical") ? "critical" : risks.includes("high") ? "high" : risks.includes("medium") ? "medium" : "low";
+        const isClusterAdmin = id.bindings.some(b => b.roleRef === "cluster-admin");
+        const hasWildcard = id.bindings.some(b => b.permissions.some(p => p.verbs.includes("*") || p.resource === "*"));
+        const hasSecretAccess = id.bindings.some(b => b.permissions.some(p => p.resource === "secrets" || p.resource === "*"));
+        const hasExec = id.bindings.some(b => b.permissions.some(p => p.resource === "pods/exec" || p.resource === "*"));
+        const hasImpersonate = id.bindings.some(b => b.permissions.some(p => p.verbs.includes("impersonate")));
+        const namespaces = [...new Set(id.bindings.map(b => b.namespace).filter(Boolean))];
+        const flags = [];
+        if (isClusterAdmin) flags.push("cluster-admin");
+        if (hasWildcard) flags.push("wildcard");
+        if (hasSecretAccess) flags.push("secrets");
+        if (hasExec) flags.push("exec");
+        if (hasImpersonate) flags.push("impersonate");
+        return { ...id, maxRisk, isClusterAdmin, hasWildcard, hasSecretAccess, hasExec, hasImpersonate, namespaces, flags };
+      });
+
+      const saSet = new Set(serviceAccounts.map(sa => `${sa.metadata.namespace}:${sa.metadata.name}`));
+      const orphanBindings = [];
+      for (const crb of clusterRoleBindings) {
+        for (const subj of (crb.subjects || [])) {
+          if (subj.kind === "ServiceAccount" && !saSet.has(`${subj.namespace}:${subj.name}`)) {
+            orphanBindings.push({ bindingName: crb.metadata.name, bindingKind: "ClusterRoleBinding", subject: `${subj.kind}:${subj.namespace}/${subj.name}`, roleRef: crb.roleRef.name });
+          }
+        }
+      }
+      for (const rb of roleBindings) {
+        for (const subj of (rb.subjects || [])) {
+          if (subj.kind === "ServiceAccount" && !saSet.has(`${subj.namespace || rb.metadata.namespace}:${subj.name}`)) {
+            orphanBindings.push({ bindingName: rb.metadata.name, bindingKind: "RoleBinding", namespace: rb.metadata.namespace, subject: `${subj.kind}:${subj.namespace}/${subj.name}`, roleRef: rb.roleRef.name });
+          }
+        }
+      }
+
+      const summary = {
+        totalIdentities: identities.length,
+        clusterAdmins: identities.filter(i => i.isClusterAdmin).length,
+        criticalCount: identities.filter(i => i.maxRisk === "critical").length,
+        highCount: identities.filter(i => i.maxRisk === "high").length,
+        orphanBindings: orphanBindings.length,
+        serviceAccounts: identities.filter(i => i.kind === "ServiceAccount").length,
+        users: identities.filter(i => i.kind === "User").length,
+        groups: identities.filter(i => i.kind === "Group").length,
+        totalClusterRoles: clusterRoles.length,
+        totalRoles: roles.length,
+      };
+
+      const grantProfiles = [
+        { key: "view", label: "View (somente leitura)", role: "view", clusterRole: false, description: "Permite ver recursos no namespace, sem modificar" },
+        { key: "edit", label: "Edit (leitura e escrita)", role: "edit", clusterRole: false, description: "Permite criar, editar e deletar recursos no namespace" },
+        { key: "admin", label: "Admin (namespace)", role: "admin", clusterRole: false, description: "Controle total do namespace, incluindo RBAC local" },
+        { key: "cluster-view", label: "Cluster View (somente leitura global)", role: "view", clusterRole: true, description: "Permite ver todos os recursos do cluster" },
+        { key: "cluster-admin", label: "Cluster Admin (CRÍTICO)", role: "cluster-admin", clusterRole: true, description: "Controle total do cluster. Use com extrema cautela." },
+      ];
+
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ summary, identities, orphanBindings, grantProfiles }));
+    } catch (err) { console.error("[error] /api/nodes/rbac-overview:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    return;
+  }
+
+  // ── /api/nodes/rbac-grant — Conceder acesso via RoleBinding/ClusterRoleBinding ─
+  if (url.pathname === "/api/nodes/rbac-grant" && req.method === "POST") {
+    let body = "";
+    req.on("data", d => body += d);
+    req.on("end", async () => {
+      try {
+        const { subjectKind, subjectName, subjectNamespace, role, clusterRole, namespace, justification } = JSON.parse(body);
+        if (!subjectName || !role) throw new Error("subjectName e role são obrigatórios");
+        if (role === "cluster-admin" && !justification) throw new Error("Justificativa obrigatória para cluster-admin");
+        const bindingName = `${role}-${subjectName.replace(/[^a-z0-9-]/gi, "-").toLowerCase()}-${Date.now()}`;
+        const manifest = clusterRole ? {
+          apiVersion: "rbac.authorization.k8s.io/v1", kind: "ClusterRoleBinding",
+          metadata: { name: bindingName },
+          subjects: [{ kind: subjectKind || "User", name: subjectName, ...(subjectKind === "ServiceAccount" ? { namespace: subjectNamespace } : {}) }],
+          roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: role },
+        } : {
+          apiVersion: "rbac.authorization.k8s.io/v1", kind: "RoleBinding",
+          metadata: { name: bindingName, namespace },
+          subjects: [{ kind: subjectKind || "User", name: subjectName, ...(subjectKind === "ServiceAccount" ? { namespace: subjectNamespace } : {}) }],
+          roleRef: { apiGroup: "rbac.authorization.k8s.io", kind: "ClusterRole", name: role },
+        };
+        const token = getToken(); const ca = getCA();
+        const apiHost = K8S_API.replace(/^https?:\/\//, "");
+        const isHttps = K8S_API.startsWith("https");
+        const apiPath = clusterRole
+          ? "/apis/rbac.authorization.k8s.io/v1/clusterrolebindings"
+          : `/apis/rbac.authorization.k8s.io/v1/namespaces/${namespace}/rolebindings`;
+        const bodyStr = JSON.stringify(manifest);
+        await new Promise((resolve, reject) => {
+          const opts = {
+            hostname: apiHost, port: isHttps ? 443 : 80, path: apiPath, method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json", "Content-Length": Buffer.byteLength(bodyStr), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            ...(ca ? { ca } : { rejectUnauthorized: false }),
+          };
+          const proto = isHttps ? https : http;
+          const r = proto.request(opts, (res2) => { let d=""; res2.on("data",c=>d+=c); res2.on("end",()=>{ if(res2.statusCode>=400) reject(new Error(`HTTP ${res2.statusCode}: ${d}`)); else resolve(d); }); });
+          r.on("error", reject); r.setTimeout(8000, () => r.destroy(new Error("timeout"))); r.write(bodyStr); r.end();
+        });
+        const user = verifyTokenPayload(req.headers.authorization?.replace("Bearer ", "") || "")?.username || "unknown";
+        try { await insertAuditLog({ user, action: "rbac-grant", resource: `${clusterRole ? "ClusterRoleBinding" : "RoleBinding"}/${bindingName}`, namespace: namespace || "", detail: `Concedeu ${role} para ${subjectKind}:${subjectName}${justification ? " | Justificativa: " + justification : ""}` }); } catch (_) {}
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, bindingName, message: `Acesso ${role} concedido para ${subjectName}` }));
+      } catch (err) { console.error("[error] /api/nodes/rbac-grant:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
+
+  // ── /api/nodes/rbac-revoke — Revogar acesso via delete de RoleBinding ────────
+  if (url.pathname === "/api/nodes/rbac-revoke" && req.method === "POST") {
+    let body = "";
+    req.on("data", d => body += d);
+    req.on("end", async () => {
+      try {
+        const { bindingKind, bindingName, namespace, justification } = JSON.parse(body);
+        if (!bindingName || !bindingKind) throw new Error("bindingName e bindingKind são obrigatórios");
+        const token = getToken(); const ca = getCA();
+        const apiHost = K8S_API.replace(/^https?:\/\//, "");
+        const isHttps = K8S_API.startsWith("https");
+        const apiPath = bindingKind === "ClusterRoleBinding"
+          ? `/apis/rbac.authorization.k8s.io/v1/clusterrolebindings/${encodeURIComponent(bindingName)}`
+          : `/apis/rbac.authorization.k8s.io/v1/namespaces/${encodeURIComponent(namespace)}/rolebindings/${encodeURIComponent(bindingName)}`;
+        await new Promise((resolve, reject) => {
+          const opts = {
+            hostname: apiHost, port: isHttps ? 443 : 80, path: apiPath, method: "DELETE",
+            headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            ...(ca ? { ca } : { rejectUnauthorized: false }),
+          };
+          const proto = isHttps ? https : http;
+          const r = proto.request(opts, (res2) => { let d=""; res2.on("data",c=>d+=c); res2.on("end",()=>{ if(res2.statusCode>=400) reject(new Error(`HTTP ${res2.statusCode}`)); else resolve(d); }); });
+          r.on("error", reject); r.setTimeout(8000, () => r.destroy(new Error("timeout"))); r.end();
+        });
+        const user = verifyTokenPayload(req.headers.authorization?.replace("Bearer ", "") || "")?.username || "unknown";
+        try { await insertAuditLog({ user, action: "rbac-revoke", resource: `${bindingKind}/${bindingName}`, namespace: namespace || "", detail: `Revogou binding ${bindingName}${justification ? " | Justificativa: " + justification : ""}` }); } catch (_) {}
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: true, message: `Binding "${bindingName}" revogado com sucesso` }));
+      } catch (err) { console.error("[error] /api/nodes/rbac-revoke:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
+
 
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);

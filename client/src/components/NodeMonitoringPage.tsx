@@ -809,6 +809,580 @@ function WorkloadsTab({ data }: { data: WorkloadsByNode | null }) {
   );
 }
 
+// ── Types: RBAC ─────────────────────────────────────────────────────────────
+interface RbacPermission { apiGroup: string; resource: string; verbs: string[]; }
+interface RbacBinding {
+  bindingName: string; bindingKind: "ClusterRoleBinding" | "RoleBinding";
+  roleRef: string; roleKind: string; namespace: string;
+  scope: "cluster" | "namespace";
+  risk: "critical" | "high" | "medium" | "low";
+  permissions: RbacPermission[];
+}
+interface RbacIdentity {
+  kind: "User" | "Group" | "ServiceAccount";
+  name: string; namespace: string;
+  bindings: RbacBinding[];
+  maxRisk: "critical" | "high" | "medium" | "low";
+  isClusterAdmin: boolean; hasWildcard: boolean;
+  hasSecretAccess: boolean; hasExec: boolean; hasImpersonate: boolean;
+  namespaces: string[];
+  flags: string[];
+}
+interface RbacOrphanBinding { bindingName: string; bindingKind: string; namespace?: string; subject: string; roleRef: string; }
+interface RbacGrantProfile { key: string; label: string; role: string; clusterRole: boolean; description: string; }
+interface RbacOverview {
+  summary: {
+    totalIdentities: number; clusterAdmins: number; criticalCount: number;
+    highCount: number; orphanBindings: number; serviceAccounts: number;
+    users: number; groups: number; totalClusterRoles: number; totalRoles: number;
+  };
+  identities: RbacIdentity[];
+  orphanBindings: RbacOrphanBinding[];
+  grantProfiles: RbacGrantProfile[];
+}
+// ── RbacDrawer ───────────────────────────────────────────────────────────────
+function RbacDrawer({ identity, apiUrl, getAuthHeaders, grantProfiles, onClose, onRefresh }: {
+  identity: RbacIdentity; apiUrl: string;
+  getAuthHeaders: () => Record<string, string>;
+  grantProfiles: RbacGrantProfile[];
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<"bindings" | "permissions" | "grant" | "revoke">("bindings");
+  const [revokeStep, setRevokeStep] = useState<0 | 1 | 2>(0);
+  const [revokeTarget, setRevokeTarget] = useState<RbacBinding | null>(null);
+  const [revokeNameInput, setRevokeNameInput] = useState("");
+  const [revokeJustification, setRevokeJustification] = useState("");
+  const [revoking, setRevoking] = useState(false);
+  const [revokeResult, setRevokeResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [grantForm, setGrantForm] = useState({ profileKey: "view", namespace: "", justification: "" });
+  const [granting, setGranting] = useState(false);
+  const [grantResult, setGrantResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showGrantPreview, setShowGrantPreview] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  function riskColor(r: string) {
+    if (r === "critical") return "text-red-400 bg-red-900/40 border-red-700/50";
+    if (r === "high") return "text-orange-400 bg-orange-900/40 border-orange-700/50";
+    if (r === "medium") return "text-yellow-400 bg-yellow-900/40 border-yellow-700/50";
+    return "text-green-400 bg-green-900/40 border-green-700/50";
+  }
+  function kindIcon(k: string) {
+    if (k === "User") return <span className="text-blue-400 font-mono text-xs">U</span>;
+    if (k === "Group") return <span className="text-purple-400 font-mono text-xs">G</span>;
+    return <span className="text-green-400 font-mono text-xs">SA</span>;
+  }
+  function copyText(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(null), 2000); });
+  }
+
+  const selectedProfile = grantProfiles.find(p => p.key === grantForm.profileKey);
+  const isCriticalGrant = selectedProfile?.role === "cluster-admin";
+
+  async function handleGrant() {
+    if (!selectedProfile) return;
+    if (isCriticalGrant && !grantForm.justification.trim()) return;
+    setGranting(true); setGrantResult(null);
+    try {
+      const resp = await fetch(`${apiUrl}/api/nodes/rbac-grant`, {
+        method: "POST", headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subjectKind: identity.kind, subjectName: identity.name,
+          subjectNamespace: identity.namespace,
+          role: selectedProfile.role, clusterRole: selectedProfile.clusterRole,
+          namespace: grantForm.namespace || undefined,
+          justification: grantForm.justification || undefined,
+        }),
+      });
+      const data = await resp.json();
+      setGrantResult({ success: resp.ok, message: data.message || data.error || "Erro desconhecido" });
+      if (resp.ok) { setTimeout(() => { onRefresh(); }, 1500); }
+    } catch (e: any) { setGrantResult({ success: false, message: e.message }); }
+    finally { setGranting(false); }
+  }
+
+  async function handleRevoke() {
+    if (!revokeTarget || revokeNameInput !== revokeTarget.bindingName) return;
+    setRevoking(true); setRevokeResult(null);
+    try {
+      const resp = await fetch(`${apiUrl}/api/nodes/rbac-revoke`, {
+        method: "POST", headers: { ...getAuthHeaders(), "Content-Type": "application/json" },
+        body: JSON.stringify({
+          bindingKind: revokeTarget.bindingKind, bindingName: revokeTarget.bindingName,
+          namespace: revokeTarget.namespace || undefined,
+          justification: revokeJustification || undefined,
+        }),
+      });
+      const data = await resp.json();
+      setRevokeResult({ success: resp.ok, message: data.message || data.error || "Erro desconhecido" });
+      if (resp.ok) { setTimeout(() => { onRefresh(); setRevokeStep(0); setRevokeTarget(null); }, 1500); }
+    } catch (e: any) { setRevokeResult({ success: false, message: e.message }); }
+    finally { setRevoking(false); }
+  }
+
+  const allPermissions = identity.bindings.flatMap(b => b.permissions.map(p => ({ ...p, via: b.roleRef, scope: b.scope, namespace: b.namespace })));
+  const uniquePerms = Array.from(new Map(allPermissions.map(p => [`${p.resource}:${p.verbs.join(",")}`, p])).values());
+
+  return (
+    <div className="fixed inset-y-0 right-0 w-[580px] bg-gray-950 border-l border-gray-800 shadow-2xl z-50 flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-start justify-between p-4 border-b border-gray-800 bg-gray-900/50">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-blue-900/40 border border-blue-700/50 flex items-center justify-center">
+            {kindIcon(identity.kind)}
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-white font-medium text-sm">{identity.name}</span>
+              <span className={`px-1.5 py-0.5 rounded text-xs border ${riskColor(identity.maxRisk)}`}>{identity.maxRisk}</span>
+            </div>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {identity.kind}{identity.namespace ? ` · ${identity.namespace}` : ""} · {identity.bindings.length} binding(s)
+            </div>
+          </div>
+        </div>
+        <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors p-1"><X size={16} /></button>
+      </div>
+
+      {/* Flags de risco */}
+      {identity.flags.length > 0 && (
+        <div className="px-4 py-2 bg-red-950/30 border-b border-red-900/30 flex flex-wrap gap-1.5">
+          {identity.flags.map(f => (
+            <span key={f} className="px-2 py-0.5 rounded text-xs bg-red-900/50 text-red-300 border border-red-700/40 flex items-center gap-1">
+              <AlertTriangle size={10} />
+              {f === "cluster-admin" ? "cluster-admin" : f === "wildcard" ? "wildcard (*)" : f === "secrets" ? "acesso a secrets" : f === "exec" ? "pods/exec" : f === "impersonate" ? "impersonate" : f}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex border-b border-gray-800 px-4 pt-2 gap-1">
+        {(["bindings", "permissions", "grant", "revoke"] as const).map(t => (
+          <button key={t} onClick={() => setActiveTab(t)}
+            className={`px-3 py-1.5 text-xs rounded-t transition-colors ${activeTab === t ? "bg-blue-600 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"}`}>
+            {t === "bindings" ? "Bindings" : t === "permissions" ? "Permissões efetivas" : t === "grant" ? "Conceder acesso" : "Revogar acesso"}
+          </button>
+        ))}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3">
+
+        {/* Tab: Bindings */}
+        {activeTab === "bindings" && (
+          <div className="space-y-2">
+            {identity.bindings.length === 0 && <div className="text-gray-500 text-sm text-center py-8">Nenhum binding encontrado</div>}
+            {identity.bindings.map((b, i) => (
+              <div key={i} className={`bg-gray-900 border rounded-lg p-3 ${b.risk === "critical" ? "border-red-800/50" : b.risk === "high" ? "border-orange-800/50" : "border-gray-700/50"}`}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className={`px-1.5 py-0.5 rounded text-xs font-mono ${b.bindingKind === "ClusterRoleBinding" ? "bg-purple-900/40 text-purple-300" : "bg-blue-900/40 text-blue-300"}`}>{b.bindingKind === "ClusterRoleBinding" ? "CRB" : "RB"}</span>
+                    <span className="text-white text-xs font-medium">{b.bindingName}</span>
+                  </div>
+                  <span className={`px-1.5 py-0.5 rounded text-xs border ${riskColor(b.risk)}`}>{b.risk}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div><span className="text-gray-500">Role: </span><span className="text-gray-300 font-mono">{b.roleRef}</span></div>
+                  <div><span className="text-gray-500">Escopo: </span><span className={b.scope === "cluster" ? "text-purple-400" : "text-blue-400"}>{b.scope === "cluster" ? "Cluster" : `Namespace: ${b.namespace}`}</span></div>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  <button onClick={() => copyText(`kubectl get ${b.bindingKind.toLowerCase()} ${b.bindingName}${b.namespace ? ` -n ${b.namespace}` : ""} -o yaml`, `binding-${i}`)}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-400 hover:bg-gray-700 transition-colors">
+                    <Copy size={10} />{copied === `binding-${i}` ? "Copiado!" : "kubectl get"}
+                  </button>
+                  <button onClick={() => { setRevokeTarget(b); setRevokeStep(1); setActiveTab("revoke"); }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-xs bg-red-900/30 text-red-400 hover:bg-red-900/50 border border-red-800/40 transition-colors">
+                    <X size={10} />Revogar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Tab: Permissões efetivas */}
+        {activeTab === "permissions" && (
+          <div className="space-y-2">
+            <div className="text-xs text-gray-500 mb-3">Permissões consolidadas de todos os bindings desta identidade</div>
+            {uniquePerms.length === 0 && <div className="text-gray-500 text-sm text-center py-8">Nenhuma permissão encontrada</div>}
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-gray-800 text-gray-500">
+                    <th className="text-left py-1.5 pr-3">Recurso</th>
+                    <th className="text-left py-1.5 pr-3">Verbos</th>
+                    <th className="text-left py-1.5 pr-3">Via role</th>
+                    <th className="text-left py-1.5">Escopo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {uniquePerms.map((p, i) => {
+                    const isSensitive = p.verbs.includes("*") || p.resource === "*" || p.resource === "secrets" || p.resource === "pods/exec";
+                    return (
+                      <tr key={i} className={`border-b border-gray-800/50 ${isSensitive ? "bg-red-950/20" : ""}`}>
+                        <td className={`py-1.5 pr-3 font-mono ${isSensitive ? "text-red-300" : "text-gray-300"}`}>{p.resource}</td>
+                        <td className="py-1.5 pr-3">
+                          <div className="flex flex-wrap gap-1">
+                            {p.verbs.map(v => (
+                              <span key={v} className={`px-1 rounded text-xs ${v === "*" ? "bg-red-900/60 text-red-300" : "bg-gray-800 text-gray-400"}`}>{v}</span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="py-1.5 pr-3 text-gray-500 font-mono text-xs">{(p as any).via}</td>
+                        <td className="py-1.5 text-xs">
+                          {(p as any).scope === "cluster" ? <span className="text-purple-400">cluster</span> : <span className="text-blue-400">{(p as any).namespace || "ns"}</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Tab: Conceder acesso */}
+        {activeTab === "grant" && (
+          <div className="space-y-4">
+            <div className="text-xs text-gray-500">Conceder acesso a <span className="text-white font-medium">{identity.name}</span> ({identity.kind})</div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Perfil de acesso</label>
+                <select value={grantForm.profileKey} onChange={e => { setGrantForm(f => ({ ...f, profileKey: e.target.value })); setShowGrantPreview(false); }}
+                  className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-300">
+                  {grantProfiles.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}
+                </select>
+                {selectedProfile && <div className="mt-1 text-xs text-gray-500">{selectedProfile.description}</div>}
+              </div>
+
+              {selectedProfile && !selectedProfile.clusterRole && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Namespace</label>
+                  <input value={grantForm.namespace} onChange={e => setGrantForm(f => ({ ...f, namespace: e.target.value }))}
+                    placeholder="ex: production" className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-300" />
+                </div>
+              )}
+
+              {isCriticalGrant && (
+                <div className="p-3 bg-red-950/40 border border-red-800/50 rounded-lg">
+                  <div className="flex items-center gap-2 text-red-400 text-xs font-medium mb-2">
+                    <AlertTriangle size={12} />AÇÃO CRÍTICA — cluster-admin concede controle total do cluster
+                  </div>
+                  <label className="block text-xs text-gray-400 mb-1">Justificativa obrigatória</label>
+                  <textarea value={grantForm.justification} onChange={e => setGrantForm(f => ({ ...f, justification: e.target.value }))}
+                    placeholder="Descreva o motivo desta concessão..." rows={3}
+                    className="w-full bg-gray-900 border border-red-800/50 rounded px-3 py-2 text-sm text-gray-300 resize-none" />
+                </div>
+              )}
+
+              {!isCriticalGrant && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Justificativa (opcional)</label>
+                  <input value={grantForm.justification} onChange={e => setGrantForm(f => ({ ...f, justification: e.target.value }))}
+                    placeholder="Motivo da concessão..." className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-300" />
+                </div>
+              )}
+
+              {/* Preview */}
+              <button onClick={() => setShowGrantPreview(!showGrantPreview)} className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors">
+                <ChevronDown size={12} className={showGrantPreview ? "rotate-180" : ""} />Preview do YAML
+              </button>
+              {showGrantPreview && selectedProfile && (
+                <div className="bg-gray-900 border border-gray-700 rounded-lg p-3">
+                  <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap">{`apiVersion: rbac.authorization.k8s.io/v1
+kind: ${selectedProfile.clusterRole ? "ClusterRoleBinding" : "RoleBinding"}
+metadata:
+  name: ${selectedProfile.role}-${identity.name.replace(/[^a-z0-9-]/gi, "-").toLowerCase()}-<timestamp>
+  ${!selectedProfile.clusterRole && grantForm.namespace ? `namespace: ${grantForm.namespace}` : ""}
+subjects:
+- kind: ${identity.kind}
+  name: ${identity.name}
+  ${identity.kind === "ServiceAccount" && identity.namespace ? `namespace: ${identity.namespace}` : ""}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ${selectedProfile.role}`}</pre>
+                </div>
+              )}
+
+              {grantResult && (
+                <div className={`p-3 rounded-lg border text-xs ${grantResult.success ? "bg-green-950/40 border-green-800/50 text-green-300" : "bg-red-950/40 border-red-800/50 text-red-300"}`}>
+                  {grantResult.success ? <CheckCircle size={12} className="inline mr-1" /> : <XCircle size={12} className="inline mr-1" />}
+                  {grantResult.message}
+                </div>
+              )}
+
+              <button onClick={handleGrant} disabled={granting || (isCriticalGrant && !grantForm.justification.trim()) || (!selectedProfile?.clusterRole && !grantForm.namespace)}
+                className={`w-full py-2 rounded-lg text-sm font-medium transition-colors ${isCriticalGrant ? "bg-red-700 hover:bg-red-600 text-white disabled:bg-gray-800 disabled:text-gray-600" : "bg-blue-600 hover:bg-blue-500 text-white disabled:bg-gray-800 disabled:text-gray-600"}`}>
+                {granting ? "Concedendo..." : `Conceder ${selectedProfile?.role || ""}`}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Tab: Revogar acesso */}
+        {activeTab === "revoke" && (
+          <div className="space-y-3">
+            {revokeStep === 0 && (
+              <>
+                <div className="text-xs text-gray-500">Selecione um binding para revogar</div>
+                {identity.bindings.map((b, i) => (
+                  <div key={i} className="bg-gray-900 border border-gray-700/50 rounded-lg p-3 flex items-center justify-between">
+                    <div>
+                      <div className="text-white text-xs font-medium">{b.bindingName}</div>
+                      <div className="text-gray-500 text-xs">{b.roleRef} · {b.scope === "cluster" ? "cluster" : b.namespace}</div>
+                    </div>
+                    <button onClick={() => { setRevokeTarget(b); setRevokeStep(1); }}
+                      className="px-2 py-1 rounded text-xs bg-red-900/30 text-red-400 hover:bg-red-900/50 border border-red-800/40 transition-colors">
+                      Revogar
+                    </button>
+                  </div>
+                ))}
+              </>
+            )}
+
+            {revokeStep === 1 && revokeTarget && (
+              <div className="space-y-3">
+                <div className="p-3 bg-orange-950/30 border border-orange-800/40 rounded-lg">
+                  <div className="text-orange-400 text-xs font-medium mb-1 flex items-center gap-1"><AlertTriangle size={12} />Confirmar revogação</div>
+                  <div className="text-xs text-gray-400">Você está prestes a revogar o binding <span className="text-white font-mono">{revokeTarget.bindingName}</span> que concede a role <span className="text-white font-mono">{revokeTarget.roleRef}</span>.</div>
+                  {revokeTarget.risk === "critical" && (
+                    <div className="mt-2 text-xs text-red-400">⚠ Este é um binding de risco crítico. A revogação pode impactar serviços em produção.</div>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Justificativa</label>
+                  <input value={revokeJustification} onChange={e => setRevokeJustification(e.target.value)}
+                    placeholder="Motivo da revogação..." className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-gray-300" />
+                </div>
+                <button onClick={() => setRevokeStep(2)}
+                  className="w-full py-2 rounded-lg text-sm font-medium bg-orange-700 hover:bg-orange-600 text-white transition-colors">
+                  Continuar
+                </button>
+                <button onClick={() => { setRevokeStep(0); setRevokeTarget(null); }} className="w-full py-1.5 rounded-lg text-xs text-gray-500 hover:text-gray-300 transition-colors">Cancelar</button>
+              </div>
+            )}
+
+            {revokeStep === 2 && revokeTarget && (
+              <div className="space-y-3">
+                <div className="p-3 bg-red-950/40 border border-red-800/50 rounded-lg">
+                  <div className="text-red-400 text-xs font-medium mb-2 flex items-center gap-1"><AlertTriangle size={12} />Confirmação final — ação irreversível</div>
+                  <div className="text-xs text-gray-400 mb-3">Digite o nome exato do binding para confirmar:</div>
+                  <div className="font-mono text-xs text-white bg-gray-900 rounded px-2 py-1 mb-2">{revokeTarget.bindingName}</div>
+                  <input value={revokeNameInput} onChange={e => setRevokeNameInput(e.target.value)}
+                    placeholder="Digite o nome do binding..." className="w-full bg-gray-900 border border-red-800/50 rounded px-3 py-2 text-sm text-gray-300" />
+                </div>
+
+                {revokeResult && (
+                  <div className={`p-3 rounded-lg border text-xs ${revokeResult.success ? "bg-green-950/40 border-green-800/50 text-green-300" : "bg-red-950/40 border-red-800/50 text-red-300"}`}>
+                    {revokeResult.success ? <CheckCircle size={12} className="inline mr-1" /> : <XCircle size={12} className="inline mr-1" />}
+                    {revokeResult.message}
+                  </div>
+                )}
+
+                <button onClick={handleRevoke}
+                  disabled={revoking || revokeNameInput !== revokeTarget.bindingName}
+                  className="w-full py-2 rounded-lg text-sm font-medium bg-red-700 hover:bg-red-600 text-white disabled:bg-gray-800 disabled:text-gray-600 transition-colors">
+                  {revoking ? "Revogando..." : "Confirmar revogação"}
+                </button>
+                <button onClick={() => { setRevokeStep(1); setRevokeNameInput(""); }} className="w-full py-1.5 rounded-lg text-xs text-gray-500 hover:text-gray-300 transition-colors">Voltar</button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+// ── RbacTab ──────────────────────────────────────────────────────────────────
+function RbacTab({ data, loading, error, apiUrl, getAuthHeaders, onRefresh }: {
+  data: RbacOverview | null; loading: boolean; error: string | null;
+  apiUrl: string; getAuthHeaders: () => Record<string, string>;
+  onRefresh: () => void;
+}) {
+  const [filter, setFilter] = useState<"all" | "critical" | "high" | "cluster-admin" | "wildcard" | "secrets" | "orphan">("all");
+  const [kindFilter, setKindFilter] = useState<"all" | "User" | "Group" | "ServiceAccount">("all");
+  const [search, setSearch] = useState("");
+  const [selectedIdentity, setSelectedIdentity] = useState<RbacIdentity | null>(null);
+  const [viewMode, setViewMode] = useState<"identities" | "orphans">("identities");
+
+  if (loading) return (
+    <div className="flex flex-col items-center justify-center py-20 text-gray-500">
+      <RefreshCw size={24} className="animate-spin mb-3" />
+      <span className="text-sm">Carregando inventário RBAC...</span>
+    </div>
+  );
+  if (error) return (
+    <div className="p-4 bg-red-900/30 border border-red-700/50 rounded-lg">
+      <div className="flex items-center gap-2 text-red-400 text-sm"><AlertTriangle size={14} />{error}</div>
+    </div>
+  );
+  if (!data) return null;
+
+  const { summary, identities, orphanBindings, grantProfiles } = data;
+
+  const filtered = identities.filter(id => {
+    if (kindFilter !== "all" && id.kind !== kindFilter) return false;
+    if (filter === "critical" && id.maxRisk !== "critical") return false;
+    if (filter === "high" && id.maxRisk !== "high") return false;
+    if (filter === "cluster-admin" && !id.isClusterAdmin) return false;
+    if (filter === "wildcard" && !id.hasWildcard) return false;
+    if (filter === "secrets" && !id.hasSecretAccess) return false;
+    if (filter === "orphan") return false;
+    if (search && !id.name.toLowerCase().includes(search.toLowerCase()) && !id.namespace.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  function riskBadge(r: string) {
+    const cls = r === "critical" ? "bg-red-900/60 text-red-300 border-red-700/50" : r === "high" ? "bg-orange-900/60 text-orange-300 border-orange-700/50" : r === "medium" ? "bg-yellow-900/60 text-yellow-300 border-yellow-700/50" : "bg-green-900/60 text-green-300 border-green-700/50";
+    return <span className={`px-1.5 py-0.5 rounded text-xs border ${cls}`}>{r}</span>;
+  }
+  function kindBadge(k: string) {
+    const cls = k === "User" ? "bg-blue-900/40 text-blue-300" : k === "Group" ? "bg-purple-900/40 text-purple-300" : "bg-green-900/40 text-green-300";
+    return <span className={`px-1.5 py-0.5 rounded text-xs font-mono ${cls}`}>{k === "ServiceAccount" ? "SA" : k}</span>;
+  }
+
+  return (
+    <div className="space-y-4">
+      {/* Cards de resumo */}
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+        <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+          <div className="text-xs text-gray-400">Identidades</div>
+          <div className="text-xl font-bold text-white">{summary.totalIdentities}</div>
+          <div className="text-xs text-gray-600">{summary.users}U · {summary.groups}G · {summary.serviceAccounts}SA</div>
+        </div>
+        <div className="bg-gray-900 border border-red-800/40 rounded-lg p-3 cursor-pointer hover:border-red-700/60 transition-colors" onClick={() => setFilter("cluster-admin")}>
+          <div className="text-xs text-gray-400">Cluster Admins</div>
+          <div className="text-xl font-bold text-red-400">{summary.clusterAdmins}</div>
+          <div className="text-xs text-gray-600">acesso total</div>
+        </div>
+        <div className="bg-gray-900 border border-red-800/40 rounded-lg p-3 cursor-pointer hover:border-red-700/60 transition-colors" onClick={() => setFilter("critical")}>
+          <div className="text-xs text-gray-400">Risco crítico</div>
+          <div className="text-xl font-bold text-red-400">{summary.criticalCount}</div>
+          <div className="text-xs text-gray-600">{summary.highCount} alto risco</div>
+        </div>
+        <div className="bg-gray-900 border border-orange-800/40 rounded-lg p-3 cursor-pointer hover:border-orange-700/60 transition-colors" onClick={() => { setViewMode("orphans"); }}>
+          <div className="text-xs text-gray-400">Bindings órfãos</div>
+          <div className="text-xl font-bold text-orange-400">{summary.orphanBindings}</div>
+          <div className="text-xs text-gray-600">subjects inexistentes</div>
+        </div>
+        <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
+          <div className="text-xs text-gray-400">Roles</div>
+          <div className="text-xl font-bold text-white">{summary.totalClusterRoles}</div>
+          <div className="text-xs text-gray-600">{summary.totalRoles} namespaced</div>
+        </div>
+      </div>
+
+      {/* Toggle view */}
+      <div className="flex items-center gap-2">
+        <button onClick={() => setViewMode("identities")} className={`px-3 py-1.5 rounded text-xs transition-colors ${viewMode === "identities" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>Identidades</button>
+        <button onClick={() => setViewMode("orphans")} className={`px-3 py-1.5 rounded text-xs transition-colors ${viewMode === "orphans" ? "bg-orange-700 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>
+          Bindings órfãos {summary.orphanBindings > 0 && <span className="ml-1 px-1 rounded-full bg-orange-500 text-white text-xs">{summary.orphanBindings}</span>}
+        </button>
+      </div>
+
+      {/* View: Orphan Bindings */}
+      {viewMode === "orphans" && (
+        <div className="space-y-2">
+          <div className="text-xs text-gray-500 mb-2">Bindings cujos subjects (ServiceAccounts) não existem mais no cluster</div>
+          {orphanBindings.length === 0 && <div className="text-center py-8 text-gray-600 text-sm">Nenhum binding órfão encontrado</div>}
+          {orphanBindings.map((ob, i) => (
+            <div key={i} className="bg-gray-900 border border-orange-800/40 rounded-lg p-3 flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-orange-900/40 text-orange-300">{ob.bindingKind === "ClusterRoleBinding" ? "CRB" : "RB"}</span>
+                  <span className="text-white text-xs font-medium">{ob.bindingName}</span>
+                </div>
+                <div className="text-xs text-gray-500">Subject: <span className="text-gray-400 font-mono">{ob.subject}</span> · Role: <span className="text-gray-400 font-mono">{ob.roleRef}</span></div>
+                {ob.namespace && <div className="text-xs text-gray-600">Namespace: {ob.namespace}</div>}
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="px-1.5 py-0.5 rounded text-xs bg-orange-900/40 text-orange-300 border border-orange-700/40">órfão</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* View: Identidades */}
+      {viewMode === "identities" && (
+        <>
+          {/* Filtros */}
+          <div className="flex gap-2 flex-wrap items-center">
+            {(["all", "critical", "high", "cluster-admin", "wildcard", "secrets"] as const).map(f => {
+              const labels: Record<string, string> = { all: "Todos", critical: "Crítico", high: "Alto risco", "cluster-admin": "cluster-admin", wildcard: "Wildcard (*)", secrets: "Acesso a secrets" };
+              const active = filter === f;
+              const cls = active ? (f === "critical" || f === "cluster-admin" ? "bg-red-700 text-white" : f === "high" ? "bg-orange-700 text-white" : "bg-blue-600 text-white") : "bg-gray-800 text-gray-400 hover:bg-gray-700";
+              return <button key={f} onClick={() => setFilter(f)} className={"px-3 py-1 rounded text-xs transition-colors " + cls}>{labels[f]}</button>;
+            })}
+            <select value={kindFilter} onChange={e => setKindFilter(e.target.value as any)} className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
+              <option value="all">Todos os tipos</option>
+              <option value="User">User</option>
+              <option value="Group">Group</option>
+              <option value="ServiceAccount">ServiceAccount</option>
+            </select>
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar identidade..." className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 w-40" />
+          </div>
+
+          {/* Tabela */}
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-gray-800 text-gray-500">
+                  <th className="text-left py-2 pr-3" style={{width:"40px"}}>Tipo</th>
+                  <th className="text-left py-2 pr-3" style={{minWidth:"160px"}}>Identidade</th>
+                  <th className="text-left py-2 pr-3" style={{width:"110px"}}>Namespace</th>
+                  <th className="text-left py-2 pr-3" style={{width:"80px"}}>Bindings</th>
+                  <th className="text-left py-2 pr-3" style={{width:"160px"}}>Flags de risco</th>
+                  <th className="text-left py-2 pr-3" style={{width:"70px"}}>Risco</th>
+                  <th className="text-left py-2" style={{width:"60px"}}>Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.slice(0, 200).map((id, idx) => (
+                  <tr key={idx} onClick={() => setSelectedIdentity(id)}
+                    className={`border-b border-gray-800/50 hover:bg-blue-900/10 cursor-pointer transition-colors group ${selectedIdentity?.name === id.name && selectedIdentity?.namespace === id.namespace ? "bg-blue-900/15" : ""}`}>
+                    <td className="py-2 pr-3">{kindBadge(id.kind)}</td>
+                    <td className="py-2 pr-3">
+                      <div className="text-white truncate group-hover:text-blue-200 transition-colors" style={{maxWidth:"200px"}} title={id.name}>{id.name}</div>
+                    </td>
+                    <td className="py-2 pr-3 text-gray-500 truncate font-mono" style={{maxWidth:"110px"}}>{id.namespace || <span className="text-gray-600">—</span>}</td>
+                    <td className="py-2 pr-3 text-gray-400">{id.bindings.length}</td>
+                    <td className="py-2 pr-3">
+                      <div className="flex flex-wrap gap-1">
+                        {id.flags.slice(0, 3).map(f => (
+                          <span key={f} className="px-1 py-0.5 rounded text-xs bg-red-900/40 text-red-300 border border-red-800/30">{f}</span>
+                        ))}
+                        {id.flags.length > 3 && <span className="text-gray-600 text-xs">+{id.flags.length - 3}</span>}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-3">{riskBadge(id.maxRisk)}</td>
+                    <td className="py-2">
+                      <button onClick={e => { e.stopPropagation(); setSelectedIdentity(id); }}
+                        className="px-2 py-0.5 rounded text-xs bg-blue-900/30 text-blue-400 hover:bg-blue-900/50 border border-blue-800/40 transition-colors opacity-0 group-hover:opacity-100">
+                        Ver
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {filtered.length === 0 && <div className="text-center py-8 text-gray-600 text-sm">Nenhuma identidade encontrada</div>}
+            {filtered.length > 200 && <div className="text-xs text-gray-500 mt-2 text-center">Mostrando 200 de {filtered.length} identidades</div>}
+          </div>
+        </>
+      )}
+
+      {/* Drawer */}
+      {selectedIdentity && (
+        <RbacDrawer identity={selectedIdentity} apiUrl={apiUrl} getAuthHeaders={getAuthHeaders}
+          grantProfiles={grantProfiles} onClose={() => setSelectedIdentity(null)} onRefresh={onRefresh} />
+      )}
+    </div>
+  );
+}
 // ── Types: Storage ─────────────────────────────────────────────────────────
 interface StorageItem {
   kind: "PVC" | "PV";
@@ -1710,10 +2284,13 @@ function GovernanceDrawer({ issue, apiUrl, getAuthHeaders, onClose }: {
 
 // ── Tab: Governança ───────────────────────────────────────────────────────────
 function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: GovernanceIssue[]; topRisk: Array<{ ns: string; count: number; critical: number; oomKilled: number }>; apiUrl: string; getAuthHeaders: () => Record<string, string> }) {
-  const [govSubTab, setGovSubTab] = useState<"compute" | "storage">("compute");
+  const [govSubTab, setGovSubTab] = useState<"compute" | "storage" | "rbac">("compute");
   const [storageData, setStorageData] = useState<StorageOverview | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [rbacData, setRbacData] = useState<RbacOverview | null>(null);
+  const [rbacLoading, setRbacLoading] = useState(false);
+  const [rbacError, setRbacError] = useState<string | null>(null);
   const [nsFilter, setNsFilter] = useState("all");
   const [riskFilter, setRiskFilter] = useState<"all" | "critical" | "high" | "medium">("all");
   const [selectedIssue, setSelectedIssue] = useState<GovernanceIssue | null>(null);
@@ -1731,6 +2308,13 @@ function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: Go
         .then(r => r.json())
         .then(d => { if (d.error) setStorageError(d.error); else setStorageData(d); setStorageLoading(false); })
         .catch(e => { setStorageError(e.message); setStorageLoading(false); });
+    }
+    if (govSubTab === "rbac" && !rbacData && !rbacLoading) {
+      setRbacLoading(true); setRbacError(null);
+      fetch(`${apiUrl}/api/nodes/rbac-overview`, { headers: getAuthHeaders() })
+        .then(r => r.json())
+        .then(d => { if (d.error) setRbacError(d.error); else setRbacData(d); setRbacLoading(false); })
+        .catch(e => { setRbacError(e.message); setRbacLoading(false); });
     }
   }, [govSubTab]);
 
@@ -1767,8 +2351,27 @@ function GovernanceTab({ issues, topRisk, apiUrl, getAuthHeaders }: { issues: Go
             <span className="px-1.5 py-0.5 rounded-full text-xs bg-red-500 text-white">{storageData.summary.criticalCount}</span>
           )}
         </button>
+        <button
+          onClick={() => setGovSubTab("rbac")}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+            govSubTab === "rbac" ? "bg-purple-700 text-white" : "text-gray-400 hover:text-white hover:bg-gray-800"
+          }`}
+        >
+          <ShieldAlert size={14} />RBAC / Acesso
+          {rbacData && rbacData.summary.criticalCount > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full text-xs bg-red-500 text-white">{rbacData.summary.criticalCount}</span>
+          )}
+        </button>
       </div>
 
+      {/* Sub-aba RBAC */}
+      {govSubTab === "rbac" && (
+        <RbacTab
+          data={rbacData} loading={rbacLoading} error={rbacError}
+          apiUrl={apiUrl} getAuthHeaders={getAuthHeaders}
+          onRefresh={() => { setRbacData(null); setRbacLoading(false); setRbacError(null); }}
+        />
+      )}
       {/* Sub-aba Storage */}
       {govSubTab === "storage" && (
         storageLoading ? (

@@ -1580,14 +1580,30 @@ const server = http.createServer(async (req, res) => {
         const workload  = pvcToWorkload[key] || "";
         const isOrphan  = phase === "Bound" && usingPods.length === 0;
         const isUnbound = phase !== "Bound";
+        // mountStatus: mounted=pod ativo, idle=sem pod mas bound, unbound=nao vinculado
+        const mountStatus = usingPods.length > 0 ? "mounted" : isUnbound ? "unbound" : "idle";
+        // idleCategory: diferencia conceitos
+        // sem_uso = nenhum pod ativo no momento (pode ser temporario)
+        // ocioso  = sem uso por periodo prolongado (>7 dias)
+        // orfao   = sem vinculo util (isOrphan + agedays > 30)
+        // desperdicio = provisionado mas sem uso ha muito tempo (isOrphan + agedays > 60)
+        let idleCategory = null;
+        if (isUnbound) idleCategory = "unbound";
+        else if (isOrphan && agedays > 60) idleCategory = "desperdicio";
+        else if (isOrphan && agedays > 30) idleCategory = "orfao";
+        else if (isOrphan && agedays > 7)  idleCategory = "ocioso";
+        else if (isOrphan)                 idleCategory = "sem_uso";
         let risk = "low"; const riskReasons = [];
-        if (isUnbound) { risk = "critical"; riskReasons.push(`PVC não vinculado (${phase})`); }
-        else if (isOrphan && agedays !== null && agedays > 7) { risk = "high"; riskReasons.push(`Sem pod ativo há ${agedays} dias`); }
+        if (isUnbound) { risk = "critical"; riskReasons.push(`PVC nao vinculado (${phase})`); }
+        else if (isOrphan && agedays !== null && agedays > 7) { risk = "high"; riskReasons.push(`Sem pod ativo ha ${agedays} dias`); }
         else if (isOrphan) { risk = "medium"; riskReasons.push("Sem pod ativo"); }
         let action = "ok";
         if (isUnbound) action = "investigate";
         else if (isOrphan && agedays > 30) action = "delete";
         else if (isOrphan) action = "review";
+        // reclaimPolicy: buscar no PV associado
+        const pvObj = pvs.find(p => p.metadata.name === pvName);
+        const reclaimPolicy = pvObj?.spec?.persistentVolumeReclaimPolicy || "";
         return {
           kind: "PVC", name, namespace: ns, pvName, storageClass: sc,
           capacityGib: capGib, capacityFmt: fmtStorageGib(capGib),
@@ -1595,6 +1611,7 @@ const server = http.createServer(async (req, res) => {
           phase, usingPods, workload, isOrphan, isUnbound, agedays,
           createdAt, risk, riskReasons, action,
           accessModes: pvc.spec?.accessModes || [],
+          reclaimPolicy, mountStatus, idleCategory,
         };
       });
 
@@ -1693,8 +1710,11 @@ const server = http.createServer(async (req, res) => {
           const r = proto.request(opts, (res2) => { let d=""; res2.on("data",c=>d+=c); res2.on("end",()=>{ if(res2.statusCode>=400) reject(new Error(`HTTP ${res2.statusCode}`)); else resolve(d); }); });
           r.on("error", reject); r.setTimeout(8000, () => r.destroy(new Error("timeout"))); r.end();
         });
+        // Registrar auditoria
+        const user = verifyTokenPayload(req.headers.authorization?.replace("Bearer ", "") || "")?.username || "unknown";
+        try { await insertAuditLog({ user, action: "storage-delete", resource: `${kind}/${name}`, namespace: namespace || "", detail: `Exclusao via governanca de storage` }); } catch (_) {}
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ success: true, message: `${kind} "${name}" excluído com sucesso` }));
+        res.end(JSON.stringify({ success: true, message: `${kind} "${name}" excluido com sucesso` }));
       } catch (err) { console.error("[error] /api/nodes/storage-delete:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
     });
     return;

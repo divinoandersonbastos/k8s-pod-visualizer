@@ -825,6 +825,8 @@ interface StorageItem {
   action: "ok" | "review" | "delete" | "investigate";
   accessModes: string[];
   reclaimPolicy?: string;
+  mountStatus?: "mounted" | "idle" | "unbound";
+  idleCategory?: "sem_uso" | "ocioso" | "orfao" | "desperdicio" | "unbound" | null;
 }
 interface StorageOverview {
   summary: {
@@ -847,9 +849,12 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
 }) {
   const [deleting, setDeleting] = useState(false);
   const [deleteResult, setDeleteResult] = useState<{ success: boolean; message: string } | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [ignored, setIgnored] = useState(false);
-  const [copied, setCopied] = useState(false);
+  // Fluxo de exclusão em 2 etapas: 0=nenhum, 1=confirmação inicial, 2=digitar nome
+  const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0);
+  const [deleteNameInput, setDeleteNameInput] = useState("");
+  const [markedForReview, setMarkedForReview] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [showGlossary, setShowGlossary] = useState(false);
 
   function riskColor(r: string) {
     if (r === "critical") return "text-red-400 bg-red-900/40";
@@ -864,6 +869,17 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
     if (p === "Failed")    return "text-red-400";
     return "text-gray-400";
   }
+  function idleCategoryInfo(cat: string | null | undefined) {
+    if (!cat) return null;
+    const map: Record<string, { label: string; color: string; desc: string }> = {
+      sem_uso:     { label: "Sem uso",       color: "text-yellow-400 bg-yellow-900/30",  desc: "Nenhum pod ativo montando este volume no momento. Pode ser temporário (pod reiniciando, escala zero)." },
+      ocioso:      { label: "Ocioso",        color: "text-orange-400 bg-orange-900/30", desc: "Sem uso por período prolongado (mais de 7 dias). Provavelmente o workload foi removido." },
+      orfao:       { label: "Órfão",         color: "text-red-400 bg-red-900/30",       desc: "Sem vínculo útil com workload ativo há mais de 30 dias. Candidato à limpeza." },
+      desperdicio: { label: "Desperdício",   color: "text-red-400 bg-red-900/40",       desc: "Provisionado há mais de 60 dias sem nenhum uso registrado. Gera custo sem retorno." },
+      unbound:     { label: "Não vinculado", color: "text-red-400 bg-red-900/50",       desc: "PVC não encontrou um PV compatível para se vincular. Pode indicar problema de StorageClass ou capacidade." },
+    };
+    return map[cat] || null;
+  }
 
   const kubectlCmd = item.kind === "PVC"
     ? `kubectl delete pvc ${item.name} -n ${item.namespace}`
@@ -871,13 +887,17 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
   const describeCmd = item.kind === "PVC"
     ? `kubectl describe pvc ${item.name} -n ${item.namespace}`
     : `kubectl describe pv ${item.name}`;
+  const getCmd = item.kind === "PVC"
+    ? `kubectl get pvc ${item.name} -n ${item.namespace} -o yaml`
+    : `kubectl get pv ${item.name} -o yaml`;
 
-  function copyCmd(cmd: string) {
+  function copyCmd(cmd: string, key: string) {
     navigator.clipboard.writeText(cmd);
-    setCopied(true); setTimeout(() => setCopied(false), 2000);
+    setCopied(key); setTimeout(() => setCopied(null), 2000);
   }
 
   async function handleDelete() {
+    if (deleteNameInput.trim() !== item.name) return;
     setDeleting(true); setDeleteResult(null);
     try {
       const r = await fetch(`${apiUrl}/api/nodes/storage-delete`, {
@@ -889,11 +909,11 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
       if (d.success) setDeleteResult({ success: true, message: d.message });
       else setDeleteResult({ success: false, message: d.error || "Erro ao excluir" });
     } catch (e: any) { setDeleteResult({ success: false, message: e.message }); }
-    setDeleting(false); setConfirmDelete(false);
+    setDeleting(false); setDeleteStep(0);
   }
 
-  const actionLabel = item.action === "delete" ? "Excluir" : item.action === "review" ? "Revisar" : item.action === "investigate" ? "Investigar" : "Monitorar";
-  const actionColor = item.action === "delete" ? "bg-red-700 hover:bg-red-600" : item.action === "review" ? "bg-yellow-700 hover:bg-yellow-600" : "bg-blue-700 hover:bg-blue-600";
+  const catInfo = idleCategoryInfo(item.idleCategory);
+  const reclaimIsDangerous = item.reclaimPolicy === "Delete";
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
@@ -904,18 +924,51 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
           <div>
             <div className="flex items-center gap-2 mb-1">
               <span className="px-2 py-0.5 rounded text-xs bg-blue-900/50 text-blue-300 font-mono">{item.kind}</span>
-              <span className="text-sm font-semibold text-white truncate max-w-[280px]">{item.name}</span>
+              <span className="text-sm font-semibold text-white truncate max-w-[260px]">{item.name}</span>
             </div>
             {item.namespace && <div className="text-xs text-gray-500">{item.namespace}</div>}
-            <div className="flex items-center gap-2 mt-1">
+            <div className="flex items-center gap-2 mt-1.5 flex-wrap">
               <span className={`px-1.5 py-0.5 rounded text-xs ${riskColor(item.risk)}`}>{item.risk.toUpperCase()}</span>
-              <span className={`text-xs ${phaseColor(item.phase)}`}>{item.phase}</span>
+              <span className={`text-xs font-medium ${phaseColor(item.phase)}`}>{item.phase}</span>
+              {catInfo && <span className={`px-1.5 py-0.5 rounded text-xs ${catInfo.color}`}>{catInfo.label}</span>}
+              {item.mountStatus === "mounted" && <span className="px-1.5 py-0.5 rounded text-xs bg-green-900/40 text-green-400">Montado</span>}
             </div>
           </div>
           <button onClick={onClose} className="text-gray-500 hover:text-white transition-colors mt-1"><X size={16} /></button>
         </div>
 
         <div className="flex-1 flex flex-col gap-4 p-5">
+
+          {/* Categoria de ociosidade com explicação e glossário */}
+          {catInfo && (
+            <div className="bg-yellow-900/10 border border-yellow-700/30 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-1">
+                <span className={`px-1.5 py-0.5 rounded text-xs ${catInfo.color}`}>{catInfo.label}</span>
+                <button onClick={() => setShowGlossary(!showGlossary)} className="text-gray-600 hover:text-gray-400 text-xs underline">
+                  {showGlossary ? "ocultar glossário" : "ver glossário"}
+                </button>
+              </div>
+              <div className="text-xs text-gray-400">{catInfo.desc}</div>
+              {showGlossary && (
+                <div className="mt-3 pt-3 border-t border-gray-700/50 space-y-2">
+                  <div className="text-xs text-gray-500 font-medium uppercase tracking-wider mb-1">Glossário de conceitos</div>
+                  {[
+                    { t: "Sem uso",       d: "Nenhum pod ativo montando o volume agora. Pode ser temporário (pod reiniciando, escala zero)." },
+                    { t: "Ocioso",        d: "Sem pod ativo por mais de 7 dias. Provavelmente o workload foi removido." },
+                    { t: "Órfão",         d: "Sem vínculo útil com workload ativo há mais de 30 dias. Candidato à limpeza." },
+                    { t: "Desperdício",   d: "Provisionado há mais de 60 dias sem uso. Gera custo sem retorno." },
+                    { t: "Não vinculado", d: "PVC não encontrou PV compatível. Pode indicar problema de StorageClass ou capacidade." },
+                  ].map(({ t, d }) => (
+                    <div key={t}>
+                      <span className="text-xs text-white font-medium">{t}: </span>
+                      <span className="text-xs text-gray-400">{d}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Motivos de risco */}
           {item.riskReasons.length > 0 && (
             <div className="bg-orange-900/20 border border-orange-700/40 rounded-lg p-3">
@@ -936,17 +989,24 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
                 { label: "Capacidade", value: item.capacityFmt },
                 { label: "Storage Class", value: item.storageClass || "(sem classe)" },
                 { label: "Access Modes", value: item.accessModes.join(", ") || "—" },
-                ...(item.kind === "PV" ? [{ label: "Reclaim Policy", value: item.reclaimPolicy || "—" }] : []),
+                { label: "Reclaim Policy", value: item.reclaimPolicy || "—" },
                 { label: "PV vinculado", value: item.pvName || "—" },
                 { label: "Criado em", value: item.createdAt ? new Date(item.createdAt).toLocaleDateString("pt-BR") : "—" },
                 { label: "Idade", value: item.agedays !== null ? `${item.agedays} dias` : "—" },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center justify-between">
                   <span className="text-xs text-gray-500">{label}</span>
-                  <span className="text-xs text-gray-300 font-mono">{value}</span>
+                  <span className={`text-xs font-mono ${label === "Reclaim Policy" && reclaimIsDangerous ? "text-red-400" : "text-gray-300"}`}>{value}</span>
                 </div>
               ))}
             </div>
+            {/* Aviso de Reclaim Policy perigosa */}
+            {reclaimIsDangerous && (
+              <div className="mt-3 pt-2 border-t border-red-800/40 flex items-start gap-2 text-xs text-red-400">
+                <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                <span><strong>Reclaim Policy: Delete</strong> — ao excluir este PVC, o PV e os dados associados serão <strong>permanentemente deletados</strong> pelo provisioner.</span>
+              </div>
+            )}
           </div>
 
           {/* Workload e pods */}
@@ -960,12 +1020,20 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
                     <CheckCircle size={10} />{p}
                   </div>
                 ))}
-                {item.workload && <div className="text-xs text-gray-500 mt-1">Workload: {item.workload}</div>}
+                {item.workload && <div className="text-xs text-gray-500 mt-1">Workload: <span className="text-gray-300">{item.workload}</span></div>}
               </div>
             ) : (
-              <div className="flex items-center gap-2 text-xs text-red-400">
-                <XCircle size={12} />
-                {item.kind === "PVC" ? "Nenhum pod ativo usando este PVC" : "PV sem PVC vinculado"}
+              <div>
+                <div className="flex items-center gap-2 text-xs text-red-400 mb-2">
+                  <XCircle size={12} />
+                  {item.kind === "PVC" ? "Nenhum pod ativo usando este PVC" : "PV sem PVC vinculado"}
+                </div>
+                {item.workload && (
+                  <div className="text-xs text-gray-500">Último workload registrado: <span className="text-gray-400">{item.workload}</span></div>
+                )}
+                {item.agedays !== null && item.agedays > 0 && (
+                  <div className="text-xs text-gray-600 mt-1">Sem uso ativo há aproximadamente {item.agedays} dias</div>
+                )}
               </div>
             )}
           </div>
@@ -974,18 +1042,21 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
             <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Recomendação</div>
             {item.action === "delete" && (
-              <div className="text-xs text-red-300">
-                Volume ocioso há mais de 30 dias sem uso. Recomendamos excluir após confirmar que não há dependência.
+              <div className="text-xs text-red-300 space-y-1">
+                <div>Volume órfão há mais de 30 dias sem uso ativo.</div>
+                <div className="text-gray-500">Antes de excluir: confirme que nenhum workload depende deste volume, verifique se há backup dos dados e observe a Reclaim Policy do PV associado.</div>
               </div>
             )}
             {item.action === "review" && (
-              <div className="text-xs text-yellow-300">
-                Volume sem uso ativo. Verifique se o workload foi removido ou se o PVC ainda é necessário.
+              <div className="text-xs text-yellow-300 space-y-1">
+                <div>Volume sem uso ativo. Pode ser temporário (pod reiniciando) ou permanente (workload removido).</div>
+                <div className="text-gray-500">Verifique se o workload foi removido intencionalmente ou se o PVC ainda é necessário.</div>
               </div>
             )}
             {item.action === "investigate" && (
-              <div className="text-xs text-blue-300">
-                PVC não está vinculado a um PV. Verifique se a StorageClass e o provisioner estão funcionando.
+              <div className="text-xs text-blue-300 space-y-1">
+                <div>PVC não está vinculado a um PV.</div>
+                <div className="text-gray-500">Verifique se a StorageClass e o provisioner estão funcionando, se há PVs disponíveis compatíveis, e se os access modes e capacidade solicitados podem ser atendidos.</div>
               </div>
             )}
             {item.action === "ok" && (
@@ -996,10 +1067,14 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
           {/* Comandos kubectl */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-3">
             <div className="text-xs text-gray-500 uppercase tracking-wider mb-2">Comandos kubectl</div>
-            {[{ label: "Descrever", cmd: describeCmd }, { label: "Excluir", cmd: kubectlCmd }].map(({ label, cmd }) => (
-              <div key={label} className="flex items-center gap-2 mb-2">
+            {[
+              { label: "Descrever", cmd: describeCmd, key: "describe" },
+              { label: "Ver YAML",  cmd: getCmd,      key: "get" },
+              { label: "Excluir",   cmd: kubectlCmd,  key: "delete" },
+            ].map(({ label, cmd, key }) => (
+              <div key={key} className="flex items-center gap-2 mb-2">
                 <pre className="flex-1 text-xs font-mono text-green-300 bg-gray-950 rounded px-2 py-1 overflow-x-auto">{cmd}</pre>
-                <button onClick={() => copyCmd(cmd)} className="text-gray-500 hover:text-white transition-colors shrink-0">
+                <button onClick={() => copyCmd(cmd, key)} className={`transition-colors shrink-0 ${copied === key ? "text-green-400" : "text-gray-500 hover:text-white"}`}>
                   <Copy size={12} />
                 </button>
               </div>
@@ -1011,42 +1086,94 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
             <div className={`p-3 rounded-lg border text-sm flex items-center gap-2 ${deleteResult.success ? "bg-green-900/30 border-green-700/50 text-green-300" : "bg-red-900/30 border-red-700/50 text-red-300"}`}>
               {deleteResult.success ? <CheckCircle size={14} /> : <XCircle size={14} />}
               {deleteResult.message}
+              {deleteResult.success && <span className="text-xs text-gray-500 ml-1">(registrado no audit log)</span>}
             </div>
           )}
 
           {/* Ações */}
-          {!ignored && !deleteResult?.success && (
+          {!deleteResult?.success && (
             <div className="flex flex-col gap-2 mt-auto pt-2">
+              {/* Marcar como candidato à limpeza (etapa anterior à exclusão) */}
+              {!markedForReview && item.action !== "ok" && deleteStep === 0 && (
+                <button
+                  onClick={() => setMarkedForReview(true)}
+                  className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-yellow-900/30 border border-yellow-700/40 hover:bg-yellow-900/50 text-yellow-300 text-xs transition-colors"
+                >
+                  <Clock size={12} />Marcar como candidato à limpeza
+                </button>
+              )}
+              {markedForReview && deleteStep === 0 && (
+                <div className="p-2 rounded-lg bg-yellow-900/20 border border-yellow-700/30 text-xs text-yellow-400 flex items-center gap-2">
+                  <Clock size={11} />Marcado como candidato à limpeza nesta sessão
+                </div>
+              )}
+
+              {/* Fluxo de exclusão em 2 etapas */}
               {item.action === "delete" && (
                 <div>
-                  {!confirmDelete ? (
-                    <button onClick={() => setConfirmDelete(true)} className={`w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg ${actionColor} text-white text-sm font-medium transition-colors`}>
-                      <Wrench size={14} />Excluir {item.kind}
+                  {deleteStep === 0 && (
+                    <button
+                      onClick={() => setDeleteStep(1)}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-red-900/40 border border-red-700/50 hover:bg-red-900/60 text-red-300 text-sm font-medium transition-colors"
+                    >
+                      <Wrench size={14} />Iniciar exclusão de {item.kind}
                     </button>
-                  ) : (
-                    <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-3">
-                      <div className="text-xs text-red-300 mb-3">Confirmar exclusão de {item.kind} <strong>{item.name}</strong>? Esta ação é irreversível.</div>
+                  )}
+                  {deleteStep === 1 && (
+                    <div className="bg-red-900/20 border border-red-700/50 rounded-lg p-4 space-y-3">
+                      <div className="text-xs font-semibold text-red-300 uppercase tracking-wider">Confirmação — Etapa 1 de 2</div>
+                      <div className="text-xs text-gray-300">Você está prestes a excluir o {item.kind} <strong className="text-white">{item.name}</strong>.</div>
+                      {reclaimIsDangerous && (
+                        <div className="flex items-start gap-2 text-xs text-red-400 bg-red-900/30 rounded p-2">
+                          <AlertTriangle size={11} className="mt-0.5 shrink-0" />
+                          <span><strong>Atenção:</strong> Reclaim Policy <strong>Delete</strong> — os dados do PV serão <strong>permanentemente excluídos</strong> após a remoção do PVC.</span>
+                        </div>
+                      )}
+                      <div className="text-xs text-gray-400">Impacto esperado:
+                        <ul className="list-disc list-inside mt-1 space-y-0.5 text-gray-500">
+                          <li>PVC removido do namespace <strong className="text-gray-400">{item.namespace}</strong></li>
+                          {reclaimIsDangerous && <li className="text-red-400">PV e dados associados serão deletados pelo provisioner</li>}
+                          {!reclaimIsDangerous && <li>PV passará para estado Released (dados preservados)</li>}
+                          <li>Esta ação será registrada no audit log</li>
+                        </ul>
+                      </div>
                       <div className="flex gap-2">
-                        <button onClick={handleDelete} disabled={deleting} className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded bg-red-700 hover:bg-red-600 text-white text-xs transition-colors">
+                        <button onClick={() => setDeleteStep(2)} className="flex-1 px-3 py-2 rounded bg-red-700 hover:bg-red-600 text-white text-xs transition-colors">Entendi, continuar</button>
+                        <button onClick={() => setDeleteStep(0)} className="flex-1 px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Cancelar</button>
+                      </div>
+                    </div>
+                  )}
+                  {deleteStep === 2 && (
+                    <div className="bg-red-900/20 border border-red-700/50 rounded-lg p-4 space-y-3">
+                      <div className="text-xs font-semibold text-red-300 uppercase tracking-wider">Confirmação — Etapa 2 de 2</div>
+                      <div className="text-xs text-gray-300">Para confirmar, digite o nome do {item.kind} abaixo:</div>
+                      <div className="font-mono text-sm text-white bg-gray-900 rounded px-3 py-2 border border-gray-700">{item.name}</div>
+                      <input
+                        type="text"
+                        value={deleteNameInput}
+                        onChange={e => setDeleteNameInput(e.target.value)}
+                        placeholder={`Digite: ${item.name}`}
+                        className="w-full bg-gray-900 border border-gray-700 rounded px-3 py-2 text-xs text-white font-mono placeholder-gray-600 focus:outline-none focus:border-red-600"
+                      />
+                      <div className="flex gap-2">
+                        <button
+                          onClick={handleDelete}
+                          disabled={deleting || deleteNameInput.trim() !== item.name}
+                          className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded text-white text-xs transition-colors ${
+                            deleteNameInput.trim() === item.name
+                              ? "bg-red-700 hover:bg-red-600"
+                              : "bg-gray-700 cursor-not-allowed opacity-50"
+                          }`}
+                        >
                           {deleting ? <RefreshCw size={12} className="animate-spin" /> : <XCircle size={12} />}
-                          {deleting ? "Excluindo..." : "Confirmar exclusão"}
+                          {deleting ? "Excluindo..." : "Excluir definitivamente"}
                         </button>
-                        <button onClick={() => setConfirmDelete(false)} className="flex-1 px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Cancelar</button>
+                        <button onClick={() => { setDeleteStep(0); setDeleteNameInput(""); }} className="flex-1 px-3 py-2 rounded bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs transition-colors">Cancelar</button>
                       </div>
                     </div>
                   )}
                 </div>
               )}
-              {item.action !== "delete" && (
-                <button onClick={() => setIgnored(true)} className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-500 text-xs transition-colors">
-                  <EyeOff size={12} />Ignorar esta ocorrência
-                </button>
-              )}
-            </div>
-          )}
-          {ignored && (
-            <div className="p-3 rounded-lg bg-gray-800/50 border border-gray-700/30 text-xs text-gray-500 flex items-center gap-2">
-              <EyeOff size={12} />Marcado como ignorado nesta sessão
             </div>
           )}
         </div>
@@ -1054,10 +1181,9 @@ function StorageDrawer({ item, apiUrl, getAuthHeaders, onClose }: {
     </div>
   );
 }
-
 // ── StorageTab ───────────────────────────────────────────────────────────────
 function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | null; apiUrl: string; getAuthHeaders: () => Record<string, string> }) {
-  const [filter, setFilter] = useState<"all" | "orphan" | "unbound" | "critical" | "high">("all");
+  const [filter, setFilter] = useState<"all" | "orphan" | "unbound" | "critical" | "high" | "sem_uso" | "ocioso" | "orfao" | "desperdicio">("all");
   const [nsFilter, setNsFilter] = useState("all");
   const [selectedItem, setSelectedItem] = useState<StorageItem | null>(null);
   const [sortBy, setSortBy] = useState<"risk" | "capacity" | "age">("risk");
@@ -1076,10 +1202,14 @@ function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | 
   const filtered = items
     .filter(i => {
       if (nsFilter !== "all" && i.namespace !== nsFilter) return false;
-      if (filter === "orphan")   return i.isOrphan;
-      if (filter === "unbound")  return i.isUnbound;
-      if (filter === "critical") return i.risk === "critical";
-      if (filter === "high")     return i.risk === "high" || i.risk === "critical";
+      if (filter === "orphan")      return i.isOrphan;
+      if (filter === "unbound")     return i.isUnbound;
+      if (filter === "critical")    return i.risk === "critical";
+      if (filter === "high")        return i.risk === "high" || i.risk === "critical";
+      if (filter === "sem_uso")     return i.idleCategory === "sem_uso";
+      if (filter === "ocioso")      return i.idleCategory === "ocioso";
+      if (filter === "orfao")       return i.idleCategory === "orfao";
+      if (filter === "desperdicio") return i.idleCategory === "desperdicio";
       return true;
     })
     .sort((a, b) => {
@@ -1109,9 +1239,23 @@ function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | 
     if (p === "Failed")    return <span className="w-2 h-2 rounded-full bg-red-400 inline-block" />;
     return <span className="w-2 h-2 rounded-full bg-gray-500 inline-block" />;
   }
-
+  function mountBadge(item: StorageItem) {
+    if (item.mountStatus === "mounted") return <span className="px-1 py-0.5 rounded text-xs bg-green-900/30 text-green-400">Montado</span>;
+    if (item.mountStatus === "unbound") return <span className="px-1 py-0.5 rounded text-xs bg-red-900/40 text-red-400">Não vinculado</span>;
+    return <span className="px-1 py-0.5 rounded text-xs bg-gray-800 text-gray-500">Desmontado</span>;
+  }
+  function idleCatBadge(cat: string | null | undefined) {
+    if (!cat) return null;
+    const labels: Record<string, string> = {
+      sem_uso: "Sem uso", ocioso: "Ocioso", orfao: "Órfão", desperdicio: "Desperdício", unbound: "Não vinculado",
+    };
+    const colors: Record<string, string> = {
+      sem_uso: "text-yellow-400", ocioso: "text-orange-400", orfao: "text-red-400", desperdicio: "text-red-500", unbound: "text-red-400",
+    };
+    return <span className={`text-xs ${colors[cat] || "text-gray-500"}`}>{labels[cat] || cat}</span>;
+  }
   function exportCSV() {
-    const header = "Tipo,Nome,Namespace,Workload,StorageClass,Capacidade,Fase,Pods,Idade(dias),Risco,Ação";
+    const header = "Tipo,Nome,Namespace,Workload,StorageClass,Capacidade,Fase,Pods,Idade(dias),Risco,Ação";;
     const rows = filtered.map(i => `${i.kind},${i.name},${i.namespace},${i.workload},${i.storageClass},${i.capacityFmt},${i.phase},${i.usingPods.length},${i.agedays ?? ""},${i.risk},${i.action}`);
     const blob = new Blob([header + "\n" + rows.join("\n")], { type: "text/csv" });
     const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "storage-governance.csv"; a.click();
@@ -1136,10 +1280,25 @@ function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | 
           <div className="text-xl font-bold text-orange-400">{summary.orphanCount}</div>
           <div className="text-xs text-gray-600">{summary.orphanCapFmt} ociosos</div>
         </div>
-        <div className="bg-gray-900 border border-yellow-800/40 rounded-lg p-3">
-          <div className="text-xs text-gray-400">Desperdício estimado</div>
+        <div className="bg-gray-900 border border-yellow-800/40 rounded-lg p-3 relative group">
+          <div className="flex items-center gap-1">
+            <div className="text-xs text-gray-400">Desperdício estimado</div>
+            <span className="text-gray-600 cursor-help" title="Capacidade total de PVCs órfãos (sem pod ativo há mais de 30 dias) + PVCs não vinculados. Não inclui PVCs em uso ativo ou com menos de 7 dias de ociosidade.">&#9432;</span>
+          </div>
           <div className="text-xl font-bold text-yellow-400">{summary.orphanCapFmt}</div>
-          <div className="text-xs text-gray-600">{summary.orphanCapPct}% do total</div>
+          <div className="text-xs text-gray-600">{summary.orphanCapPct}% do total provisionado</div>
+          <div className="hidden group-hover:block absolute bottom-full left-0 mb-1 w-64 bg-gray-800 border border-gray-700 rounded-lg p-2 text-xs text-gray-300 z-10 shadow-xl">
+            <div className="font-medium text-white mb-1">Cálculo do desperdício</div>
+            <div className="text-gray-400 space-y-1">
+              <div>Soma a capacidade de PVCs considerados órfãos:</div>
+              <ul className="list-disc list-inside space-y-0.5 text-gray-500">
+                <li>PVCs sem pod ativo há mais de 30 dias</li>
+                <li>PVCs não vinculados a nenhum PV</li>
+                <li>PVs em estado Released ou Available há mais de 7 dias</li>
+              </ul>
+              <div className="text-gray-600 mt-1">Não inclui PVCs em uso ativo ou com menos de 7 dias sem uso (podem ser temporários).</div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1182,11 +1341,22 @@ function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | 
 
       {/* Filtros */}
       <div className="flex gap-2 flex-wrap items-center">
-        {(["all", "orphan", "unbound", "critical", "high"] as const).map(f => (
-          <button key={f} onClick={() => setFilter(f)} className={`px-3 py-1 rounded text-xs transition-colors ${filter === f ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700"}`}>
-            {f === "all" ? "Todos" : f === "orphan" ? "Ociosos" : f === "unbound" ? "Não vinculados" : f === "critical" ? "Crítico" : "Alto risco"}
-          </button>
-        ))}
+        {(["all", "orphan", "unbound", "critical", "high", "sem_uso", "ocioso", "orfao", "desperdicio"] as const).map(f => {
+          const labels: Record<string, string> = {
+            all: "Todos", orphan: "Ociosos", unbound: "Não vinculados", critical: "Crítico",
+            high: "Alto risco", sem_uso: "Sem uso", ocioso: "Ocioso", orfao: "Órfão", desperdicio: "Desperdício",
+          };
+          const activeColors: Record<string, string> = {
+            all: "bg-blue-600", orphan: "bg-orange-700", unbound: "bg-red-700", critical: "bg-red-800",
+            high: "bg-orange-800", sem_uso: "bg-yellow-700", ocioso: "bg-orange-700", orfao: "bg-red-700", desperdicio: "bg-red-800",
+          };
+          const btnCls = "px-3 py-1 rounded text-xs transition-colors " + (filter === f ? activeColors[f] + " text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700");
+          return (
+            <button key={f} onClick={() => setFilter(f)} className={btnCls}>
+              {labels[f]}
+            </button>
+          );
+        })}
         <select value={nsFilter} onChange={e => setNsFilter(e.target.value)} className="bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300">
           {namespaces.map(ns => <option key={ns} value={ns}>{ns === "all" ? "Todos namespaces" : ns}</option>)}
         </select>
@@ -1213,15 +1383,16 @@ function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | 
             <tr className="border-b border-gray-800 text-gray-500">
               <th className="text-left py-2 pr-3" style={{width:"30px"}}>Tipo</th>
               <th className="text-left py-2 pr-3" style={{minWidth:"140px"}}>PVC / PV</th>
-              <th className="text-left py-2 pr-3" style={{width:"110px"}}>Namespace</th>
-              <th className="text-left py-2 pr-3" style={{width:"130px"}}>Workload</th>
-              <th className="text-left py-2 pr-3" style={{width:"100px"}}>Storage Class</th>
-              <th className="text-right py-2 pr-3" style={{width:"80px"}}>Capacidade</th>
-              <th className="text-left py-2 pr-3" style={{width:"70px"}}>Fase</th>
-              <th className="text-right py-2 pr-3" style={{width:"50px"}}>Pods</th>
+              <th className="text-left py-2 pr-3" style={{width:"100px"}}>Namespace</th>
+              <th className="text-left py-2 pr-3" style={{width:"110px"}}>Workload</th>
+              <th className="text-left py-2 pr-3" style={{width:"80px"}}>Categoria</th>
+              <th className="text-left py-2 pr-3" style={{width:"80px"}}>Montagem</th>
+              <th className="text-right py-2 pr-3" style={{width:"70px"}}>Capacidade</th>
+              <th className="text-left py-2 pr-3" style={{width:"60px"}}>Fase</th>
               <th className="text-right py-2 pr-3" style={{width:"60px"}}>Idade</th>
+              <th className="text-left py-2 pr-3" style={{width:"60px"}}>Reclaim</th>
               <th className="text-left py-2 pr-3" style={{width:"70px"}}>Risco</th>
-              <th className="text-left py-2" style={{width:"80px"}}>Ação</th>
+              <th className="text-left py-2" style={{width:"70px"}}>Ação</th>
             </tr>
           </thead>
           <tbody>
@@ -1238,16 +1409,21 @@ function StorageTab({ data, apiUrl, getAuthHeaders }: { data: StorageOverview | 
                   <div className="text-white truncate group-hover:text-blue-200 transition-colors" style={{maxWidth:"180px"}} title={item.name}>{item.name}</div>
                 </td>
                 <td className="py-2 pr-3 text-gray-400 truncate" style={{maxWidth:"110px"}}>{item.namespace || "—"}</td>
-                <td className="py-2 pr-3 text-gray-500 truncate" style={{maxWidth:"130px"}}>
-                  {item.workload ? <span className="text-gray-300">{item.workload}</span> : item.usingPods.length > 0 ? <span className="text-green-400/70">{item.usingPods.length} pod(s)</span> : <span className="text-red-400/70">sem uso</span>}
+                <td className="py-2 pr-3 text-gray-500 truncate" style={{maxWidth:"110px"}}>
+                  {item.workload ? <span className="text-gray-300 truncate" title={item.workload}>{item.workload}</span> : item.usingPods.length > 0 ? <span className="text-green-400/70">{item.usingPods.length} pod(s)</span> : <span className="text-gray-600">sem workload</span>}
                 </td>
-                <td className="py-2 pr-3 text-gray-500 truncate font-mono" style={{maxWidth:"100px"}}>{item.storageClass || "—"}</td>
+                <td className="py-2 pr-3">{idleCatBadge(item.idleCategory)}</td>
+                <td className="py-2 pr-3">{mountBadge(item)}</td>
                 <td className="py-2 pr-3 text-right text-gray-300 font-mono">{item.capacityFmt}</td>
                 <td className="py-2 pr-3">
                   <div className="flex items-center gap-1">{phaseDot(item.phase)}<span className="text-gray-400">{item.phase}</span></div>
                 </td>
-                <td className={`py-2 pr-3 text-right ${item.usingPods.length > 0 ? "text-green-400" : "text-red-400/70"}`}>{item.usingPods.length}</td>
                 <td className="py-2 pr-3 text-right text-gray-500">{item.agedays !== null ? `${item.agedays}d` : "—"}</td>
+                <td className="py-2 pr-3">
+                  {item.reclaimPolicy ? (
+                    <span className={item.reclaimPolicy === "Delete" ? "text-red-400 font-medium" : "text-gray-400"}>{item.reclaimPolicy}</span>
+                  ) : <span className="text-gray-600">—</span>}
+                </td>
                 <td className="py-2 pr-3">{riskBadge(item.risk)}</td>
                 <td className="py-2">{actionBadge(item.action)}</td>
               </tr>

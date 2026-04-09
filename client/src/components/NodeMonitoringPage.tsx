@@ -729,7 +729,7 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
             onClose={() => setOomModal(null)}
           />
         )}
-        <button onClick={() => setSelected(null)} className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors">
+        <button onClick={() => { setSelected(null); setPodDetailPod(null); setNsFilterNode("all"); }} className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors">
           <ArrowLeft size={14} /> Voltar para lista
         </button>
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

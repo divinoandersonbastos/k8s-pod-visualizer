@@ -696,7 +696,21 @@ function PodDetailDrawer({ pod, onClose, apiUrl, onOpenLogs }: {
 }
 
 
-// ── Tab: Nodes Detalhado ──────────────────────────────────────────────────────
+// ── // ── Types para Top Consumers ────────────────────────────────────────────
+interface TopConsumer {
+  pod: string; namespace: string; workload: string; qos: string;
+  restarts: number; oomKilled: boolean; hasRealMetrics: boolean;
+  cpuRealM: number; memRealMb: number; cpuReqM: number; memReqMb: number; cpuLimM: number; memLimMb: number;
+  cpuRealPct: number; memRealPct: number; cpuReqPct: number; memReqPct: number;
+}
+interface TopConsumersData {
+  node: string; consumers: TopConsumer[];
+  totals: { cpuRealM: number; memRealMb: number; cpuReqM: number; memReqMb: number };
+  nodeCpuRealM: number | null; nodeMemRealMb: number | null;
+  podCount: number; timestamp: number;
+}
+
+// ── Tab: Nodes Detalhado ────────────────────────────────────────────
 function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) {
   const [selected, setSelected] = useState<NodeOverview | null>(null);
   const [filter, setFilter] = useState<"all" | "critical" | "warning" | "spot">("all");
@@ -705,11 +719,29 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
   const [oomLoading, setOomLoading] = useState(false);
   const [podDetailPod, setPodDetailPod] = useState<{ name: string; namespace: string } | null>(null);
   const [nsFilterNode, setNsFilterNode] = useState<string>("all");
+  // Top Consumers
+  const [topConsumers, setTopConsumers] = useState<TopConsumersData | null>(null);
+  const [topConsumersLoading, setTopConsumersLoading] = useState(false);
+  const [topConsumersMetric, setTopConsumersMetric] = useState<"cpu" | "mem">("cpu");
+  const [topConsumersSort, setTopConsumersSort] = useState<"real" | "request" | "limit">("real");
+  const [showTopConsumers, setShowTopConsumers] = useState(false);
   const base = apiUrl.replace(/\/$/, "");
   const TOKEN_KEY = "k8s-viz-token";
   const getAuthHeaders = (): Record<string, string> => {
     const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
     return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+  };
+
+  const openTopConsumers = async (nodeName: string, metric: "cpu" | "mem") => {
+    setTopConsumersMetric(metric);
+    setShowTopConsumers(true);
+    setTopConsumersLoading(true);
+    try {
+      const res = await fetch(`${base}/api/nodes/top-consumers?node=${encodeURIComponent(nodeName)}`, { headers: getAuthHeaders() });
+      const data: TopConsumersData = await res.json();
+      setTopConsumers(data);
+    } catch { setTopConsumers(null); }
+    setTopConsumersLoading(false);
   };
 
   const openOomModal = async (nodeName: string) => {
@@ -811,65 +843,89 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
             </div>
             {/* Gauges circulares - CPU */}
             <div className="mb-1">
-              <div className="flex items-center gap-1 text-xs text-gray-500 mb-3">
-                <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span><span>Uso real</span>
-                <span className="ml-2 w-2 h-2 rounded-full bg-blue-500 inline-block"></span><span>Reservada (request)</span>
-                <span className="ml-2 w-2 h-2 rounded-full bg-blue-300 inline-block"></span><span>Limite</span>
+              <div className="flex items-center justify-between gap-1 text-xs text-gray-500 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span><span>Uso real</span>
+                  <span className="ml-2 w-2 h-2 rounded-full bg-blue-500 inline-block"></span><span>Reservada (request)</span>
+                  <span className="ml-2 w-2 h-2 rounded-full bg-blue-300 inline-block"></span><span>Limite</span>
+                </div>
+                <button onClick={() => openTopConsumers(selected.name, "cpu")}
+                  className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors px-2 py-0.5 rounded border border-blue-800/40 hover:border-blue-600/60 bg-blue-950/20">
+                  <BarChart2 size={10} /> Ver quem consome
+                </button>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4 mb-5">
-              <Tip text="Consumo real de CPU medido agora (metrics-server)">
-                <CircularGauge
-                  value={selected.realUsage.cpu} total={selected.allocatable.cpu}
-                  label="CPU — Uso Real" sublabel={`${fmtCPU(selected.realUsage.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
-                  colorClass="#22c55e" size={88}
-                />
-              </Tip>
-              <Tip text="CPU reservada para agendamento (requests). Afeta onde o pod é alocado.">
-                <CircularGauge
-                  value={selected.requests.cpu} total={selected.allocatable.cpu}
-                  label="CPU — Reservada" sublabel={`${fmtCPU(selected.requests.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
-                  colorClass="#3b82f6" size={88}
-                />
-              </Tip>
-              <Tip text="CPU máxima que o container pode usar (limits). Exceder causa throttling.">
-                <CircularGauge
-                  value={selected.limits.cpu} total={selected.allocatable.cpu}
-                  label="CPU — Limite" sublabel={`${fmtCPU(selected.limits.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
-                  colorClass="#93c5fd" size={88}
-                />
-              </Tip>
+              <button className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => openTopConsumers(selected.name, "cpu")}>
+                <Tip text="Clique para ver quais pods mais consomem CPU neste node">
+                  <CircularGauge
+                    value={selected.realUsage.cpu} total={selected.allocatable.cpu}
+                    label="CPU — Uso Real" sublabel={`${fmtCPU(selected.realUsage.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                    colorClass="#22c55e" size={88}
+                  />
+                </Tip>
+              </button>
+              <button className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => openTopConsumers(selected.name, "cpu")}>
+                <Tip text="Clique para ver quais pods mais reservam CPU neste node">
+                  <CircularGauge
+                    value={selected.requests.cpu} total={selected.allocatable.cpu}
+                    label="CPU — Reservada" sublabel={`${fmtCPU(selected.requests.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                    colorClass="#3b82f6" size={88}
+                  />
+                </Tip>
+              </button>
+              <button className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => openTopConsumers(selected.name, "cpu")}>
+                <Tip text="Clique para ver quais pods têm maior limite de CPU neste node">
+                  <CircularGauge
+                    value={selected.limits.cpu} total={selected.allocatable.cpu}
+                    label="CPU — Limite" sublabel={`${fmtCPU(selected.limits.cpu)} / ${fmtCPU(selected.allocatable.cpu)}`}
+                    colorClass="#93c5fd" size={88}
+                  />
+                </Tip>
+              </button>
             </div>
             {/* Gauges circulares - MEM */}
             <div className="mb-1">
-              <div className="flex items-center gap-1 text-xs text-gray-500 mb-3">
-                <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span><span>Uso real</span>
-                <span className="ml-2 w-2 h-2 rounded-full bg-purple-500 inline-block"></span><span>Reservada (request)</span>
-                <span className="ml-2 w-2 h-2 rounded-full bg-purple-300 inline-block"></span><span>Limite</span>
+              <div className="flex items-center justify-between gap-1 text-xs text-gray-500 mb-3">
+                <div className="flex items-center gap-2">
+                  <span className="w-2 h-2 rounded-full bg-green-500 inline-block"></span><span>Uso real</span>
+                  <span className="ml-2 w-2 h-2 rounded-full bg-purple-500 inline-block"></span><span>Reservada (request)</span>
+                  <span className="ml-2 w-2 h-2 rounded-full bg-purple-300 inline-block"></span><span>Limite</span>
+                </div>
+                <button onClick={() => openTopConsumers(selected.name, "mem")}
+                  className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300 transition-colors px-2 py-0.5 rounded border border-purple-800/40 hover:border-purple-600/60 bg-purple-950/20">
+                  <BarChart2 size={10} /> Ver quem consome
+                </button>
               </div>
             </div>
             <div className="grid grid-cols-3 gap-4">
-              <Tip text="Consumo real de memória medido agora (metrics-server)">
-                <CircularGauge
-                  value={selected.realUsage.memory} total={selected.allocatable.memory}
-                  label="MEM — Uso Real" sublabel={`${fmtMem(selected.realUsage.memory)} / ${fmtMem(selected.allocatable.memory)}`}
-                  colorClass="#22c55e" size={88}
-                />
-              </Tip>
-              <Tip text="Memória reservada para agendamento (requests). Afeta onde o pod é alocado.">
-                <CircularGauge
-                  value={selected.requests.memory} total={selected.allocatable.memory}
-                  label="MEM — Reservada" sublabel={`${fmtMem(selected.requests.memory)} / ${fmtMem(selected.allocatable.memory)}`}
-                  colorClass="#a855f7" size={88}
-                />
-              </Tip>
-              <Tip text="Memória máxima que o container pode usar. Exceder causa OOMKill.">
-                <CircularGauge
-                  value={selected.limits.memory} total={selected.allocatable.memory}
-                  label="MEM — Limite" sublabel={`${fmtMem(selected.limits.memory)} / ${fmtMem(selected.allocatable.memory)}`}
-                  colorClass="#d8b4fe" size={88}
-                />
-              </Tip>
+              <button className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => openTopConsumers(selected.name, "mem")}>
+                <Tip text="Clique para ver quais pods mais consomem Memória neste node">
+                  <CircularGauge
+                    value={selected.realUsage.memory} total={selected.allocatable.memory}
+                    label="MEM — Uso Real" sublabel={`${fmtMem(selected.realUsage.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                    colorClass="#22c55e" size={88}
+                  />
+                </Tip>
+              </button>
+              <button className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => openTopConsumers(selected.name, "mem")}>
+                <Tip text="Clique para ver quais pods mais reservam Memória neste node">
+                  <CircularGauge
+                    value={selected.requests.memory} total={selected.allocatable.memory}
+                    label="MEM — Reservada" sublabel={`${fmtMem(selected.requests.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                    colorClass="#a855f7" size={88}
+                  />
+                </Tip>
+              </button>
+              <button className="cursor-pointer hover:opacity-80 transition-opacity" onClick={() => openTopConsumers(selected.name, "mem")}>
+                <Tip text="Clique para ver quais pods têm maior limite de Memória neste node">
+                  <CircularGauge
+                    value={selected.limits.memory} total={selected.allocatable.memory}
+                    label="MEM — Limite" sublabel={`${fmtMem(selected.limits.memory)} / ${fmtMem(selected.allocatable.memory)}`}
+                    colorClass="#d8b4fe" size={88}
+                  />
+                </Tip>
+              </button>
             </div>
             {/* Headroom disponível para agendamento */}
             {(selected.cpuHeadroomPct != null || selected.memHeadroomPct != null) && (
@@ -1195,6 +1251,164 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
           onClose={() => setPodDetailPod(null)}
           apiUrl={apiUrl}
         />
+      )}
+      {/* Modal de Top Consumers */}
+      {showTopConsumers && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.80)" }}>
+          <div className="bg-gray-900 border border-gray-700/60 rounded-xl w-full max-w-2xl max-h-[85vh] flex flex-col shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-gray-800">
+              <div className="flex items-center gap-3">
+                {topConsumersMetric === "cpu" ? <Cpu size={16} className="text-blue-400" /> : <MemoryStick size={16} className="text-purple-400" />}
+                <span className="text-white font-semibold">
+                  Top Consumidores de {topConsumersMetric === "cpu" ? "CPU" : "Memória"}
+                </span>
+                <span className="text-xs text-gray-500 font-mono">{selected.name}</span>
+                {topConsumers && <span className="ml-1 px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 text-xs">{topConsumers.podCount} pods</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                {/* Toggle CPU/MEM */}
+                <div className="flex rounded border border-gray-700 overflow-hidden">
+                  <button onClick={() => setTopConsumersMetric("cpu")}
+                    className={`px-3 py-1 text-xs transition-colors ${ topConsumersMetric === "cpu" ? "bg-blue-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700" }`}>
+                    CPU
+                  </button>
+                  <button onClick={() => setTopConsumersMetric("mem")}
+                    className={`px-3 py-1 text-xs transition-colors ${ topConsumersMetric === "mem" ? "bg-purple-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700" }`}>
+                    MEM
+                  </button>
+                </div>
+                {/* Toggle Ordenar por */}
+                <div className="flex rounded border border-gray-700 overflow-hidden">
+                  <button onClick={() => setTopConsumersSort("real")}
+                    className={`px-2 py-1 text-xs transition-colors ${ topConsumersSort === "real" ? "bg-green-700 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700" }`}>
+                    Real
+                  </button>
+                  <button onClick={() => setTopConsumersSort("request")}
+                    className={`px-2 py-1 text-xs transition-colors ${ topConsumersSort === "request" ? "bg-blue-700 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700" }`}>
+                    Request
+                  </button>
+                  <button onClick={() => setTopConsumersSort("limit")}
+                    className={`px-2 py-1 text-xs transition-colors ${ topConsumersSort === "limit" ? "bg-gray-600 text-white" : "bg-gray-800 text-gray-400 hover:bg-gray-700" }`}>
+                    Limit
+                  </button>
+                </div>
+                <button onClick={() => setShowTopConsumers(false)} className="p-1.5 rounded text-gray-400 hover:text-white hover:bg-gray-800">
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+            {/* Body */}
+            <div className="overflow-y-auto flex-1 p-4">
+              {topConsumersLoading && (
+                <div className="flex items-center justify-center py-12 gap-2 text-gray-500">
+                  <RefreshCw size={16} className="animate-spin" /> Carregando dados do cluster...
+                </div>
+              )}
+              {!topConsumersLoading && !topConsumers && (
+                <div className="text-center py-12 text-gray-500">Erro ao carregar dados. Verifique se o metrics-server está ativo.</div>
+              )}
+              {!topConsumersLoading && topConsumers && (() => {
+                const isCpu = topConsumersMetric === "cpu";
+                const sorted = [...topConsumers.consumers].sort((a, b) => {
+                  if (topConsumersSort === "real")    return isCpu ? b.cpuRealM - a.cpuRealM : b.memRealMb - a.memRealMb;
+                  if (topConsumersSort === "request") return isCpu ? b.cpuReqM  - a.cpuReqM  : b.memReqMb  - a.memReqMb;
+                  return isCpu ? b.cpuLimM - a.cpuLimM : b.memLimMb - a.memLimMb;
+                });
+                const maxReal = sorted.length > 0 ? (isCpu ? sorted[0].cpuRealM : sorted[0].memRealMb) : 1;
+                const maxReq  = sorted.length > 0 ? (isCpu ? sorted[0].cpuReqM  : sorted[0].memReqMb)  : 1;
+                const maxLim  = sorted.length > 0 ? (isCpu ? sorted[0].cpuLimM  : sorted[0].memLimMb)  : 1;
+                const totalReal = isCpu ? topConsumers.totals.cpuRealM : topConsumers.totals.memRealMb;
+                const totalReq  = isCpu ? topConsumers.totals.cpuReqM  : topConsumers.totals.memReqMb;
+                return (
+                  <div className="space-y-1">
+                    {/* Cabeçalho da tabela */}
+                    <div className="grid grid-cols-12 gap-2 px-2 py-1 text-xs text-gray-600 font-medium border-b border-gray-800 mb-2">
+                      <div className="col-span-4">Pod</div>
+                      <div className="col-span-2 text-right">Real</div>
+                      <div className="col-span-2 text-right">Request</div>
+                      <div className="col-span-2 text-right">Limit</div>
+                      <div className="col-span-2 text-right">% do node</div>
+                    </div>
+                    {sorted.map((c, i) => {
+                      const realVal = isCpu ? c.cpuRealM : c.memRealMb;
+                      const reqVal  = isCpu ? c.cpuReqM  : c.memReqMb;
+                      const limVal  = isCpu ? c.cpuLimM  : c.memLimMb;
+                      const fmtVal  = isCpu ? fmtCPU : fmtMem;
+                      const realPct = isCpu ? c.cpuRealPct : c.memRealPct;
+                      const reqPct  = isCpu ? c.cpuReqPct  : c.memReqPct;
+                      const barReal = maxReal > 0 ? Math.round((realVal / maxReal) * 100) : 0;
+                      const barReq  = maxReq  > 0 ? Math.round((reqVal  / maxReq)  * 100) : 0;
+                      const barLim  = maxLim  > 0 ? Math.round((limVal  / maxLim)  * 100) : 0;
+                      const isTop3  = i < 3;
+                      const accentColor = isCpu ? (isTop3 ? "bg-blue-500" : "bg-blue-800/60") : (isTop3 ? "bg-purple-500" : "bg-purple-800/60");
+                      const borderCls = isTop3 ? (isCpu ? "border-blue-900/40" : "border-purple-900/40") : "border-gray-800/60";
+                      return (
+                        <div key={i} className={`rounded border px-3 py-2 cursor-pointer hover:bg-gray-800/60 transition-colors ${borderCls} ${ isTop3 ? (isCpu ? "bg-blue-950/10" : "bg-purple-950/10") : "bg-gray-900/40" }`}
+                          onClick={() => { setShowTopConsumers(false); setPodDetailPod({ name: c.pod, namespace: c.namespace }); }}>
+                          <div className="grid grid-cols-12 gap-2 items-center">
+                            <div className="col-span-4 min-w-0">
+                              <div className="flex items-center gap-1.5">
+                                {isTop3 && <span className={`text-xs font-bold ${ i === 0 ? "text-yellow-400" : i === 1 ? "text-gray-300" : "text-orange-600" }`}>#{i+1}</span>}
+                                <span className="text-xs text-white font-mono truncate" title={c.pod}>{c.pod}</span>
+                              </div>
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <span className="text-xs text-gray-600">{c.namespace}</span>
+                                {c.oomKilled && <span className="text-xs text-red-400 font-semibold">OOM</span>}
+                                {c.restarts > 0 && <span className="text-xs text-orange-400">{c.restarts}r</span>}
+                                {!c.hasRealMetrics && <span className="text-xs text-gray-700">(sem métricas)</span>}
+                              </div>
+                            </div>
+                            <div className="col-span-2">
+                              <div className="flex items-center gap-1">
+                                <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                  <div className={`h-full rounded-full ${accentColor}`} style={{ width: `${barReal}%` }} />
+                                </div>
+                              </div>
+                              <div className="text-xs text-right mt-0.5 font-mono ${ realVal > 0 ? (isCpu ? 'text-green-400' : 'text-green-400') : 'text-gray-600' }">{realVal > 0 ? fmtVal(realVal) : '—'}</div>
+                            </div>
+                            <div className="col-span-2">
+                              <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                <div className={`h-full rounded-full ${ isCpu ? 'bg-blue-600/70' : 'bg-purple-600/70' }`} style={{ width: `${barReq}%` }} />
+                              </div>
+                              <div className="text-xs text-right mt-0.5 font-mono text-gray-400">{reqVal > 0 ? fmtVal(reqVal) : '—'}</div>
+                            </div>
+                            <div className="col-span-2">
+                              <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                                <div className="h-full rounded-full bg-gray-600/50" style={{ width: `${barLim}%` }} />
+                              </div>
+                              <div className="text-xs text-right mt-0.5 font-mono text-gray-500">{limVal > 0 ? fmtVal(limVal) : '—'}</div>
+                            </div>
+                            <div className="col-span-2 text-right">
+                              <div className={`text-xs font-bold ${ realPct >= 20 ? (isCpu ? 'text-blue-300' : 'text-purple-300') : 'text-gray-500' }`}>{realPct > 0 ? `${realPct}%` : '—'}</div>
+                              <div className="text-xs text-gray-600">{reqPct > 0 ? `req ${reqPct}%` : ''}</div>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {/* Rodapé com totais */}
+                    <div className="mt-3 pt-3 border-t border-gray-800 grid grid-cols-3 gap-3">
+                      <div className="text-center">
+                        <div className="text-xs text-gray-500">Total real (pods)</div>
+                        <div className="text-sm font-bold text-green-400">{isCpu ? fmtCPU(totalReal) : fmtMem(totalReal)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-gray-500">Total requests</div>
+                        <div className="text-sm font-bold text-blue-400">{isCpu ? fmtCPU(totalReq) : fmtMem(totalReq)}</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-xs text-gray-500">Capacidade alocável</div>
+                        <div className="text-sm font-bold text-gray-300">{isCpu ? fmtCPU(selected.allocatable.cpu) : fmtMem(selected.allocatable.memory)}</div>
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-600 text-center mt-1">Clique em um pod para ver detalhes</div>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
       )}
       </React.Fragment>
     );

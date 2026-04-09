@@ -1397,6 +1397,60 @@ const server = http.createServer(async (req, res) => {
     });
     return;
   }
+  // ── /api/nodes/top-consumers — Top pods consumidores de CPU/MEM por node ──────
+  if (url.pathname === "/api/nodes/top-consumers") {
+    requireAuth(req, res, async () => {
+      try {
+        const nodeName = url.searchParams.get("node");
+        if (!nodeName) { res.writeHead(400, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: "node param required" })); return; }
+        const [podsRes, podMetricsRes, nodeMetricsRes] = await Promise.allSettled([
+          k8sRequest("/api/v1/pods"),
+          k8sRequest("/apis/metrics.k8s.io/v1beta1/pods"),
+          k8sRequest(`/apis/metrics.k8s.io/v1beta1/nodes/${nodeName}`),
+        ]);
+        const allPods = podsRes.status === "fulfilled" ? (podsRes.value.body?.items || []) : [];
+        const podMetrics = podMetricsRes.status === "fulfilled" ? (podMetricsRes.value.body?.items || []) : [];
+        const nodeMetrics = nodeMetricsRes.status === "fulfilled" ? nodeMetricsRes.value.body : null;
+        const metricsMap = {};
+        for (const pm of podMetrics) metricsMap[`${pm.metadata.namespace}/${pm.metadata.name}`] = pm.containers || [];
+        const nodePods = allPods.filter(p => p.spec?.nodeName === nodeName && p.status?.phase === "Running");
+        const consumers = [];
+        for (const p of nodePods) {
+          const key = `${p.metadata.namespace}/${p.metadata.name}`;
+          const realContainers = metricsMap[key] || [];
+          let cpuRealM = 0, memRealMb = 0, cpuReqM = 0, memReqMb = 0, cpuLimM = 0, memLimMb = 0;
+          for (const c of (p.spec?.containers || [])) {
+            const mc = realContainers.find(m => m.name === c.name);
+            cpuRealM  += mc ? parseCPU(mc.usage?.cpu) * 1000 : 0;
+            memRealMb += mc ? parseMem(mc.usage?.memory) : 0;
+            cpuReqM   += parseCPU(c.resources?.requests?.cpu) * 1000;
+            memReqMb  += parseMem(c.resources?.requests?.memory);
+            cpuLimM   += parseCPU(c.resources?.limits?.cpu) * 1000;
+            memLimMb  += parseMem(c.resources?.limits?.memory);
+          }
+          const restarts = (p.status?.containerStatuses || []).reduce((a, cs) => a + (cs.restartCount || 0), 0);
+          const oomKilled = (p.status?.containerStatuses || []).some(cs => cs.lastState?.terminated?.reason === "OOMKilled");
+          const workload = p.metadata.labels?.["app"] || p.metadata.labels?.["app.kubernetes.io/name"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name;
+          consumers.push({ pod: p.metadata.name, namespace: p.metadata.namespace, workload, qos: p.status?.qosClass || "BestEffort", restarts, oomKilled, cpuRealM: Math.round(cpuRealM), memRealMb: Math.round(memRealMb), cpuReqM: Math.round(cpuReqM), memReqMb: Math.round(memReqMb), cpuLimM: Math.round(cpuLimM), memLimMb: Math.round(memLimMb), hasRealMetrics: realContainers.length > 0 });
+        }
+        const totalCpuReal = consumers.reduce((a, c) => a + c.cpuRealM, 0);
+        const totalMemReal = consumers.reduce((a, c) => a + c.memRealMb, 0);
+        const totalCpuReq  = consumers.reduce((a, c) => a + c.cpuReqM, 0);
+        const totalMemReq  = consumers.reduce((a, c) => a + c.memReqMb, 0);
+        for (const c of consumers) {
+          c.cpuRealPct = totalCpuReal > 0 ? Math.round((c.cpuRealM / totalCpuReal) * 100) : 0;
+          c.memRealPct = totalMemReal > 0 ? Math.round((c.memRealMb / totalMemReal) * 100) : 0;
+          c.cpuReqPct  = totalCpuReq  > 0 ? Math.round((c.cpuReqM  / totalCpuReq)  * 100) : 0;
+          c.memReqPct  = totalMemReq  > 0 ? Math.round((c.memReqMb / totalMemReq)  * 100) : 0;
+        }
+        const nodeCpuRealM  = nodeMetrics ? Math.round(parseCPU(nodeMetrics.usage?.cpu) * 1000) : null;
+        const nodeMemRealMb = nodeMetrics ? Math.round(parseMem(nodeMetrics.usage?.memory)) : null;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ node: nodeName, consumers, totals: { cpuRealM: totalCpuReal, memRealMb: totalMemReal, cpuReqM: totalCpuReq, memReqMb: totalMemReq }, nodeCpuRealM, nodeMemRealMb, podCount: consumers.length, timestamp: Date.now() }));
+      } catch (err) { console.error("[error] /api/nodes/top-consumers:", err.message); res.writeHead(500, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: err.message })); }
+    });
+    return;
+  }
   // ── /api/nodes/oom-pods — Lista detalhada de pods OOMKilled por node ──────────
   if (url.pathname === "/api/nodes/oom-pods") {
     requireAuth(req, res, async () => {

@@ -1241,21 +1241,50 @@ const server = http.createServer(async (req, res) => {
             memLim += parseMem(c.resources?.limits?.memory);
           }
           const podStatuses = { running: 0, pending: 0, crashLoop: 0, oomKilled: 0, evicted: 0, failed: 0 };
+          const _now = Date.now();
+          let totalRestarts = 0;
+          let lastCriticalEvent = null;
+          const problematicPods = [];
           for (const p of nodePods) {
             const phase = p.status?.phase;
             if (phase === "Running") podStatuses.running++;
             else if (phase === "Pending") podStatuses.pending++;
             else if (phase === "Failed") { if (p.status?.reason === "Evicted") podStatuses.evicted++; else podStatuses.failed++; }
-            for (const cs of (p.status?.containerStatuses || [])) {
-              if (cs.state?.waiting?.reason === "CrashLoopBackOff") podStatuses.crashLoop++;
-              if (cs.lastState?.terminated?.reason === "OOMKilled") podStatuses.oomKilled++;
+            const containerStatuses = p.status?.containerStatuses || [];
+            let podRestarts = 0; let podReason = null; let podSeverity = null; let podLastEventMs = null;
+            let isCrash = false; let isOom = false;
+            for (const cs of containerStatuses) {
+              podRestarts += cs.restartCount || 0;
+              if (cs.state?.waiting?.reason === "CrashLoopBackOff") { podStatuses.crashLoop++; isCrash = true; podReason = "CrashLoopBackOff"; podSeverity = "critical"; }
+              if (cs.lastState?.terminated?.reason === "OOMKilled") { podStatuses.oomKilled++; isOom = true; if (!podReason) { podReason = "OOMKilled"; podSeverity = "high"; } }
+              const finAt = cs.lastState?.terminated?.finishedAt;
+              if (finAt) { const ms = new Date(finAt).getTime(); if (!podLastEventMs || ms > podLastEventMs) podLastEventMs = ms; }
+            }
+            totalRestarts += podRestarts;
+            const isPending = phase === "Pending"; const isFailed = phase === "Failed"; const isHighRestart = podRestarts >= 5;
+            if (isCrash || isOom || isFailed || isPending || isHighRestart) {
+              if (!podReason) { if (isFailed) podReason = p.status?.reason === "Evicted" ? "Evicted" : "Failed"; else if (isPending) podReason = "Pending"; else podReason = `${podRestarts} restarts`; }
+              if (!podSeverity) { if (isFailed) podSeverity = "high"; else if (isPending) podSeverity = "medium"; else podSeverity = "medium"; }
+              const createdAt = p.metadata?.creationTimestamp ? new Date(p.metadata.creationTimestamp).getTime() : null;
+              const ageMs = createdAt ? _now - createdAt : null;
+              const lastEventAgo = podLastEventMs ? _now - podLastEventMs : null;
+              let detailedReason = podReason;
+              const podConditions = p.status?.conditions || [];
+              const readyC = podConditions.find(c => c.type === "Ready");
+              if (isCrash && readyC?.reason === "ContainersNotReady") detailedReason = "Readiness/Liveness probe";
+              problematicPods.push({ name: p.metadata.name, namespace: p.metadata.namespace, phase, restarts: podRestarts, reason: detailedReason, severity: podSeverity, lastEventAgo, ageMs, workload: p.metadata.labels?.["app"] || p.metadata.labels?.["app.kubernetes.io/name"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name });
+              if (podLastEventMs && (podSeverity === "critical" || podSeverity === "high")) { if (!lastCriticalEvent || podLastEventMs > lastCriticalEvent.ts) lastCriticalEvent = { ts: podLastEventMs, ago: _now - podLastEventMs, reason: detailedReason }; }
             }
           }
+          const _sevOrder = { critical: 0, high: 1, medium: 2 };
+          problematicPods.sort((a, b) => (_sevOrder[a.severity] ?? 3) - (_sevOrder[b.severity] ?? 3) || b.restarts - a.restarts);
+          const healthyPods = podStatuses.running - problematicPods.filter(p => p.phase === "Running").length;
+          const failingPods = problematicPods.length;
           let health = "healthy";
           if (ready?.status !== "True") health = "critical";
           else if (unschedulable || taints.some((t) => t.key === "ToBeDeletedByClusterAutoscaler")) health = "warning";
           else if (memP?.status === "True" || diskP?.status === "True") health = "warning";
-          return { name: n.metadata.name, health, status: ready?.status === "True" ? "Ready" : "NotReady", isSpot, unschedulable, roles: Object.keys(labels).filter((k) => k.startsWith("node-role.kubernetes.io/")).map((k) => k.replace("node-role.kubernetes.io/", "")).join(",") || "worker", ip: (n.status?.addresses || []).find((a) => a.type === "InternalIP")?.address || "—", capacity: { cpu: cpuCap, memory: memCap }, allocatable: { cpu: cpuAlloc, memory: memAlloc }, realUsage: { cpu: realM.cpu, memory: realM.memory }, requests: { cpu: cpuReq, memory: memReq }, limits: { cpu: cpuLim, memory: memLim }, podCount: nodePods.length, podStatuses, pressure: { memory: memP?.status === "True", disk: diskP?.status === "True" }, conditions: conditions.map((c) => ({ type: c.type, status: c.status, reason: c.reason || "", message: c.message || "", lastTransitionTime: c.lastTransitionTime })), taints: taints.map((t) => ({ key: t.key, value: t.value || "", effect: t.effect })), labels };
+          return { name: n.metadata.name, health, status: ready?.status === "True" ? "Ready" : "NotReady", isSpot, unschedulable, roles: Object.keys(labels).filter((k) => k.startsWith("node-role.kubernetes.io/")).map((k) => k.replace("node-role.kubernetes.io/", "")).join(",") || "worker", ip: (n.status?.addresses || []).find((a) => a.type === "InternalIP")?.address || "—", capacity: { cpu: cpuCap, memory: memCap }, allocatable: { cpu: cpuAlloc, memory: memAlloc }, realUsage: { cpu: realM.cpu, memory: realM.memory }, requests: { cpu: cpuReq, memory: memReq }, limits: { cpu: cpuLim, memory: memLim }, podCount: nodePods.length, podStatuses, totalRestarts, healthyPods, failingPods, lastCriticalEvent: lastCriticalEvent ? { ago: lastCriticalEvent.ago, reason: lastCriticalEvent.reason } : null, problematicPods: problematicPods.slice(0, 20), pressure: { memory: memP?.status === "True", disk: diskP?.status === "True" }, conditions: conditions.map((c) => ({ type: c.type, status: c.status, reason: c.reason || "", message: c.message || "", lastTransitionTime: c.lastTransitionTime })), taints: taints.map((t) => ({ key: t.key, value: t.value || "", effect: t.effect })), labels };
         });
         const nsCpuMap = {};
         for (const p of pods) { const ns = p.metadata?.namespace || "default"; for (const c of (p.spec?.containers || [])) nsCpuMap[ns] = (nsCpuMap[ns] || 0) + parseCPU(c.resources?.requests?.cpu) * 1000; }

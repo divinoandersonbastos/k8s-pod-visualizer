@@ -22,6 +22,11 @@ interface NodeOverview {
   limits: { cpu: number; memory: number };
   podCount: number;
   podStatuses: { running: number; pending: number; crashLoop: number; oomKilled: number; evicted: number; failed: number };
+  totalRestarts?: number;
+  healthyPods?: number;
+  failingPods?: number;
+  lastCriticalEvent?: { ago: number; reason: string } | null;
+  problematicPods?: Array<{ name: string; namespace: string; phase: string; restarts: number; reason: string; severity: string; lastEventAgo: number | null; ageMs: number | null; workload: string }>;
   pressure: { memory: boolean; disk: boolean };
   conditions: Array<{ type: string; status: string; reason: string; message: string; lastTransitionTime: string }>;
   taints: Array<{ key: string; value: string; effect: string }>;
@@ -545,60 +550,137 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
           </div>
           {/* Pod statuses com OOMKilled clicável */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4 space-y-2">
-            {/* Saúde do node */}
-            <div className="flex items-center justify-between mb-1">
+            {/* Header do card */}
+            <div className="flex items-center justify-between mb-3">
               <h4 className="text-sm font-semibold text-white flex items-center gap-2">
-                <Container size={14} className="text-green-400" />Pods ({selected.podCount})
+                <Container size={14} className="text-green-400" />Pods
               </h4>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-gray-500">Saúde do node:</span>
-                <HealthBadge health={selected.health} />
+              <HealthBadge health={selected.health} />
+            </div>
+
+            {/* Resumo acionável */}
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              <div className="bg-gray-800/60 rounded-lg p-2 text-center">
+                <div className="text-lg font-bold text-white">{selected.podCount}</div>
+                <div className="text-xs text-gray-500">Total</div>
+              </div>
+              <div className="bg-green-950/30 border border-green-900/30 rounded-lg p-2 text-center">
+                <div className="text-lg font-bold text-green-400">{selected.healthyPods ?? selected.podStatuses.running}</div>
+                <div className="text-xs text-gray-500">Saudáveis</div>
+              </div>
+              <div className={`rounded-lg p-2 text-center ${(selected.failingPods ?? 0) > 0 ? "bg-red-950/30 border border-red-900/30" : "bg-gray-800/60"}`}>
+                <div className={`text-lg font-bold ${(selected.failingPods ?? 0) > 0 ? "text-red-400" : "text-gray-400"}`}>{selected.failingPods ?? 0}</div>
+                <div className="text-xs text-gray-500">Com falha</div>
+              </div>
+              <div className={`rounded-lg p-2 text-center ${(selected.totalRestarts ?? 0) > 0 ? "bg-yellow-950/30 border border-yellow-900/30" : "bg-gray-800/60"}`}>
+                <div className={`text-lg font-bold ${(selected.totalRestarts ?? 0) > 0 ? "text-yellow-400" : "text-gray-400"}`}>{selected.totalRestarts ?? 0}</div>
+                <div className="text-xs text-gray-500">Restarts total</div>
               </div>
             </div>
-            {/* Linha divisora */}
-            <div className="border-t border-gray-800 pt-2 space-y-1.5">
-              {Object.entries(selected.podStatuses).map(([k, v]) => {
-                const isOom = k === "oomKilled";
-                const isCrash = k === "crashLoop";
-                const isBad = v > 0 && (isOom || isCrash || k === "failed" || k === "evicted");
-                const labelMap: Record<string, string> = {
-                  running: "Running", pending: "Pending",
-                  oomKilled: "OOMKill", crashLoop: "CrashLoop",
-                  evicted: "Evicted", failed: "Failed",
-                };
-                const label = labelMap[k] || k.charAt(0).toUpperCase() + k.slice(1);
-                const tooltipMap: Record<string, string> = {
-                  oomKilled: "OOMKill: container encerrado por exceder o limite de memória",
-                  crashLoop: "CrashLoop: pod reiniciando repetidamente por falha",
-                  evicted: "Pod removido pelo kubelet por pressão de recursos",
-                  failed: "Pod terminou com erro",
-                };
-                return (
-                  <div key={k} className={`flex justify-between items-center text-sm py-1.5 px-2 rounded
-                    ${isOom && v > 0 ? "border border-red-800/40 bg-red-950/20" : ""}
-                    ${isCrash && v > 0 ? "border border-orange-800/40 bg-orange-950/20" : ""}`}>
-                    <Tip text={tooltipMap[k] || label}>
-                      <span className={`text-gray-400 ${isBad ? "font-medium" : ""}`}>{label}</span>
-                    </Tip>
-                    {isOom && v > 0 ? (
-                      <button
-                        onClick={() => openOomModal(selected.name)}
-                        className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-red-900/60 border border-red-700/50 text-red-300 text-xs font-semibold hover:bg-red-900/80 transition-colors"
-                        title="Clique para ver quais pods sofreram OOMKill"
-                      >
-                        <AlertTriangle size={11} />{v} — ver pods
-                      </button>
-                    ) : isCrash && v > 0 ? (
-                      <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-orange-900/60 border border-orange-700/50 text-orange-300 text-xs font-semibold">
-                        <AlertCircle size={11} />{v}
-                      </span>
-                    ) : (
-                      <span className={isBad ? "text-red-400 font-semibold" : "text-white"}>{v}</span>
-                    )}
-                  </div>
-                );
-              })}
+
+            {/* Último evento crítico */}
+            {selected.lastCriticalEvent && (
+              <div className="flex items-center gap-2 mb-3 px-2 py-1.5 rounded bg-red-950/20 border border-red-900/30">
+                <AlertTriangle size={11} className="text-red-400 shrink-0" />
+                <span className="text-xs text-red-300">Último evento crítico:</span>
+                <span className="text-xs text-gray-300 truncate">{selected.lastCriticalEvent.reason}</span>
+                <span className="text-xs text-gray-500 shrink-0 ml-auto">{Math.round(selected.lastCriticalEvent.ago / 60000)}min atrás</span>
+              </div>
+            )}
+
+            {/* Estado atual — chips por status */}
+            <div className="mb-3">
+              <div className="text-xs text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Estado atual</div>
+              <div className="flex flex-wrap gap-1.5">
+                {selected.podStatuses.running > 0 && (
+                  <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-green-900/40 border border-green-800/40 text-green-300 text-xs">
+                    <CheckCircle size={9} />{selected.podStatuses.running} Running
+                  </span>
+                )}
+                {selected.podStatuses.pending > 0 && (
+                  <Tip text="Pod aguardando agendamento ou recursos">
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-yellow-900/40 border border-yellow-800/40 text-yellow-300 text-xs">
+                      <Clock size={9} />{selected.podStatuses.pending} Pending
+                    </span>
+                  </Tip>
+                )}
+                {selected.podStatuses.evicted > 0 && (
+                  <Tip text="Pod removido pelo kubelet por pressão de recursos">
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-gray-700/60 border border-gray-600/40 text-gray-400 text-xs">
+                      <XCircle size={9} />{selected.podStatuses.evicted} Evicted
+                    </span>
+                  </Tip>
+                )}
+                {selected.podStatuses.failed > 0 && (
+                  <Tip text="Pod terminou com código de erro">
+                    <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-red-900/40 border border-red-800/40 text-red-300 text-xs">
+                      <XCircle size={9} />{selected.podStatuses.failed} Failed
+                    </span>
+                  </Tip>
+                )}
+              </div>
             </div>
+
+            {/* Alertas / incidentes */}
+            {(selected.podStatuses.crashLoop > 0 || selected.podStatuses.oomKilled > 0) && (
+              <div className="mb-3">
+                <div className="text-xs text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Alertas / incidentes</div>
+                <div className="space-y-1">
+                  {selected.podStatuses.crashLoop > 0 && (
+                    <div className="flex items-center justify-between px-2 py-1.5 rounded bg-orange-950/20 border border-orange-900/30">
+                      <Tip text="Pod reiniciando repetidamente por falha de container">
+                        <span className="flex items-center gap-1.5 text-xs text-orange-300">
+                          <AlertCircle size={11} />CrashLoopBackOff
+                          <span className="text-orange-400 font-bold ml-1">{selected.podStatuses.crashLoop}</span>
+                          <span className="text-orange-600 text-xs">↑</span>
+                        </span>
+                      </Tip>
+                    </div>
+                  )}
+                  {selected.podStatuses.oomKilled > 0 && (
+                    <div className="flex items-center justify-between px-2 py-1.5 rounded bg-red-950/20 border border-red-900/30">
+                      <Tip text="Container encerrado por exceder o limite de memória">
+                        <span className="flex items-center gap-1.5 text-xs text-red-300">
+                          <AlertTriangle size={11} />OOMKilled
+                          <span className="text-red-400 font-bold ml-1">{selected.podStatuses.oomKilled}</span>
+                        </span>
+                      </Tip>
+                      <button onClick={() => openOomModal(selected.name)}
+                        className="text-xs text-red-400 hover:text-red-300 underline transition-colors">
+                        ver pods
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Top pods problemáticos */}
+            {(selected.problematicPods ?? []).length > 0 && (
+              <div>
+                <div className="text-xs text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Top pods com problema</div>
+                <div className="space-y-1">
+                  {(selected.problematicPods ?? []).slice(0, 5).map((pod, i) => {
+                    const sevColor = pod.severity === "critical" ? "border-red-900/40 bg-red-950/10" : pod.severity === "high" ? "border-orange-900/40 bg-orange-950/10" : "border-yellow-900/40 bg-yellow-950/10";
+                    const sevText = pod.severity === "critical" ? "text-red-400" : pod.severity === "high" ? "text-orange-400" : "text-yellow-400";
+                    const lastEvt = pod.lastEventAgo != null ? (pod.lastEventAgo < 60000 ? `${Math.round(pod.lastEventAgo / 1000)}s atrás` : pod.lastEventAgo < 3600000 ? `${Math.round(pod.lastEventAgo / 60000)}min atrás` : `${Math.round(pod.lastEventAgo / 3600000)}h atrás`) : null;
+                    return (
+                      <div key={i} className={`rounded border px-2 py-1.5 ${sevColor}`}>
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="text-xs text-white font-mono truncate max-w-[160px]" title={pod.name}>{pod.name}</span>
+                          <span className={`text-xs font-semibold shrink-0 ${sevText}`}>{pod.reason}</span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-xs text-gray-500">{pod.namespace}</span>
+                          {pod.restarts > 0 && <span className="text-xs text-gray-400">{pod.restarts} restarts</span>}
+                          {lastEvt && <span className="text-xs text-gray-600 ml-auto">{lastEvt}</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
           {/* Conditions */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">

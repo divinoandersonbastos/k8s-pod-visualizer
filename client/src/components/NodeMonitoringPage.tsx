@@ -721,6 +721,7 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
 
   if (selected) {
     return (
+      <React.Fragment>
       <div className="space-y-4">
         {oomModal && (
           <OomPodsModal
@@ -986,9 +987,16 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
           )}
         </div>
       </div>
+      {podDetailPod && (
+        <PodDetailDrawer
+          pod={podDetailPod}
+          onClose={() => setPodDetailPod(null)}
+          apiUrl={apiUrl}
+        />
+      )}
+      </React.Fragment>
     );
   }
-
   return (
     <div className="space-y-3">
       {oomModal && (
@@ -996,13 +1004,6 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
           pods={oomLoading ? [] : oomPods}
           nodeName={oomModal.nodeName}
           onClose={() => setOomModal(null)}
-        />
-      )}
-      {podDetailPod && (
-        <PodDetailDrawer
-          pod={podDetailPod}
-          onClose={() => setPodDetailPod(null)}
-          apiUrl={apiUrl}
         />
       )}
       <div className="flex gap-2">

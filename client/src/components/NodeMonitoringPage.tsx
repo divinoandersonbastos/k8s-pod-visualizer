@@ -27,7 +27,20 @@ interface NodeOverview {
   healthyPods?: number;
   failingPods?: number;
   lastCriticalEvent?: { ago: number; reason: string } | null;
-  problematicPods?: Array<{ name: string; namespace: string; phase: string; restarts: number; reason: string; severity: string; lastEventAgo: number | null; ageMs: number | null; workload: string }>;
+  problematicPods?: Array<{ name: string; namespace: string; phase: string; restarts: number; reason: string; severity: string; lastEventAgo: number | null; lastRestartTime: number | null; ageMs: number | null; containerName: string | null; workload: string }>;
+  kubeletVersion?: string | null;
+  osImage?: string | null;
+  nodeCreatedAt?: string | null;
+  nodeAgeMs?: number | null;
+  podsByNamespace?: Array<{ ns: string; count: number }>;
+  cpuHeadroomM?: number;
+  memHeadroomMb?: number;
+  cpuHeadroomPct?: number;
+  memHeadroomPct?: number;
+  cpuOvercommitPct?: number;
+  memOvercommitPct?: number;
+  pressureScore?: number;
+  recentNodeEvents?: Array<{ type: string; status: string; reason: string; message: string; lastTransitionTime: string; ago: number }>;
   pressure: { memory: boolean; disk: boolean };
   conditions: Array<{ type: string; status: string; reason: string; message: string; lastTransitionTime: string }>;
   taints: Array<{ key: string; value: string; effect: string }>;
@@ -730,9 +743,63 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
             onClose={() => setOomModal(null)}
           />
         )}
-        <button onClick={() => { setSelected(null); setPodDetailPod(null); setNsFilterNode("all"); }} className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors">
-          <ArrowLeft size={14} /> Voltar para lista
-        </button>
+        <div className="flex items-center justify-between">
+          <button onClick={() => { setSelected(null); setPodDetailPod(null); setNsFilterNode("all"); }} className="flex items-center gap-2 text-sm text-gray-400 hover:text-white transition-colors">
+            <ArrowLeft size={14} /> Voltar para lista
+          </button>
+          {/* Pressure Score + info do node */}
+          <div className="flex items-center gap-3">
+            {selected.kubeletVersion && (
+              <Tip text={`OS: ${selected.osImage || 'desconhecido'}`}>
+                <span className="text-xs text-gray-500 font-mono">{selected.kubeletVersion}</span>
+              </Tip>
+            )}
+            {selected.nodeAgeMs != null && (
+              <Tip text="Tempo desde que o node foi criado no cluster">
+                <span className="text-xs text-gray-500">
+                  {selected.nodeAgeMs < 86400000 ? `${Math.round(selected.nodeAgeMs / 3600000)}h` : `${Math.round(selected.nodeAgeMs / 86400000)}d`} de vida
+                </span>
+              </Tip>
+            )}
+            {selected.pressureScore != null && (
+              <Tip text={`Score de pressão consolidado (0-100): combina CPU real, CPU reservada, MEM real, MEM reservada e restarts. Score > 70 = crítico.`}>
+                <div className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-bold border ${
+                  selected.pressureScore >= 70 ? 'bg-red-950/40 border-red-800/50 text-red-300' :
+                  selected.pressureScore >= 40 ? 'bg-yellow-950/40 border-yellow-800/50 text-yellow-300' :
+                  'bg-green-950/40 border-green-800/50 text-green-300'
+                }`}>
+                  <Activity size={11} />
+                  Pressão: {selected.pressureScore}/100
+                </div>
+              </Tip>
+            )}
+          </div>
+        </div>
+        {/* Banner de saturação de CPU */}
+        {(() => {
+          const cpuReqPct = selected.allocatable.cpu > 0 ? Math.round((selected.requests.cpu / selected.allocatable.cpu) * 100) : 0;
+          const cpuLimPct = selected.allocatable.cpu > 0 ? Math.round((selected.limits.cpu / selected.allocatable.cpu) * 100) : 0;
+          if (cpuReqPct >= 85 || cpuLimPct >= 100) {
+            return (
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs ${
+                cpuReqPct >= 95 || cpuLimPct >= 130 ? 'bg-red-950/40 border-red-700/60 text-red-200' : 'bg-orange-950/40 border-orange-700/60 text-orange-200'
+              }`}>
+                <AlertTriangle size={13} className={cpuReqPct >= 95 ? 'text-red-400' : 'text-orange-400'} />
+                <span className="font-semibold">
+                  {cpuReqPct >= 95 ? '⚠ Node saturado de CPU:' : '⚠ CPU quase esgotada:'}
+                </span>
+                <span>CPU reservada em <strong>{cpuReqPct}%</strong> — novos pods dificilmente serão agendados aqui.</span>
+                {cpuLimPct > 100 && (
+                  <span className="ml-2 px-1.5 py-0.5 rounded bg-red-900/50 text-red-300 font-mono font-bold">Overcommit {cpuLimPct}%</span>
+                )}
+                {(selected.cpuHeadroomPct ?? 0) <= 15 && (
+                  <span className="ml-auto text-gray-400 shrink-0">Headroom: <strong className="text-white">{selected.cpuHeadroomPct ?? 0}%</strong> ({selected.cpuHeadroomM != null ? fmtCPU(selected.cpuHeadroomM) : '—'})</span>
+                )}
+              </div>
+            );
+          }
+          return null;
+        })()}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           {/* Recursos com gauges circulares */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">
@@ -804,6 +871,61 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
                 />
               </Tip>
             </div>
+            {/* Headroom disponível para agendamento */}
+            {(selected.cpuHeadroomPct != null || selected.memHeadroomPct != null) && (
+              <div className="mt-4 pt-3 border-t border-gray-800">
+                <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wide">Headroom para novos pods</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Tip text="CPU disponível para agendamento de novos pods (allocatable − requests). Abaixo de 15% indica node saturado.">
+                    <div className={`rounded-lg px-3 py-2 text-center border ${
+                      (selected.cpuHeadroomPct ?? 100) <= 10 ? 'bg-red-950/30 border-red-900/40' :
+                      (selected.cpuHeadroomPct ?? 100) <= 20 ? 'bg-orange-950/30 border-orange-900/40' :
+                      'bg-gray-800/60 border-gray-700/40'
+                    }`}>
+                      <div className={`text-base font-bold ${
+                        (selected.cpuHeadroomPct ?? 100) <= 10 ? 'text-red-400' :
+                        (selected.cpuHeadroomPct ?? 100) <= 20 ? 'text-orange-400' : 'text-gray-200'
+                      }`}>{selected.cpuHeadroomPct ?? 0}%</div>
+                      <div className="text-xs text-gray-500">CPU livre</div>
+                      <div className="text-xs text-gray-600 font-mono">{selected.cpuHeadroomM != null ? fmtCPU(selected.cpuHeadroomM) : '—'}</div>
+                    </div>
+                  </Tip>
+                  <Tip text="Memória disponível para agendamento de novos pods (allocatable − requests). Abaixo de 15% indica node saturado.">
+                    <div className={`rounded-lg px-3 py-2 text-center border ${
+                      (selected.memHeadroomPct ?? 100) <= 10 ? 'bg-red-950/30 border-red-900/40' :
+                      (selected.memHeadroomPct ?? 100) <= 20 ? 'bg-orange-950/30 border-orange-900/40' :
+                      'bg-gray-800/60 border-gray-700/40'
+                    }`}>
+                      <div className={`text-base font-bold ${
+                        (selected.memHeadroomPct ?? 100) <= 10 ? 'text-red-400' :
+                        (selected.memHeadroomPct ?? 100) <= 20 ? 'text-orange-400' : 'text-gray-200'
+                      }`}>{selected.memHeadroomPct ?? 0}%</div>
+                      <div className="text-xs text-gray-500">MEM livre</div>
+                      <div className="text-xs text-gray-600 font-mono">{selected.memHeadroomMb != null ? fmtMem(selected.memHeadroomMb) : '—'}</div>
+                    </div>
+                  </Tip>
+                </div>
+                {/* Badge de Overcommit */}
+                {((selected.cpuOvercommitPct ?? 0) > 100 || (selected.memOvercommitPct ?? 0) > 100) && (
+                  <div className="flex gap-2 mt-2">
+                    {(selected.cpuOvercommitPct ?? 0) > 100 && (
+                      <Tip text="Os limits de CPU somados excedem a capacidade alocável do node. Isso causa throttling severo em picos de uso.">
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-red-900/40 border border-red-800/50 text-red-300 text-xs font-mono font-bold">
+                          <AlertTriangle size={9} /> CPU Overcommit {selected.cpuOvercommitPct}%
+                        </span>
+                      </Tip>
+                    )}
+                    {(selected.memOvercommitPct ?? 0) > 100 && (
+                      <Tip text="Os limits de Memória somados excedem a capacidade alocável do node. Isso aumenta o risco de OOMKill.">
+                        <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-purple-900/40 border border-purple-800/50 text-purple-300 text-xs font-mono font-bold">
+                          <AlertTriangle size={9} /> MEM Overcommit {selected.memOvercommitPct}%
+                        </span>
+                      </Tip>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           {/* Pod statuses com OOMKilled clicável */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4 space-y-2">
@@ -931,22 +1053,48 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
                   <div className="space-y-1">
                     {filtered.slice(0, 7).map((pod, i) => {
                       const sevColor = pod.severity === "critical" ? "border-red-900/40 bg-red-950/10 hover:bg-red-950/20" : pod.severity === "high" ? "border-orange-900/40 bg-orange-950/10 hover:bg-orange-950/20" : "border-yellow-900/40 bg-yellow-950/10 hover:bg-yellow-950/20";
-                      const sevText = pod.severity === "critical" ? "text-red-400" : pod.severity === "high" ? "text-orange-400" : "text-yellow-400";
-                      const lastEvt = pod.lastEventAgo != null ? (pod.lastEventAgo < 60000 ? `${Math.round(pod.lastEventAgo / 1000)}s atrás` : pod.lastEventAgo < 3600000 ? `${Math.round(pod.lastEventAgo / 60000)}min atrás` : `${Math.round(pod.lastEventAgo / 3600000)}h atrás`) : null;
+                      // Timestamp completo do último restart
+                      const fmtAgo = (ms: number | null) => {
+                        if (ms == null) return null;
+                        if (ms < 60000) return `${Math.round(ms / 1000)}s atrás`;
+                        if (ms < 3600000) return `${Math.round(ms / 60000)}min atrás`;
+                        if (ms < 86400000) return `${Math.round(ms / 3600000)}h ${Math.round((ms % 3600000) / 60000)}min atrás`;
+                        const d = Math.floor(ms / 86400000);
+                        const h = Math.round((ms % 86400000) / 3600000);
+                        return `${d}d ${h}h atrás`;
+                      };
+                      const lastEvt = fmtAgo(pod.lastEventAgo);
+                      const lastRestart = fmtAgo(pod.lastRestartTime);
+                      // Badge de motivo
+                      const reasonBadge = pod.reason === "CrashLoopBackOff" ? { label: "CrashLoop", cls: "bg-orange-900/50 text-orange-300" } :
+                        pod.reason === "OOMKilled" ? { label: "OOMKilled", cls: "bg-red-900/50 text-red-300" } :
+                        pod.reason === "Evicted" ? { label: "Evicted", cls: "bg-gray-700/60 text-gray-400" } :
+                        pod.reason === "Pending" ? { label: "Pending", cls: "bg-yellow-900/50 text-yellow-300" } :
+                        pod.reason.includes("probe") ? { label: "Probe Fail", cls: "bg-purple-900/50 text-purple-300" } :
+                        { label: pod.reason, cls: "bg-gray-700/60 text-gray-400" };
                       return (
-                        <div key={i} className={`rounded border px-2 py-1.5 cursor-pointer transition-colors ${sevColor}`}
+                        <div key={i} className={`rounded border px-2 py-2 cursor-pointer transition-colors ${sevColor}`}
                           onClick={() => setPodDetailPod({ name: pod.name, namespace: pod.namespace })}>
                           <div className="flex items-center justify-between gap-1">
-                            <span className="text-xs text-white font-mono truncate max-w-[140px]" title={pod.name}>{pod.name}</span>
+                            <span className="text-xs text-white font-mono truncate max-w-[150px]" title={pod.name}>{pod.name}</span>
                             <div className="flex items-center gap-1.5 shrink-0">
-                              <span className={`text-xs font-semibold ${sevText}`}>{pod.reason}</span>
+                              <span className={`text-xs px-1.5 py-0.5 rounded font-semibold ${reasonBadge.cls}`}>{reasonBadge.label}</span>
                               <ChevronRight size={10} className="text-gray-600" />
                             </div>
                           </div>
-                          <div className="flex items-center gap-2 mt-0.5">
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
                             <span className="text-xs text-gray-500">{pod.namespace}</span>
-                            {pod.restarts > 0 && <span className="text-xs text-gray-400">{pod.restarts} restarts</span>}
-                            {lastEvt && <span className="text-xs text-gray-600 ml-auto">{lastEvt}</span>}
+                            {pod.containerName && (
+                              <span className="text-xs text-gray-600 font-mono" title="Container problemático">→ {pod.containerName}</span>
+                            )}
+                            {pod.restarts > 0 && (
+                              <span className="text-xs text-gray-400 font-semibold">{pod.restarts} restarts</span>
+                            )}
+                            {(lastRestart || lastEvt) && (
+                              <span className="text-xs text-gray-500 ml-auto shrink-0" title="Último restart/evento">
+                                ⏱ {lastRestart || lastEvt}
+                              </span>
+                            )}
                           </div>
                         </div>
                       );
@@ -982,6 +1130,60 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
                     {t.key}{t.value ? `=${t.value}` : ""}:{t.effect}
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+          {/* Pods por Namespace neste node */}
+          {(selected.podsByNamespace ?? []).length > 0 && (
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">
+              <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                <Layers size={14} className="text-blue-400" />Pods por Namespace
+              </h4>
+              <div className="space-y-1.5">
+                {(selected.podsByNamespace ?? []).map((item) => {
+                  const pct = selected.podCount > 0 ? Math.round((item.count / selected.podCount) * 100) : 0;
+                  return (
+                    <div key={item.ns} className="flex items-center gap-2">
+                      <span className="text-xs text-gray-400 w-32 truncate font-mono" title={item.ns}>{item.ns}</span>
+                      <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                        <div className="h-full bg-blue-500/60 rounded-full" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="text-xs text-gray-400 w-6 text-right">{item.count}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          {/* Eventos recentes do node */}
+          {(selected.recentNodeEvents ?? []).length > 0 && (
+            <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">
+              <h4 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">
+                <Clock size={14} className="text-purple-400" />Eventos Recentes do Node
+              </h4>
+              <div className="space-y-1.5">
+                {(selected.recentNodeEvents ?? []).map((evt, i) => {
+                  const evtAgo = evt.ago < 3600000 ? `${Math.round(evt.ago / 60000)}min` : evt.ago < 86400000 ? `${Math.round(evt.ago / 3600000)}h` : `${Math.floor(evt.ago / 86400000)}d`;
+                  const isWarn = evt.status === "True" && evt.type !== "Ready";
+                  return (
+                    <div key={i} className={`flex items-start gap-2 px-2 py-1.5 rounded text-xs border ${
+                      isWarn ? 'bg-yellow-950/20 border-yellow-900/30' : 'bg-gray-800/40 border-gray-700/30'
+                    }`}>
+                      <div className="shrink-0 mt-0.5">
+                        {isWarn ? <AlertCircle size={11} className="text-yellow-400" /> : <CheckCircle size={11} className="text-green-400" />}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className={`font-semibold ${isWarn ? 'text-yellow-300' : 'text-gray-300'}`}>{evt.type}</span>
+                          <span className="text-gray-600">→ {evt.status}</span>
+                          {evt.reason && <span className="text-gray-500 font-mono text-xs">{evt.reason}</span>}
+                        </div>
+                        {evt.message && <div className="text-gray-600 truncate mt-0.5" title={evt.message}>{evt.message}</div>}
+                      </div>
+                      <span className="text-gray-600 shrink-0">{evtAgo} atrás</span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

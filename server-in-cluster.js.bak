@@ -1272,10 +1272,7 @@ const server = http.createServer(async (req, res) => {
               const podConditions = p.status?.conditions || [];
               const readyC = podConditions.find(c => c.type === "Ready");
               if (isCrash && readyC?.reason === "ContainersNotReady") detailedReason = "Readiness/Liveness probe";
-              const _problemCs = containerStatuses.find(cs => cs.state?.waiting?.reason === "CrashLoopBackOff" || cs.lastState?.terminated?.reason === "OOMKilled") || containerStatuses[0];
-              const _containerName = _problemCs?.name || null;
-              const _lastRestartTime = podLastEventMs || null;
-              problematicPods.push({ name: p.metadata.name, namespace: p.metadata.namespace, phase, restarts: podRestarts, reason: detailedReason, severity: podSeverity, lastEventAgo, lastRestartTime: _lastRestartTime, ageMs, containerName: _containerName, workload: p.metadata.labels?.["app"] || p.metadata.labels?.["app.kubernetes.io/name"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name });
+              problematicPods.push({ name: p.metadata.name, namespace: p.metadata.namespace, phase, restarts: podRestarts, reason: detailedReason, severity: podSeverity, lastEventAgo, ageMs, workload: p.metadata.labels?.["app"] || p.metadata.labels?.["app.kubernetes.io/name"] || p.metadata.ownerReferences?.[0]?.name || p.metadata.name });
               if (podLastEventMs && (podSeverity === "critical" || podSeverity === "high")) { if (!lastCriticalEvent || podLastEventMs > lastCriticalEvent.ts) lastCriticalEvent = { ts: podLastEventMs, ago: _now - podLastEventMs, reason: detailedReason }; }
             }
           }
@@ -1287,28 +1284,7 @@ const server = http.createServer(async (req, res) => {
           if (ready?.status !== "True") health = "critical";
           else if (unschedulable || taints.some((t) => t.key === "ToBeDeletedByClusterAutoscaler")) health = "warning";
           else if (memP?.status === "True" || diskP?.status === "True") health = "warning";
-          // Campos extras para diagnostico avancado
-          const _kubeletVersion = n.status?.nodeInfo?.kubeletVersion || null;
-          const _osImage = n.status?.nodeInfo?.osImage || null;
-          const _nodeCreatedAt = n.metadata?.creationTimestamp || null;
-          const _nodeAgeMs = _nodeCreatedAt ? (_now - new Date(_nodeCreatedAt).getTime()) : null;
-          const _podsByNs = {};
-          for (const p of nodePods) { const ns = p.metadata?.namespace || "default"; _podsByNs[ns] = (_podsByNs[ns] || 0) + 1; }
-          const _podsByNamespace = Object.entries(_podsByNs).map(([ns, count]) => ({ ns, count })).sort((a, b) => b.count - a.count);
-          const _cpuHeadroomM = Math.max(0, cpuAlloc - cpuReq);
-          const _memHeadroomMb = Math.max(0, memAlloc - memReq);
-          const _cpuHeadroomPct = cpuAlloc > 0 ? Math.round((_cpuHeadroomM / cpuAlloc) * 100) : 0;
-          const _memHeadroomPct = memAlloc > 0 ? Math.round((_memHeadroomMb / memAlloc) * 100) : 0;
-          const _cpuOvercommitPct = cpuAlloc > 0 ? Math.round((cpuLim / cpuAlloc) * 100) : 0;
-          const _memOvercommitPct = memAlloc > 0 ? Math.round((memLim / memAlloc) * 100) : 0;
-          const _cpuRealPct = cpuAlloc > 0 ? (realM.cpu / cpuAlloc) * 100 : 0;
-          const _cpuReqPct  = cpuAlloc > 0 ? (cpuReq  / cpuAlloc) * 100 : 0;
-          const _memRealPct = memAlloc > 0 ? (realM.memory / memAlloc) * 100 : 0;
-          const _memReqPct  = memAlloc > 0 ? (memReq  / memAlloc) * 100 : 0;
-          const _restartScore = Math.min(30, totalRestarts * 2);
-          const _pressureScore = Math.min(100, Math.round((_cpuRealPct * 0.25) + (_cpuReqPct * 0.25) + (_memRealPct * 0.2) + (_memReqPct * 0.2) + _restartScore * 0.1));
-          const _recentNodeEvents = conditions.filter(c => c.lastTransitionTime).sort((a, b) => new Date(b.lastTransitionTime).getTime() - new Date(a.lastTransitionTime).getTime()).slice(0, 5).map(c => ({ type: c.type, status: c.status, reason: c.reason || "", message: (c.message || "").slice(0, 120), lastTransitionTime: c.lastTransitionTime, ago: _now - new Date(c.lastTransitionTime).getTime() }));
-          return { name: n.metadata.name, health, status: ready?.status === "True" ? "Ready" : "NotReady", isSpot, unschedulable, roles: Object.keys(labels).filter((k) => k.startsWith("node-role.kubernetes.io/")).map((k) => k.replace("node-role.kubernetes.io/", "")).join(",") || "worker", ip: (n.status?.addresses || []).find((a) => a.type === "InternalIP")?.address || "—", capacity: { cpu: cpuCap, memory: memCap }, allocatable: { cpu: cpuAlloc, memory: memAlloc }, realUsage: { cpu: realM.cpu, memory: realM.memory }, requests: { cpu: cpuReq, memory: memReq }, limits: { cpu: cpuLim, memory: memLim }, podCount: nodePods.length, podStatuses, totalRestarts, healthyPods, failingPods, lastCriticalEvent: lastCriticalEvent ? { ago: lastCriticalEvent.ago, reason: lastCriticalEvent.reason } : null, problematicPods: problematicPods.slice(0, 20), pressure: { memory: memP?.status === "True", disk: diskP?.status === "True" }, conditions: conditions.map((c) => ({ type: c.type, status: c.status, reason: c.reason || "", message: c.message || "", lastTransitionTime: c.lastTransitionTime })), taints: taints.map((t) => ({ key: t.key, value: t.value || "", effect: t.effect })), labels, kubeletVersion: _kubeletVersion, osImage: _osImage, nodeCreatedAt: _nodeCreatedAt, nodeAgeMs: _nodeAgeMs, podsByNamespace: _podsByNamespace, cpuHeadroomM: _cpuHeadroomM, memHeadroomMb: _memHeadroomMb, cpuHeadroomPct: _cpuHeadroomPct, memHeadroomPct: _memHeadroomPct, cpuOvercommitPct: _cpuOvercommitPct, memOvercommitPct: _memOvercommitPct, pressureScore: _pressureScore, recentNodeEvents: _recentNodeEvents };
+          return { name: n.metadata.name, health, status: ready?.status === "True" ? "Ready" : "NotReady", isSpot, unschedulable, roles: Object.keys(labels).filter((k) => k.startsWith("node-role.kubernetes.io/")).map((k) => k.replace("node-role.kubernetes.io/", "")).join(",") || "worker", ip: (n.status?.addresses || []).find((a) => a.type === "InternalIP")?.address || "—", capacity: { cpu: cpuCap, memory: memCap }, allocatable: { cpu: cpuAlloc, memory: memAlloc }, realUsage: { cpu: realM.cpu, memory: realM.memory }, requests: { cpu: cpuReq, memory: memReq }, limits: { cpu: cpuLim, memory: memLim }, podCount: nodePods.length, podStatuses, totalRestarts, healthyPods, failingPods, lastCriticalEvent: lastCriticalEvent ? { ago: lastCriticalEvent.ago, reason: lastCriticalEvent.reason } : null, problematicPods: problematicPods.slice(0, 20), pressure: { memory: memP?.status === "True", disk: diskP?.status === "True" }, conditions: conditions.map((c) => ({ type: c.type, status: c.status, reason: c.reason || "", message: c.message || "", lastTransitionTime: c.lastTransitionTime })), taints: taints.map((t) => ({ key: t.key, value: t.value || "", effect: t.effect })), labels };
         });
         const nsCpuMap = {};
         for (const p of pods) { const ns = p.metadata?.namespace || "default"; for (const c of (p.spec?.containers || [])) nsCpuMap[ns] = (nsCpuMap[ns] || 0) + parseCPU(c.resources?.requests?.cpu) * 1000; }

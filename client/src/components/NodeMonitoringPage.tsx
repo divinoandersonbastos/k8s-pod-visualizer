@@ -8,7 +8,8 @@ import {
   RefreshCw, X, ChevronRight, AlertTriangle, CheckCircle,
   XCircle, Clock, Cpu, MemoryStick, Container, TrendingUp,
   AlertCircle, Info, ArrowLeft, Download, Copy, Wrench, Play,
-  Edit3, EyeOff, Sparkles, ChevronDown, ChevronUp, ExternalLink
+  Edit3, EyeOff, Sparkles, ChevronDown, ChevronUp, ExternalLink,
+  FileText, Terminal, BarChart2, Filter
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -428,6 +429,260 @@ function OverviewTab({ nodes, topNamespaces }: { nodes: NodeOverview[]; topNames
   );
 }
 
+// ── PodDetailDrawer — Drawer de drill-down por pod problemático ───────────────
+interface PodDetail {
+  name: string; namespace: string; phase: string;
+  podIP: string | null; nodeName: string | null; startTime: string | null;
+  workload: string | null; workloadKind: string | null;
+  labels: Record<string, string>;
+  k8sEvents: Array<{ reason: string; message: string; type: string; count: number; firstTime: string; lastTime: string; component: string }>;
+  restartHistory: Array<{ reason: string; exit_code: number; started_at: string; finished_at: string; container_name: string }>;
+  metricsHistory: Array<{ cpu_millicores: number; memory_mib: number; recorded_at: string }>;
+  usage: { currentCpu: number; currentMem: number; avgCpu: number; peakCpu: number; avgMem: number; peakMem: number };
+  containers: Array<{ name: string; image: string; cpuReq: number; cpuLim: number; memReq: number; memLim: number; recCpuReq: number | null; recCpuLim: number | null; recMemReq: number | null; recMemLim: number | null }>;
+  containerStatuses: Array<{ name: string; ready: boolean; restarts: number; state: string; lastState: string | null; lastStateDetail: { reason: string; exitCode: number; finishedAt: string } | null }>;
+}
+
+function PodDetailDrawer({ pod, onClose, apiUrl, onOpenLogs }: {
+  pod: { name: string; namespace: string } | null;
+  onClose: () => void;
+  apiUrl: string;
+  onOpenLogs?: (podName: string, namespace: string) => void;
+}) {
+  const [detail, setDetail] = useState<PodDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"events" | "restarts" | "resources">("events");
+  const [copied, setCopied] = useState(false);
+  const base = apiUrl.replace(/\/$/, "");
+  const TOKEN_KEY = "k8s-viz-token";
+  const getAuthHeaders = (): Record<string, string> => {
+    const t = typeof localStorage !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
+    return t ? { Accept: "application/json", Authorization: `Bearer ${t}` } : { Accept: "application/json" };
+  };
+
+  useEffect(() => {
+    if (!pod) { setDetail(null); return; }
+    setLoading(true); setError(null);
+    fetch(`${base}/api/nodes/pod-detail/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}`, { headers: getAuthHeaders() })
+      .then(r => r.json())
+      .then(d => { setDetail(d); setLoading(false); })
+      .catch(e => { setError(e.message); setLoading(false); });
+  }, [pod?.name, pod?.namespace]);
+
+  const fmtCpuDetail = (m: number) => m >= 1000 ? `${(m / 1000).toFixed(1)} vCPU` : `${m}m`;
+  const fmtMemDetail = (mib: number) => mib >= 1024 ? `${(mib / 1024).toFixed(1)} GiB` : `${mib} MiB`;
+  const relTime = (iso: string | null) => {
+    if (!iso) return "—";
+    const diff = Date.now() - new Date(iso).getTime();
+    if (diff < 60000) return `${Math.round(diff / 1000)}s atrás`;
+    if (diff < 3600000) return `${Math.round(diff / 60000)}min atrás`;
+    if (diff < 86400000) return `${Math.round(diff / 3600000)}h atrás`;
+    return `${Math.round(diff / 86400000)}d atrás`;
+  };
+
+  const buildPatch = () => {
+    if (!detail) return "";
+    const containers = detail.containers.filter(c => c.recCpuReq || c.recMemReq);
+    if (!containers.length) return "# Sem dados suficientes para recomendação";
+    const lines = [`kubectl patch deployment ${detail.workload || detail.name} -n ${detail.namespace} --type=json -p='[`];
+    containers.forEach((c, i) => {
+      const comma = i < containers.length - 1 ? "," : "";
+      if (c.recCpuReq) lines.push(`  {"op":"replace","path":"/spec/template/spec/containers/${i}/resources/requests/cpu","value":"${c.recCpuReq}m"},`);
+      if (c.recCpuLim) lines.push(`  {"op":"replace","path":"/spec/template/spec/containers/${i}/resources/limits/cpu","value":"${c.recCpuLim}m"},`);
+      if (c.recMemReq) lines.push(`  {"op":"replace","path":"/spec/template/spec/containers/${i}/resources/requests/memory","value":"${c.recMemReq}Mi"},`);
+      if (c.recMemLim) lines.push(`  {"op":"replace","path":"/spec/template/spec/containers/${i}/resources/limits/memory","value":"${c.recMemLim}Mi"}${comma}`);
+    });
+    lines.push("]'");
+    return lines.join("\n");
+  };
+
+  if (!pod) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/50" />
+      <div className="relative w-full max-w-xl bg-gray-950 border-l border-gray-700/50 flex flex-col overflow-hidden shadow-2xl" onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div className="flex items-start justify-between p-4 border-b border-gray-800">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <Terminal size={14} className="text-blue-400 shrink-0" />
+              <span className="text-sm font-semibold text-white font-mono truncate">{pod.name}</span>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-gray-500">
+              <span>{pod.namespace}</span>
+              {detail?.workload && <span className="text-gray-600">· {detail.workloadKind}: {detail.workload}</span>}
+              {detail?.phase && <span className={`px-1.5 py-0.5 rounded text-xs font-medium ${detail.phase === "Running" ? "bg-green-900/40 text-green-300" : "bg-red-900/40 text-red-300"}`}>{detail.phase}</span>}
+            </div>
+          </div>
+          <div className="flex items-center gap-2 ml-2">
+            {onOpenLogs && (
+              <button onClick={() => onOpenLogs(pod.name, pod.namespace)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-blue-900/40 border border-blue-700/50 text-blue-300 text-xs font-medium hover:bg-blue-900/60 transition-colors">
+                <FileText size={12} />Ver logs
+              </button>
+            )}
+            <button onClick={onClose} className="p-1.5 rounded hover:bg-gray-800 text-gray-400 hover:text-white transition-colors"><X size={16} /></button>
+          </div>
+        </div>
+
+        {loading && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="flex items-center gap-2 text-gray-500 text-sm"><RefreshCw size={14} className="animate-spin" />Carregando detalhes...</div>
+          </div>
+        )}
+        {error && (
+          <div className="flex-1 flex items-center justify-center p-4">
+            <div className="text-center text-red-400 text-sm"><AlertTriangle size={20} className="mx-auto mb-2" />{error}</div>
+          </div>
+        )}
+
+        {detail && !loading && (
+          <div className="flex-1 overflow-y-auto">
+            {/* Métricas de uso */}
+            <div className="p-4 border-b border-gray-800">
+              <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wide">Uso de recursos</div>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: "CPU atual", val: fmtCpuDetail(detail.usage.currentCpu), sub: `avg ${fmtCpuDetail(detail.usage.avgCpu)}`, color: "text-blue-400" },
+                  { label: "CPU pico", val: fmtCpuDetail(detail.usage.peakCpu), sub: "histórico", color: "text-orange-400" },
+                  { label: "MEM atual", val: fmtMemDetail(detail.usage.currentMem), sub: `avg ${fmtMemDetail(detail.usage.avgMem)}`, color: "text-green-400" },
+                  { label: "MEM pico", val: fmtMemDetail(detail.usage.peakMem), sub: "histórico", color: "text-purple-400" },
+                  { label: "Restarts", val: detail.containerStatuses.reduce((s, c) => s + c.restarts, 0).toString(), sub: "total containers", color: "text-yellow-400" },
+                  { label: "Uptime", val: relTime(detail.startTime), sub: "desde início", color: "text-gray-400" },
+                ].map((m, i) => (
+                  <div key={i} className="bg-gray-900 rounded-lg p-2 text-center">
+                    <div className={`text-sm font-bold ${m.color}`}>{m.val}</div>
+                    <div className="text-xs text-gray-600">{m.label}</div>
+                    <div className="text-xs text-gray-700">{m.sub}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Container statuses */}
+            {detail.containerStatuses.length > 0 && (
+              <div className="px-4 py-3 border-b border-gray-800">
+                <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wide">Containers</div>
+                <div className="space-y-1">
+                  {detail.containerStatuses.map((cs, i) => (
+                    <div key={i} className="flex items-center justify-between text-xs py-1 px-2 rounded bg-gray-900">
+                      <span className="text-gray-300 font-mono">{cs.name}</span>
+                      <div className="flex items-center gap-2">
+                        {cs.restarts > 0 && <span className="text-yellow-400">{cs.restarts} restarts</span>}
+                        {cs.lastState === "terminated" && cs.lastStateDetail && (
+                          <span className="text-red-400">{cs.lastStateDetail.reason} (exit {cs.lastStateDetail.exitCode})</span>
+                        )}
+                        <span className={`px-1.5 py-0.5 rounded font-medium ${cs.state === "running" ? "bg-green-900/40 text-green-300" : cs.state === "waiting" ? "bg-yellow-900/40 text-yellow-300" : "bg-red-900/40 text-red-300"}`}>{cs.state}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Sub-abas */}
+            <div className="flex border-b border-gray-800">
+              {(["events", "restarts", "resources"] as const).map(tab => (
+                <button key={tab} onClick={() => setActiveTab(tab)}
+                  className={`flex-1 py-2 text-xs font-medium transition-colors ${activeTab === tab ? "text-blue-400 border-b-2 border-blue-400" : "text-gray-500 hover:text-gray-300"}`}>
+                  {tab === "events" ? `Eventos K8s (${detail.k8sEvents.length})` : tab === "restarts" ? `Restarts (${detail.restartHistory.length})` : "Recomendação"}
+                </button>
+              ))}
+            </div>
+
+            {/* Eventos K8s */}
+            {activeTab === "events" && (
+              <div className="p-4 space-y-2">
+                {detail.k8sEvents.length === 0 ? (
+                  <div className="text-center text-gray-600 text-xs py-4">Nenhum evento registrado</div>
+                ) : detail.k8sEvents.map((e, i) => (
+                  <div key={i} className={`rounded border p-2 ${e.type === "Warning" ? "border-yellow-900/40 bg-yellow-950/10" : "border-gray-800 bg-gray-900/40"}`}>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className={`text-xs font-semibold ${e.type === "Warning" ? "text-yellow-400" : "text-blue-400"}`}>{e.reason}</span>
+                      <div className="flex items-center gap-2">
+                        {e.count > 1 && <span className="text-xs text-gray-500">×{e.count}</span>}
+                        <span className="text-xs text-gray-600">{relTime(e.lastTime)}</span>
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-400 leading-relaxed">{e.message}</div>
+                    {e.component && <div className="text-xs text-gray-600 mt-0.5">{e.component}</div>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Histórico de restarts */}
+            {activeTab === "restarts" && (
+              <div className="p-4 space-y-2">
+                {detail.restartHistory.length === 0 ? (
+                  <div className="text-center text-gray-600 text-xs py-4">Nenhum restart registrado no histórico</div>
+                ) : detail.restartHistory.map((r, i) => (
+                  <div key={i} className="rounded border border-orange-900/30 bg-orange-950/10 p-2">
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-xs font-semibold text-orange-400">{r.reason || "OOMKilled"}</span>
+                      <span className="text-xs text-gray-600">{relTime(r.finished_at)}</span>
+                    </div>
+                    <div className="flex items-center gap-3 text-xs text-gray-500">
+                      <span>Container: <span className="text-gray-300 font-mono">{r.container_name}</span></span>
+                      <span>Exit: <span className={r.exit_code === 137 ? "text-red-400" : "text-gray-400"}>{r.exit_code}</span></span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Recomendação de resources */}
+            {activeTab === "resources" && (
+              <div className="p-4 space-y-3">
+                <div className="text-xs text-gray-500 bg-gray-900 rounded p-2 leading-relaxed">
+                  Recomendação baseada em <span className="text-blue-400">1,3× o pico histórico</span> para requests e <span className="text-blue-400">1,5× o request</span> para limits. Dados coletados de {detail.metricsHistory.length} amostras.
+                </div>
+                {detail.containers.map((c, i) => (
+                  <div key={i} className="bg-gray-900 rounded-lg p-3">
+                    <div className="text-xs font-mono text-gray-300 mb-2">{c.name}</div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      {[
+                        { label: "CPU Request", cur: c.cpuReq ? fmtCpuDetail(c.cpuReq) : "—", rec: c.recCpuReq ? fmtCpuDetail(c.recCpuReq) : null },
+                        { label: "CPU Limit", cur: c.cpuLim ? fmtCpuDetail(c.cpuLim) : "—", rec: c.recCpuLim ? fmtCpuDetail(c.recCpuLim) : null },
+                        { label: "MEM Request", cur: c.memReq ? fmtMemDetail(c.memReq) : "—", rec: c.recMemReq ? fmtMemDetail(c.recMemReq) : null },
+                        { label: "MEM Limit", cur: c.memLim ? fmtMemDetail(c.memLim) : "—", rec: c.recMemLim ? fmtMemDetail(c.recMemLim) : null },
+                      ].map((row, j) => (
+                        <div key={j} className="bg-gray-800/60 rounded p-2">
+                          <div className="text-gray-500 mb-1">{row.label}</div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-gray-400">{row.cur}</span>
+                            {row.rec && <><span className="text-gray-600">→</span><span className="text-green-400 font-semibold">{row.rec}</span></>}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {/* Patch command */}
+                {detail.workload && (
+                  <div className="mt-2">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-xs text-gray-500">Comando kubectl patch</span>
+                      <button onClick={() => { navigator.clipboard.writeText(buildPatch()); setCopied(true); setTimeout(() => setCopied(false), 2000); }}
+                        className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors">
+                        {copied ? <CheckCircle size={11} /> : <Copy size={11} />}{copied ? "Copiado!" : "Copiar"}
+                      </button>
+                    </div>
+                    <pre className="bg-gray-900 rounded p-2 text-xs text-green-300 font-mono overflow-x-auto whitespace-pre-wrap">{buildPatch()}</pre>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 // ── Tab: Nodes Detalhado ──────────────────────────────────────────────────────
 function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) {
   const [selected, setSelected] = useState<NodeOverview | null>(null);
@@ -435,7 +690,8 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
   const [oomModal, setOomModal] = useState<{ nodeName: string } | null>(null);
   const [oomPods, setOomPods] = useState<OomPodDetail[]>([]);
   const [oomLoading, setOomLoading] = useState(false);
-
+  const [podDetailPod, setPodDetailPod] = useState<{ name: string; namespace: string } | null>(null);
+  const [nsFilterNode, setNsFilterNode] = useState<string>("all");
   const base = apiUrl.replace(/\/$/, "");
   const TOKEN_KEY = "k8s-viz-token";
   const getAuthHeaders = (): Record<string, string> => {
@@ -655,32 +911,50 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
               </div>
             )}
 
-            {/* Top pods problemáticos */}
-            {(selected.problematicPods ?? []).length > 0 && (
-              <div>
-                <div className="text-xs text-gray-500 mb-1.5 font-medium uppercase tracking-wide">Top pods com problema</div>
-                <div className="space-y-1">
-                  {(selected.problematicPods ?? []).slice(0, 5).map((pod, i) => {
-                    const sevColor = pod.severity === "critical" ? "border-red-900/40 bg-red-950/10" : pod.severity === "high" ? "border-orange-900/40 bg-orange-950/10" : "border-yellow-900/40 bg-yellow-950/10";
-                    const sevText = pod.severity === "critical" ? "text-red-400" : pod.severity === "high" ? "text-orange-400" : "text-yellow-400";
-                    const lastEvt = pod.lastEventAgo != null ? (pod.lastEventAgo < 60000 ? `${Math.round(pod.lastEventAgo / 1000)}s atrás` : pod.lastEventAgo < 3600000 ? `${Math.round(pod.lastEventAgo / 60000)}min atrás` : `${Math.round(pod.lastEventAgo / 3600000)}h atrás`) : null;
-                    return (
-                      <div key={i} className={`rounded border px-2 py-1.5 ${sevColor}`}>
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="text-xs text-white font-mono truncate max-w-[160px]" title={pod.name}>{pod.name}</span>
-                          <span className={`text-xs font-semibold shrink-0 ${sevText}`}>{pod.reason}</span>
+            {/* Top pods problemáticos com filtro de namespace e drill-down */}
+            {(selected.problematicPods ?? []).length > 0 && (() => {
+              const allNs = Array.from(new Set((selected.problematicPods ?? []).map(p => p.namespace))).sort();
+              const filtered = (selected.problematicPods ?? []).filter(p => nsFilterNode === "all" || p.namespace === nsFilterNode);
+              return (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-xs text-gray-500 font-medium uppercase tracking-wide">Top pods com problema</div>
+                    {allNs.length > 1 && (
+                      <select value={nsFilterNode} onChange={e => setNsFilterNode(e.target.value)}
+                        className="bg-gray-800 border border-gray-700 rounded px-2 py-0.5 text-xs text-gray-300 cursor-pointer">
+                        <option value="all">Todos ns</option>
+                        {allNs.map(ns => <option key={ns} value={ns}>{ns}</option>)}
+                      </select>
+                    )}
+                  </div>
+                  <div className="space-y-1">
+                    {filtered.slice(0, 7).map((pod, i) => {
+                      const sevColor = pod.severity === "critical" ? "border-red-900/40 bg-red-950/10 hover:bg-red-950/20" : pod.severity === "high" ? "border-orange-900/40 bg-orange-950/10 hover:bg-orange-950/20" : "border-yellow-900/40 bg-yellow-950/10 hover:bg-yellow-950/20";
+                      const sevText = pod.severity === "critical" ? "text-red-400" : pod.severity === "high" ? "text-orange-400" : "text-yellow-400";
+                      const lastEvt = pod.lastEventAgo != null ? (pod.lastEventAgo < 60000 ? `${Math.round(pod.lastEventAgo / 1000)}s atrás` : pod.lastEventAgo < 3600000 ? `${Math.round(pod.lastEventAgo / 60000)}min atrás` : `${Math.round(pod.lastEventAgo / 3600000)}h atrás`) : null;
+                      return (
+                        <div key={i} className={`rounded border px-2 py-1.5 cursor-pointer transition-colors ${sevColor}`}
+                          onClick={() => setPodDetailPod({ name: pod.name, namespace: pod.namespace })}>
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-xs text-white font-mono truncate max-w-[140px]" title={pod.name}>{pod.name}</span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className={`text-xs font-semibold ${sevText}`}>{pod.reason}</span>
+                              <ChevronRight size={10} className="text-gray-600" />
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-xs text-gray-500">{pod.namespace}</span>
+                            {pod.restarts > 0 && <span className="text-xs text-gray-400">{pod.restarts} restarts</span>}
+                            {lastEvt && <span className="text-xs text-gray-600 ml-auto">{lastEvt}</span>}
+                          </div>
                         </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <span className="text-xs text-gray-500">{pod.namespace}</span>
-                          {pod.restarts > 0 && <span className="text-xs text-gray-400">{pod.restarts} restarts</span>}
-                          {lastEvt && <span className="text-xs text-gray-600 ml-auto">{lastEvt}</span>}
-                        </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })}
+                    {filtered.length === 0 && <div className="text-xs text-gray-600 text-center py-2">Nenhum pod problemático neste namespace</div>}
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
           </div>
           {/* Conditions */}
           <div className="bg-gray-900 border border-gray-700/50 rounded-lg p-4">
@@ -722,6 +996,13 @@ function NodesTab({ nodes, apiUrl }: { nodes: NodeOverview[]; apiUrl: string }) 
           pods={oomLoading ? [] : oomPods}
           nodeName={oomModal.nodeName}
           onClose={() => setOomModal(null)}
+        />
+      )}
+      {podDetailPod && (
+        <PodDetailDrawer
+          pod={podDetailPod}
+          onClose={() => setPodDetailPod(null)}
+          apiUrl={apiUrl}
         />
       )}
       <div className="flex gap-2">

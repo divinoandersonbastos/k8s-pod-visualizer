@@ -1990,6 +1990,120 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // ── /api/nodes/pod-detail/:namespace/:pod — Detalhes agregados do pod ─────────
+  const podDetailMatch = url.pathname.match(/^\/api\/nodes\/pod-detail\/([^/]+)\/([^/]+)$/);
+  if (podDetailMatch && req.method === "GET") {
+    const [, namespace, podName] = podDetailMatch;
+    requireAuth(req, res, async () => {
+      try {
+        // Buscar pod atual e métricas em paralelo
+        const [podResult, metricsResult, eventsResult] = await Promise.allSettled([
+          k8sRequest(`/api/v1/namespaces/${namespace}/pods/${podName}`),
+          k8sRequest(`/apis/metrics.k8s.io/v1beta1/namespaces/${namespace}/pods/${podName}`),
+          k8sRequest(`/api/v1/namespaces/${namespace}/events?fieldSelector=involvedObject.name=${podName}&limit=30`),
+        ]);
+        const pod = podResult.status === "fulfilled" ? podResult.value.body : null;
+        const metricsRaw = metricsResult.status === "fulfilled" ? metricsResult.value.body : null;
+        const eventsRaw = eventsResult.status === "fulfilled" ? eventsResult.value.body : null;
+
+        // Eventos K8s do pod
+        const k8sEvents = ((eventsRaw?.items || [])
+          .filter(e => e.involvedObject?.name === podName)
+          .map(e => ({
+            reason: e.reason,
+            message: e.message,
+            type: e.type,
+            count: e.count || 1,
+            firstTime: e.firstTimestamp || e.eventTime,
+            lastTime: e.lastTimestamp || e.eventTime,
+            component: e.source?.component || e.reportingComponent || "",
+          }))
+          .sort((a, b) => new Date(b.lastTime) - new Date(a.lastTime)));
+
+        // Histórico de restarts do SQLite
+        const restartHistory = getPodRestartEvents(podName, namespace, 20);
+
+        // Histórico de métricas do SQLite
+        const metricsHistory = getPodMetricsHistory(podName, namespace, 60);
+
+        // Uso atual via metrics-server
+        let currentCpu = 0, currentMem = 0;
+        if (metricsRaw?.containers) {
+          currentCpu = metricsRaw.containers.reduce((s, c) => s + parseCPU(c.usage?.cpu || "0"), 0);
+          currentMem = metricsRaw.containers.reduce((s, c) => s + parseMem(c.usage?.memory || "0"), 0);
+        }
+
+        // Calcular uso médio e pico do histórico
+        let avgCpu = currentCpu, peakCpu = currentCpu, avgMem = currentMem, peakMem = currentMem;
+        if (metricsHistory.length > 0) {
+          avgCpu  = Math.round(metricsHistory.reduce((s, m) => s + (m.cpu_millicores || 0), 0) / metricsHistory.length);
+          peakCpu = Math.max(currentCpu, ...metricsHistory.map(m => m.cpu_millicores || 0));
+          avgMem  = Math.round(metricsHistory.reduce((s, m) => s + (m.memory_mib || 0), 0) / metricsHistory.length);
+          peakMem = Math.max(currentMem, ...metricsHistory.map(m => m.memory_mib || 0));
+        }
+
+        // Extrair resources atuais e recomendações por container
+        const containers = (pod?.spec?.containers || []).map(c => {
+          const reqR = c.resources?.requests || {};
+          const limR = c.resources?.limits   || {};
+          const cpuReq = parseCPU(reqR.cpu);
+          const cpuLim = parseCPU(limR.cpu);
+          const memReq = parseMem(reqR.memory);
+          const memLim = parseMem(limR.memory);
+          // Recomendação: 1.3x do pico (mínimo 10m CPU, 32Mi MEM)
+          const recCpuReq = peakCpu > 0 ? Math.max(10, Math.ceil(peakCpu * 1.3)) : null;
+          const recCpuLim = recCpuReq ? Math.ceil(recCpuReq * 1.5) : null;
+          const recMemReq = peakMem > 0 ? Math.max(32, Math.ceil(peakMem * 1.3)) : null;
+          const recMemLim = recMemReq ? Math.ceil(recMemReq * 1.5) : null;
+          return {
+            name: c.name,
+            image: c.image,
+            cpuReq, cpuLim, memReq, memLim,
+            recCpuReq, recCpuLim, recMemReq, recMemLim,
+          };
+        });
+
+        // Status atual dos containers
+        const containerStatuses = (pod?.status?.containerStatuses || []).map(cs => ({
+          name: cs.name,
+          ready: cs.ready,
+          restarts: cs.restartCount || 0,
+          state: cs.state ? Object.keys(cs.state)[0] : "unknown",
+          lastState: cs.lastState ? Object.keys(cs.lastState)[0] : null,
+          lastStateDetail: cs.lastState?.terminated ? {
+            reason: cs.lastState.terminated.reason,
+            exitCode: cs.lastState.terminated.exitCode,
+            finishedAt: cs.lastState.terminated.finishedAt,
+          } : null,
+        }));
+
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({
+          name: podName, namespace,
+          phase: pod?.status?.phase || "Unknown",
+          podIP: pod?.status?.podIP || null,
+          nodeName: pod?.spec?.nodeName || null,
+          startTime: pod?.status?.startTime || null,
+          workload: pod?.metadata?.ownerReferences?.[0]?.name || null,
+          workloadKind: pod?.metadata?.ownerReferences?.[0]?.kind || null,
+          labels: pod?.metadata?.labels || {},
+          k8sEvents,
+          restartHistory,
+          metricsHistory: metricsHistory.slice(-30),
+          usage: { currentCpu, currentMem, avgCpu, peakCpu, avgMem, peakMem },
+          containers,
+          containerStatuses,
+        }));
+      } catch (err) {
+        console.error("[error] /api/nodes/pod-detail:", err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+
 
   // ── /api/logs/:namespace/:pod ───────────────────────────────────────────────
   const logsMatch = url.pathname.match(/^\/api\/logs\/([^/]+)\/([^/]+)$/);

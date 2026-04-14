@@ -137,6 +137,7 @@ export default function SquadPermissionsPanel({ userId, username, displayName, o
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [auditError, setAuditError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
   const [activeView, setActiveView] = useState<"matrix" | "audit">("matrix");
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(["observacao", "operacao", "edicao"]));
@@ -183,13 +184,14 @@ export default function SquadPermissionsPanel({ userId, username, displayName, o
 
   const fetchAudit = useCallback(async () => {
     setAuditLoading(true);
+    setAuditError("");
     try {
       const res = await fetch(`${apiBase}/api/squad-permissions/${userId}/audit?limit=100`, { headers: headers() });
-      if (!res.ok) throw new Error("Erro ao carregar auditoria");
+      if (!res.ok) throw new Error(`Erro ao carregar auditoria (HTTP ${res.status})`);
       const data = await res.json();
-      setAuditLog(data);
+      setAuditLog(Array.isArray(data) ? data : []);
     } catch (e: any) {
-      setError(e.message);
+      setAuditError(e.message || "Erro ao carregar auditoria");
     } finally {
       setAuditLoading(false);
     }
@@ -197,7 +199,8 @@ export default function SquadPermissionsPanel({ userId, username, displayName, o
 
   useEffect(() => {
     if (activeView === "audit") fetchAudit();
-  }, [activeView, fetchAudit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeView]);
 
   // ── Lógica de permissões ────────────────────────────────────────────────────
 
@@ -373,6 +376,17 @@ export default function SquadPermissionsPanel({ userId, username, displayName, o
                 <AlertCircle size={13} style={{ color: "oklch(0.65 0.22 25)" }} />
                 <span className="text-xs" style={{ color: "oklch(0.75 0.15 25)" }}>{error}</span>
                 <button onClick={() => setError("")} className="ml-auto"><X size={12} style={{ color: "oklch(0.55 0.22 25)" }} /></button>
+              </div>
+            </motion.div>
+          )}
+          {auditError && activeView === "audit" && (
+            <motion.div initial={{ height: 0 }} animate={{ height: "auto" }} exit={{ height: 0 }}
+              className="overflow-hidden flex-shrink-0"
+            >
+              <div className="flex items-center gap-2 px-5 py-2.5" style={{ background: "oklch(0.55 0.22 25 / 0.1)", borderBottom: "1px solid oklch(0.55 0.22 25 / 0.2)" }}>
+                <AlertCircle size={13} style={{ color: "oklch(0.65 0.22 25)" }} />
+                <span className="text-xs" style={{ color: "oklch(0.75 0.15 25)" }}>{auditError}</span>
+                <button onClick={() => setAuditError("")} className="ml-auto"><X size={12} style={{ color: "oklch(0.55 0.22 25)" }} /></button>
               </div>
             </motion.div>
           )}

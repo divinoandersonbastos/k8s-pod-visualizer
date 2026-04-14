@@ -1,6 +1,6 @@
 {
   "name": "k8s-pod-visualizer",
-  "version": "5.36.1",
+  "version": "5.36.2",
   "type": "module",
   "license": "MIT",
   "scripts": {

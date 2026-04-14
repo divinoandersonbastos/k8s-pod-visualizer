@@ -183,40 +183,6 @@ const migrations = [
     `,
   },
 
-  // v5 — Histórico de logs de pods e eventos de restart
-  {
-    version: 5,
-    sql: `
-      -- Histórico de logs de pods (linhas capturadas periodicamente para consulta retroativa)
-      CREATE TABLE IF NOT EXISTS pod_logs_history (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        pod_name     TEXT NOT NULL,
-        namespace    TEXT NOT NULL,
-        container    TEXT NOT NULL DEFAULT '',
-        log_line     TEXT NOT NULL,
-        log_level    TEXT NOT NULL DEFAULT 'INFO', -- 'ERROR'|'WARN'|'INFO'|'DEBUG'
-        log_ts       TEXT NOT NULL,               -- timestamp extraído da linha de log
-        captured_at  TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_plh_pod      ON pod_logs_history(pod_name, namespace, captured_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_plh_level    ON pod_logs_history(log_level, captured_at DESC);
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_plh_dedup ON pod_logs_history(pod_name, namespace, container, log_ts, log_line);
-
-      -- Eventos de restart de pod (quem fez, quando, motivo)
-      CREATE TABLE IF NOT EXISTS pod_restart_events (
-        id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        pod_name     TEXT NOT NULL,
-        namespace    TEXT NOT NULL,
-        triggered_by TEXT NOT NULL,              -- username do SRE
-        reason       TEXT,                       -- motivo opcional
-        result       TEXT NOT NULL DEFAULT 'success', -- 'success'|'error'
-        error_msg    TEXT,
-        recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
-      );
-      CREATE INDEX IF NOT EXISTS idx_pre_pod ON pod_restart_events(pod_name, namespace, recorded_at DESC);
-    `,
-  },
-
   // v4 — Usuários SRE/Squad e sessões de autenticação
   {
     version: 4,
@@ -277,9 +243,43 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_users_role_admin ON users(role) WHERE role = 'admin';
     `,
   },
-  // v6 — Histórico de edições de recursos do cluster (P5)
+  // v6 — Histórico de logs de pods e eventos de restart
   {
     version: 6,
+    sql: `
+      -- Histórico de logs de pods (linhas capturadas periodicamente para consulta retroativa)
+      CREATE TABLE IF NOT EXISTS pod_logs_history (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        pod_name     TEXT NOT NULL,
+        namespace    TEXT NOT NULL,
+        container    TEXT NOT NULL DEFAULT '',
+        log_line     TEXT NOT NULL,
+        log_level    TEXT NOT NULL DEFAULT 'INFO', -- 'ERROR'|'WARN'|'INFO'|'DEBUG'
+        log_ts       TEXT NOT NULL,               -- timestamp extraído da linha de log
+        captured_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_plh_pod      ON pod_logs_history(pod_name, namespace, captured_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_plh_level    ON pod_logs_history(log_level, captured_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plh_dedup ON pod_logs_history(pod_name, namespace, container, log_ts, log_line);
+
+      -- Eventos de restart de pod (quem fez, quando, motivo)
+      CREATE TABLE IF NOT EXISTS pod_restart_events (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        pod_name     TEXT NOT NULL,
+        namespace    TEXT NOT NULL,
+        triggered_by TEXT NOT NULL,              -- username do SRE
+        reason       TEXT,                       -- motivo opcional
+        result       TEXT NOT NULL DEFAULT 'success', -- 'success'|'error'
+        error_msg    TEXT,
+        recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_pre_pod ON pod_restart_events(pod_name, namespace, recorded_at DESC);
+    `,
+  },
+
+  // v7 — Histórico de edições de recursos do cluster (P5)
+  {
+    version: 7,
     sql: `
       CREATE TABLE IF NOT EXISTS resource_edit_history (
         id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -303,9 +303,9 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_reh_action   ON resource_edit_history(action, recorded_at DESC);
     `,
   },
-  // v7 — Permissões granulares por usuário Squad
+  // v8 — Permissões granulares por usuário Squad
   {
-    version: 7,
+    version: 8,
     sql: `
       -- Tabela principal de permissões granulares por usuário Squad
       CREATE TABLE IF NOT EXISTS squad_permissions (

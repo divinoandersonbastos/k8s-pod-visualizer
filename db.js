@@ -1148,48 +1148,54 @@ export function pruneOldResourceEdits(days = 90) {
 }
 
 // ── squad_permissions ────────────────────────────────────────────────────────
-// Statements preparados para permissões granulares de Squad
-const sqpStmts = {
-  upsert: db.prepare(`
-    INSERT INTO squad_permissions (user_id, capability, granted, granted_by, granted_by_name, reason, updated_at)
-    VALUES (@user_id, @capability, @granted, @granted_by, @granted_by_name, @reason, datetime('now'))
-    ON CONFLICT(user_id, capability) DO UPDATE SET
-      granted = excluded.granted,
-      granted_by = excluded.granted_by,
-      granted_by_name = excluded.granted_by_name,
-      reason = excluded.reason,
-      updated_at = datetime('now')
-  `),
-  getByUser: db.prepare(`
-    SELECT capability, granted, granted_by_name, reason, updated_at
-    FROM squad_permissions WHERE user_id = @user_id
-  `),
-  hasCapability: db.prepare(`
-    SELECT granted FROM squad_permissions
-    WHERE user_id = @user_id AND capability = @capability AND granted = 1
-  `),
-  deleteByUser: db.prepare(`DELETE FROM squad_permissions WHERE user_id = @user_id`),
-  auditInsert: db.prepare(`
-    INSERT INTO squad_permissions_audit (user_id, username, capability, action, granted_by, granted_by_name, reason)
-    VALUES (@user_id, @username, @capability, @action, @granted_by, @granted_by_name, @reason)
-  `),
-  auditByUser: db.prepare(`
-    SELECT * FROM squad_permissions_audit WHERE user_id = @user_id ORDER BY recorded_at DESC LIMIT @limit
-  `),
-  auditAll: db.prepare(`
-    SELECT * FROM squad_permissions_audit ORDER BY recorded_at DESC LIMIT @limit
-  `),
-  auditByGrantor: db.prepare(`
-    SELECT * FROM squad_permissions_audit WHERE granted_by = @granted_by ORDER BY recorded_at DESC LIMIT @limit
-  `),
-};
+// Lazy initialization: statements só são preparados na primeira chamada,
+// garantindo que a migração v7 já foi aplicada antes do db.prepare().
+let _sqpStmts = null;
+function sqpStmts() {
+  if (_sqpStmts) return _sqpStmts;
+  _sqpStmts = {
+    upsert: db.prepare(`
+      INSERT INTO squad_permissions (user_id, capability, granted, granted_by, granted_by_name, reason, updated_at)
+      VALUES (@user_id, @capability, @granted, @granted_by, @granted_by_name, @reason, datetime('now'))
+      ON CONFLICT(user_id, capability) DO UPDATE SET
+        granted = excluded.granted,
+        granted_by = excluded.granted_by,
+        granted_by_name = excluded.granted_by_name,
+        reason = excluded.reason,
+        updated_at = datetime('now')
+    `),
+    getByUser: db.prepare(`
+      SELECT capability, granted, granted_by_name, reason, updated_at
+      FROM squad_permissions WHERE user_id = @user_id
+    `),
+    hasCapability: db.prepare(`
+      SELECT granted FROM squad_permissions
+      WHERE user_id = @user_id AND capability = @capability AND granted = 1
+    `),
+    deleteByUser: db.prepare(`DELETE FROM squad_permissions WHERE user_id = @user_id`),
+    auditInsert: db.prepare(`
+      INSERT INTO squad_permissions_audit (user_id, username, capability, action, granted_by, granted_by_name, reason)
+      VALUES (@user_id, @username, @capability, @action, @granted_by, @granted_by_name, @reason)
+    `),
+    auditByUser: db.prepare(`
+      SELECT * FROM squad_permissions_audit WHERE user_id = @user_id ORDER BY recorded_at DESC LIMIT @limit
+    `),
+    auditAll: db.prepare(`
+      SELECT * FROM squad_permissions_audit ORDER BY recorded_at DESC LIMIT @limit
+    `),
+    auditByGrantor: db.prepare(`
+      SELECT * FROM squad_permissions_audit WHERE granted_by = @granted_by ORDER BY recorded_at DESC LIMIT @limit
+    `),
+  };
+  return _sqpStmts;
+}
 
 /**
  * Concede ou revoga uma capacidade específica para um usuário Squad.
  * Registra automaticamente na tabela de auditoria.
  */
 export function setSquadCapability({ userId, username, capability, granted, grantedBy, grantedByName, reason }) {
-  sqpStmts.upsert.run({
+  sqpStmts().upsert.run({
     user_id: userId,
     capability,
     granted: granted ? 1 : 0,
@@ -1197,7 +1203,7 @@ export function setSquadCapability({ userId, username, capability, granted, gran
     granted_by_name: grantedByName || null,
     reason: reason || null,
   });
-  sqpStmts.auditInsert.run({
+  sqpStmts().auditInsert.run({
     user_id: userId,
     username,
     capability,
@@ -1215,14 +1221,14 @@ export function setSquadCapability({ userId, username, capability, granted, gran
 export function bulkSetSquadCapabilities({ userId, username, capabilities, grantedBy, grantedByName, reason }) {
   const tx = db.transaction(() => {
     for (const { capability, granted } of capabilities) {
-      sqpStmts.upsert.run({
+      sqpStmts().upsert.run({
         user_id: userId, capability,
         granted: granted ? 1 : 0,
         granted_by: grantedBy || null,
         granted_by_name: grantedByName || null,
         reason: reason || null,
       });
-      sqpStmts.auditInsert.run({
+      sqpStmts().auditInsert.run({
         user_id: userId, username, capability,
         action: granted ? 'bulk_grant' : 'bulk_revoke',
         granted_by: grantedBy || null,
@@ -1236,33 +1242,33 @@ export function bulkSetSquadCapabilities({ userId, username, capabilities, grant
 
 /** Retorna todas as permissões de um usuário Squad */
 export function getSquadPermissions(userId) {
-  return sqpStmts.getByUser.all({ user_id: userId });
+  return sqpStmts().getByUser.all({ user_id: userId });
 }
 
 /** Verifica se um usuário Squad tem uma capacidade específica */
 export function hasSquadCapability(userId, capability) {
-  const row = sqpStmts.hasCapability.get({ user_id: userId, capability });
+  const row = sqpStmts().hasCapability.get({ user_id: userId, capability });
   return !!row;
 }
 
 /** Remove todas as permissões de um usuário (ex: ao deletar) */
 export function clearSquadPermissions(userId) {
-  sqpStmts.deleteByUser.run({ user_id: userId });
+  sqpStmts().deleteByUser.run({ user_id: userId });
 }
 
 /** Retorna histórico de auditoria de permissões de um usuário */
 export function getSquadPermissionsAudit(userId, limit = 100) {
-  return sqpStmts.auditByUser.all({ user_id: userId, limit });
+  return sqpStmts().auditByUser.all({ user_id: userId, limit });
 }
 
 /** Retorna todo o histórico de auditoria de permissões */
 export function getAllSquadPermissionsAudit(limit = 500) {
-  return sqpStmts.auditAll.all({ limit });
+  return sqpStmts().auditAll.all({ limit });
 }
 
 /** Retorna auditoria de permissões concedidas por um SRE específico */
 export function getSquadPermissionsAuditByGrantor(grantedBy, limit = 200) {
-  return sqpStmts.auditByGrantor.all({ granted_by: grantedBy, limit });
+  return sqpStmts().auditByGrantor.all({ granted_by: grantedBy, limit });
 }
 
 // ── Manutenção automática ─────────────────────────────────────────────────────

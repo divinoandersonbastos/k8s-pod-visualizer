@@ -37,7 +37,6 @@ import { AppAccessPanel } from "@/components/AppAccessPanel";
 import TopologyGraph from "@/components/TopologyGraph";
 import { DbStatusPanel } from "@/components/DbStatusPanel";
 import { SecurityPanel } from "@/components/SecurityPanel";
-import { SquadDashboard } from "@/components/SquadDashboard";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
@@ -446,13 +445,6 @@ export default function Home() {
           squadNamespaces={user?.namespaces ?? []}
         />
 
-        {/* SquadDashboard — painel lateral direito exclusivo para Squad */}
-        {isSquad && (
-          <SquadDashboard
-            pods={pods}
-            onSelectPod={(pod) => setSelectedPod(pod)}
-          />
-        )}
          {/* Canvas principal */}
         <main className="flex-1 relative overflow-hidden grid-bg scanlines">
           {/* ── Alerta de Spot Eviction iminente ──────────────────────────── */}
@@ -593,6 +585,8 @@ export default function Home() {
             oomRisk={selectedPod ? oomRisk.getRiskForPod(selectedPod.id) : null}
             isSRE={isSRE}
             isAdmin={isAdmin}
+            isSquad={isSquad}
+            onShowResourceEditor={() => setShowResourceEditor(true)}
             initialTab={podInitialTab}
           />
 
@@ -696,9 +690,9 @@ export default function Home() {
             )}
           </AnimatePresence>
 
-          {/* Editor de Recursos (SRE only) */}
+          {/* Editor de Recursos (SRE + Squad) */}
           <AnimatePresence>
-            {showResourceEditor && isSRE && (
+            {showResourceEditor && (isSRE || isSquad) && (
               <ResourceEditorPanel
                 onClose={() => setShowResourceEditor(false)}
                 initialAppNamespace={selectedPod?.namespace}

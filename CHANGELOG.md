@@ -6,6 +6,22 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e o 
 
 ---
 
+## [5.37.1] — 2026-04-14
+
+### Added
+- **PodDetailPanel**: Botões de ação rápida no header do painel de detalhes do pod:
+  - **kubectl exec** (Terminal) — sempre visível para todos os perfis
+  - **Editor de Recursos** (`</>`) — abre o ResourceEditorPanel com o pod pré-selecionado; disponível para SRE e Squad
+  - **Reiniciar pod** — modal de confirmação agora renderizado corretamente via `AnimatePresence`
+  - **Deletar pod** — novo botão vermelho com modal de confirmação e toast de resultado
+- **Backend**: Novo endpoint `DELETE /api/pods/:namespace/:pod/delete` com controle de acesso Squad (apenas namespaces autorizados) e registro no audit log
+- **Squad**: ResourceEditorPanel agora acessível para Squad via botão no PodDetailPanel
+
+### Removed
+- **SquadDashboard**: Painel lateral direito removido (simplificando a interface do Squad)
+
+---
+
 ## [5.37.0] — 2026-04-13
 
 ### Added

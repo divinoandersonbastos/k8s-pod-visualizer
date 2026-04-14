@@ -2358,7 +2358,73 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // ── /api/logs-history/:namespace/:pod — Histórico de logs do SQLite ──────────
+    // ── /api/pods/:namespace/:pod/delete — Deletar pod permanentemente (SRE + Squad no próprio ns) ───
+  const podDeleteMatch = url.pathname.match(/^\/api\/pods\/([^/]+)\/([^/]+)\/delete$/);
+  if (podDeleteMatch && req.method === "DELETE") {
+    const [, namespace, podName] = podDeleteMatch;
+    requireAuth(req, res, async () => {
+      const user = req.user;
+      if (user.role !== "sre" && user.role !== "admin") {
+        const allowedNs = Array.isArray(user.namespaces) ? user.namespaces : [];
+        if (!allowedNs.includes(namespace)) {
+          res.writeHead(403, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: `Acesso negado: namespace ${namespace} não permitido` }));
+          return;
+        }
+      }
+      try {
+        const token = getToken();
+        const ca    = getCA();
+        const apiHost = K8S_API.replace(/^https?:\/\//, "");
+        const isHttps = K8S_API.startsWith("https");
+        await new Promise((resolve, reject) => {
+          const options = {
+            hostname: apiHost,
+            port: isHttps ? 443 : 80,
+            path: `/api/v1/namespaces/${encodeURIComponent(namespace)}/pods/${encodeURIComponent(podName)}`,
+            method: "DELETE",
+            headers: {
+              "Content-Type": "application/json",
+              Accept: "application/json",
+              ...(token ? { Authorization: `Bearer ${token}` } : {}),
+            },
+            ...(ca ? { ca } : { rejectUnauthorized: false }),
+          };
+          const proto = isHttps ? https : http;
+          const k8sReq = proto.request(options, (k8sRes) => {
+            let data = "";
+            k8sRes.on("data", (c) => (data += c));
+            k8sRes.on("end", () => {
+              if (k8sRes.statusCode >= 400) {
+                try { reject(new Error(JSON.parse(data)?.message || `HTTP ${k8sRes.statusCode}`)); }
+                catch { reject(new Error(`HTTP ${k8sRes.statusCode}`)); }
+              } else resolve(data);
+            });
+          });
+          k8sReq.on("error", reject);
+          k8sReq.setTimeout(10000, () => k8sReq.destroy(new Error("timeout")));
+          k8sReq.end();
+        });
+        const username = req.user?.username || "unknown";
+        insertAuditLog({
+          userId: req.user?.id, username,
+          action: "delete", resourceType: "pod",
+          resourceName: podName, namespace,
+          payload: null, result: "success",
+        });
+        console.log(`[delete] Pod ${namespace}/${podName} deletado por ${username}`);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, podName, namespace, deletedAt: new Date().toISOString() }));
+      } catch (err) {
+        console.error(`[error] delete pod ${namespace}/${podName}:`, err.message);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ── /api/logs-history/:namespace/:pod — Histórico de logs do SQLite ────────
   const logsHistoryMatch = url.pathname.match(/^\/api\/logs-history\/([^/]+)\/([^/]+)$/);
   if (logsHistoryMatch && req.method === "GET") {
     const [, namespace, podName] = logsHistoryMatch;

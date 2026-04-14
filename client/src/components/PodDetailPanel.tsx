@@ -12,7 +12,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import {
   X, Cpu, MemoryStick, RefreshCw, Box, Server, Tag, Clock,
   AlertCircle, AlertTriangle, Info, ScrollText, BarChart2, Activity,
-  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal, Database, FileText,
+  RotateCcw, Copy, Check, Network, Shield, Maximize2, Minimize2, Terminal, Database, FileText, Code2, Trash2,
 } from "lucide-react";
 import type { PodMetrics } from "@/hooks/usePodData";
 import type { HistoryPoint } from "@/hooks/usePodHistory";
@@ -49,6 +49,8 @@ interface PodDetailPanelProps {
   oomRisk?: OomRiskInfo | null;
   isSRE?: boolean;
   isAdmin?: boolean;
+  isSquad?: boolean;
+  onShowResourceEditor?: (pod?: { name: string; namespace: string }) => void;
   /** NOVO v5.20.0 — aba inicial ao abrir o painel (ex: "describe") */
   initialTab?: Tab;
 }
@@ -172,6 +174,94 @@ function RestartConfirmModal({
   );
 }
 
+// ── Modal de Confirmação de Delete ───────────────────────────────────────────
+function DeleteConfirmModal({
+  podName,
+  namespace,
+  onConfirm,
+  onCancel,
+  loading,
+}: {
+  podName: string;
+  namespace: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  loading: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "oklch(0.05 0.01 250 / 0.85)", backdropFilter: "blur(4px)" }}
+    >
+      <motion.div
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        exit={{ scale: 0.9, opacity: 0 }}
+        transition={{ type: "spring", stiffness: 400, damping: 25 }}
+        className="w-80 rounded-xl p-5 space-y-4"
+        style={{
+          background: "oklch(0.15 0.025 250)",
+          border: "1px solid oklch(0.62 0.22 25 / 0.5)",
+          boxShadow: "0 0 40px oklch(0.62 0.22 25 / 0.20)",
+        }}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            style={{ background: "oklch(0.62 0.22 25 / 0.15)", border: "1px solid oklch(0.62 0.22 25 / 0.4)" }}
+          >
+            <Trash2 size={16} style={{ color: "oklch(0.72 0.22 25)" }} />
+          </div>
+          <div>
+            <div className="text-sm font-semibold" style={{ color: "oklch(0.90 0.01 250)" }}>Deletar Pod</div>
+            <div className="text-[10px] font-mono" style={{ color: "oklch(0.50 0.015 250)" }}>{namespace}</div>
+          </div>
+        </div>
+        <div
+          className="rounded-lg p-3 font-mono text-xs break-all"
+          style={{ background: "oklch(0.10 0.015 250)", border: "1px solid oklch(0.22 0.03 250)", color: "oklch(0.72 0.22 25)" }}
+        >
+          {podName}
+        </div>
+        <p className="text-xs leading-relaxed" style={{ color: "oklch(0.60 0.012 250)" }}>
+          O pod será <strong style={{ color: "oklch(0.80 0.01 250)" }}>deletado permanentemente</strong>.
+          Se gerenciado por um Deployment, um novo pod será criado automaticamente.
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={onCancel}
+            disabled={loading}
+            className="flex-1 py-2 rounded-lg text-xs font-medium transition-colors"
+            style={{
+              background: "oklch(0.20 0.025 250)",
+              border: "1px solid oklch(0.28 0.04 250)",
+              color: "oklch(0.60 0.012 250)",
+            }}
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="flex-1 py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-all"
+            style={{
+              background: loading ? "oklch(0.62 0.22 25 / 0.3)" : "oklch(0.62 0.22 25 / 0.2)",
+              border: "1px solid oklch(0.62 0.22 25 / 0.6)",
+              color: "oklch(0.82 0.18 25)",
+            }}
+          >
+            {loading ? (
+              <><RefreshCw size={12} className="animate-spin" /> Deletando...</>
+            ) : (
+              <><Trash2 size={12} /> Confirmar Delete</>
+            )}
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 // Conta eventos de um pod lendo diretamente do localStorage (sem re-render excessivo)
 function countEventsForPod(podId: string, getEventsForPod?: (id: string) => unknown[]): number {
   if (!getEventsForPod) return 0;
@@ -183,7 +273,7 @@ const PANEL_WIDTH_KEY = "k8s-viz-detail-panel-width";
 const MIN_PANEL_WIDTH = 280;
 const MAX_PANEL_WIDTH_RATIO = 0.72; // 72% da largura da janela
 
-export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk, isSRE = false, isAdmin = false, initialTab }: PodDetailPanelProps) {
+export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, getHistory, getEventsForPod, clearEvents, oomRisk, isSRE = false, isAdmin = false, isSquad = false, onShowResourceEditor, initialTab }: PodDetailPanelProps) {
   const [activeTab, setActiveTab] = useState<Tab>(initialTab || "details");
 
   // Quando o pod muda OU quando initialTab muda, resetar para a aba correta
@@ -198,6 +288,9 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
   const [showRestartModal, setShowRestartModal] = useState(false);
   const [restartLoading, setRestartLoading] = useState(false);
   const [restartResult, setRestartResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteResult, setDeleteResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [copied, setCopied] = useState(false);
   const [logsFullscreen, setLogsFullscreen] = useState(false);
   const [showExecModal, setShowExecModal] = useState(false);
@@ -282,6 +375,30 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
       setTimeout(() => setRestartResult(null), 5000);
     }
   }, [pod, apiUrl]);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    if (!pod) return;
+    setDeleteLoading(true);
+    try {
+      const base = apiUrl || "";
+      const resp = await fetch(`${base}/api/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}/delete`, {
+        method: "DELETE",
+        headers: getAuthHeaders(),
+      });
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ error: `HTTP ${resp.status}` }));
+        throw new Error(err.error || `HTTP ${resp.status}`);
+      }
+      setDeleteResult({ ok: true, msg: `Pod deletado com sucesso às ${new Date().toLocaleTimeString()}` });
+      setTimeout(() => onClose(), 1500);
+    } catch (err: unknown) {
+      setDeleteResult({ ok: false, msg: err instanceof Error ? err.message : "Erro desconhecido" });
+    } finally {
+      setDeleteLoading(false);
+      setShowDeleteModal(false);
+      setTimeout(() => setDeleteResult(null), 5000);
+    }
+  }, [pod, apiUrl, onClose]);
 
   // Reset tab ao trocar de pod
   const [lastPodId, setLastPodId] = useState<string | null>(null);
@@ -401,28 +518,36 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
               >
                 {copied ? <Check size={13} /> : <Copy size={13} />}
               </button>
-              {/* Botão Entrar no Pod — visível para SRE, SQUAD e Admin */}
-              {(isSRE || isAdmin || true) && (
+              {/* Botão Entrar no Pod — visível para todos */}
+              <button
+                onClick={() => {
+                  const names = pod.containerNames ?? [];
+                  if (names.length > 1) {
+                    setExecContainer("");
+                    setShowContainerPicker(true);
+                  } else {
+                    setExecContainer(names[0] ?? "");
+                    setShowExecModal(true);
+                  }
+                }}
+                className="p-1.5 rounded-md transition-all"
+                style={{ color: "oklch(0.72 0.18 142)", background: "oklch(0.72 0.18 142 / 0.08)", border: "1px solid oklch(0.72 0.18 142 / 0.25)" }}
+                title="Entrar no pod (kubectl exec)"
+              >
+                <Terminal size={13} />
+              </button>
+              {/* Botão Editor de Recursos — abre o ResourceEditor com o pod pré-selecionado */}
+              {onShowResourceEditor && (
                 <button
-                  onClick={() => {
-                    const names = pod.containerNames ?? [];
-                    if (names.length > 1) {
-                      // Múltiplos containers: exibe seletor antes de abrir
-                      setExecContainer("");
-                      setShowContainerPicker(true);
-                    } else {
-                      // Container único ou desconhecido: abre direto
-                      setExecContainer(names[0] ?? "");
-                      setShowExecModal(true);
-                    }
-                  }}
+                  onClick={() => onShowResourceEditor({ name: pod.name, namespace: pod.namespace })}
                   className="p-1.5 rounded-md transition-all"
-                  style={{ color: "oklch(0.72 0.18 142)", background: "oklch(0.72 0.18 142 / 0.08)", border: "1px solid oklch(0.72 0.18 142 / 0.25)" }}
-                  title="Entrar no pod (kubectl exec)"
+                  style={{ color: "oklch(0.65 0.22 280)", background: "oklch(0.65 0.22 280 / 0.08)", border: "1px solid oklch(0.65 0.22 280 / 0.25)" }}
+                  title="Editor de Recursos K8s"
                 >
-                  <Terminal size={13} />
+                  <Code2 size={13} />
                 </button>
               )}
+              {/* Botão Reiniciar pod */}
               <button
                 onClick={() => setShowRestartModal(true)}
                 className="p-1.5 rounded-md transition-colors"
@@ -430,6 +555,15 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
                 title="Reiniciar pod"
               >
                 <RotateCcw size={13} />
+              </button>
+              {/* Botão Deletar pod */}
+              <button
+                onClick={() => setShowDeleteModal(true)}
+                className="p-1.5 rounded-md transition-all"
+                style={{ color: "oklch(0.62 0.22 25)", background: "oklch(0.62 0.22 25 / 0.08)", border: "1px solid oklch(0.62 0.22 25 / 0.20)" }}
+                title="Deletar pod"
+              >
+                <Trash2 size={13} />
               </button>
               <button
                 onClick={onClose}
@@ -1194,6 +1328,47 @@ export function PodDetailPanel({ pod, onClose, apiUrl = "", inCluster = false, g
         </motion.div>
       )}
     </AnimatePresence>
+
+    {/* Modal de Restart */}
+    <AnimatePresence>
+      {showRestartModal && pod && (
+        <RestartConfirmModal
+          podName={pod.name}
+          namespace={pod.namespace}
+          onConfirm={handleRestartConfirm}
+          onCancel={() => setShowRestartModal(false)}
+          loading={restartLoading}
+        />
+      )}
+    </AnimatePresence>
+
+    {/* Modal de Delete */}
+    <AnimatePresence>
+      {showDeleteModal && pod && (
+        <DeleteConfirmModal
+          podName={pod.name}
+          namespace={pod.namespace}
+          onConfirm={handleDeleteConfirm}
+          onCancel={() => setShowDeleteModal(false)}
+          loading={deleteLoading}
+        />
+      )}
+    </AnimatePresence>
+
+    {/* Resultado de delete */}
+    {deleteResult && (
+      <div
+        className="fixed bottom-4 right-4 z-[300] px-4 py-2.5 rounded-lg text-xs font-mono"
+        style={{
+          background: deleteResult.ok ? "oklch(0.72 0.18 142 / 0.15)" : "oklch(0.62 0.22 25 / 0.15)",
+          border: `1px solid ${deleteResult.ok ? "oklch(0.72 0.18 142 / 0.4)" : "oklch(0.62 0.22 25 / 0.4)"}`,
+          color: deleteResult.ok ? "oklch(0.72 0.18 142)" : "oklch(0.72 0.22 25)",
+          backdropFilter: "blur(8px)",
+        }}
+      >
+        {deleteResult.msg}
+      </div>
+    )}
     </>
   );
 }

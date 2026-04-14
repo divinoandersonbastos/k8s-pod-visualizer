@@ -33,10 +33,14 @@ import {
   saveResourceEdit, getResourceEditHistory,
 } from "./db.js";
 import {
-  requireAuth, requireSRE, requireAdmin,
+  requireAuth, requireSRE, requireAdmin, requireCapability,
   handleSetup, handleLogin, handleLogout, handleMe, handleSetupStatus,
   handleListUsers, handleCreateUser, handleUpdateUser, handleDeleteUser,
   handleAuditLog, insertAuditLog, verifyTokenPayload,
+  handleGetSquadPermissions, handleSetSquadPermission,
+  handleBulkSetSquadPermissions, handleGetSquadPermissionsAudit,
+  handleGetAllSquadPermissionsAudit,
+  CAPABILITIES_CATALOG, PERMISSION_PRESETS,
 } from "./auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -3356,7 +3360,61 @@ const server = http.createServer(async (req, res) => {
     return requireSRE(req, res, () => handleAuditLog(req, res));
   }
 
-  // ── /api/resources/* — Resource Editor (SRE only) ───────────────────────
+  // ── /api/squad-permissions/* — Permissões granulares por usuário Squad ───────────────────────────────────
+
+  // GET /api/squad-permissions/catalog — Catálogo completo de capacidades
+  if (url.pathname === "/api/squad-permissions/catalog" && req.method === "GET") {
+    return requireAuth(req, res, () => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ catalog: CAPABILITIES_CATALOG, presets: Object.keys(PERMISSION_PRESETS) }));
+    });
+  }
+
+  // GET /api/squad-permissions/audit/all — Todo o histórico de auditoria de permissões
+  if (url.pathname === "/api/squad-permissions/audit/all" && req.method === "GET") {
+    req.query = Object.fromEntries(url.searchParams);
+    return handleGetAllSquadPermissionsAudit(req, res);
+  }
+
+  // GET /api/squad-permissions/:userId — Permissões de um usuário Squad
+  const sqpMatch = url.pathname.match(/^\/api\/squad-permissions\/(\d+)$/);
+  if (sqpMatch) {
+    req.params = { userId: sqpMatch[1] };
+    req.query = Object.fromEntries(url.searchParams);
+    if (req.method === "GET") return handleGetSquadPermissions(req, res);
+    if (req.method === "PUT") {
+      let body = "";
+      req.on("data", (c) => { body += c; });
+      req.on("end", () => {
+        try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+        handleSetSquadPermission(req, res);
+      });
+      return;
+    }
+  }
+
+  // PUT /api/squad-permissions/:userId/bulk — Aplica perfil ou conjunto de capacidades
+  const sqpBulkMatch = url.pathname.match(/^\/api\/squad-permissions\/(\d+)\/bulk$/);
+  if (sqpBulkMatch && req.method === "PUT") {
+    req.params = { userId: sqpBulkMatch[1] };
+    let body = "";
+    req.on("data", (c) => { body += c; });
+    req.on("end", () => {
+      try { req.body = JSON.parse(body || "{}"); } catch { req.body = {}; }
+      handleBulkSetSquadPermissions(req, res);
+    });
+    return;
+  }
+
+  // GET /api/squad-permissions/:userId/audit — Histórico de auditoria de permissões de um usuário
+  const sqpAuditMatch = url.pathname.match(/^\/api\/squad-permissions\/(\d+)\/audit$/);
+  if (sqpAuditMatch && req.method === "GET") {
+    req.params = { userId: sqpAuditMatch[1] };
+    req.query = Object.fromEntries(url.searchParams);
+    return handleGetSquadPermissionsAudit(req, res);
+  }
+
+  // ── /api/resources/* — Resource Editor (SRE only) ─────────────────────────────────────────────
   if (url.pathname === "/api/resources/yaml" && req.method === "GET") {
     return requireSRE(req, res, async () => {
       const kind      = url.searchParams.get("kind") || "deployment";

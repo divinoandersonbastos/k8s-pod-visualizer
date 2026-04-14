@@ -8,9 +8,10 @@ import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Users, Plus, Trash2, Edit3, X, Check, Loader2, Shield, User,
-  Copy, RefreshCw, ChevronDown, ChevronRight, AlertCircle, Key, Crown
+  Copy, RefreshCw, ChevronDown, ChevronRight, AlertCircle, Key, Crown, ShieldCheck
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import SquadPermissionsPanel from "./SquadPermissionsPanel";
 
 interface ManagedUser {
   id: number;
@@ -44,6 +45,7 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
   const [expandedId, setExpandedId] = useState<number | null>(null);
   const [copiedId, setCopiedId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<"sre" | "squad">(isAdmin ? "sre" : "squad");
+  const [permissionsUser, setPermissionsUser] = useState<ManagedUser | null>(null);
 
   // Form state
   const [formUsername, setFormUsername] = useState("");
@@ -183,6 +185,7 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
     role === "sre" ? "oklch(0.55 0.22 200)" : "oklch(0.55 0.22 145)";
 
   return (
+    <>
     <motion.div
       initial={{ x: 500 }} animate={{ x: 0 }} exit={{ x: 500 }}
       transition={{ type: "spring", damping: 26, stiffness: 260 }}
@@ -459,6 +462,16 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
                   <button onClick={e => { e.stopPropagation(); openEdit(u); }} className="p-1.5 rounded-lg" style={{ color: "oklch(0.45 0.04 250)" }}>
                     <Edit3 size={14} />
                   </button>
+                  {u.role === "squad" && (
+                    <button
+                      onClick={e => { e.stopPropagation(); setPermissionsUser(u); }}
+                      className="p-1.5 rounded-lg"
+                      title="Gerenciar permissões granulares"
+                      style={{ color: "oklch(0.55 0.18 200)" }}
+                    >
+                      <ShieldCheck size={14} />
+                    </button>
+                  )}
                   <button onClick={e => { e.stopPropagation(); handleDelete(u.id, u.username); }} className="p-1.5 rounded-lg" style={{ color: "oklch(0.45 0.04 250)" }}>
                     <Trash2 size={14} />
                   </button>
@@ -529,5 +542,18 @@ export default function UserManagementPanel({ onClose, availableNamespaces }: Us
         </div>
       </div>
     </motion.div>
+
+    {/* Painel de permissoes granulares */}
+    <AnimatePresence>
+      {permissionsUser && (
+        <SquadPermissionsPanel
+          userId={permissionsUser.id}
+          username={permissionsUser.username}
+          displayName={permissionsUser.displayName}
+          onClose={() => setPermissionsUser(null)}
+        />
+      )}
+    </AnimatePresence>
+    </>
   );
 }

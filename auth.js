@@ -21,6 +21,9 @@ import {
   hasSREUser, hasAdminUser,
   createSession, isSessionValid, revokeSession, revokeAllUserSessions,
   insertAuditLog, getAuditLog, getAuditLogByNamespace,
+  setSquadCapability, bulkSetSquadCapabilities,
+  getSquadPermissions, hasSquadCapability, clearSquadPermissions,
+  getSquadPermissionsAudit, getAllSquadPermissionsAudit, getSquadPermissionsAuditByGrantor,
 } from "./db.js";
 
 const JWT_SECRET  = process.env.JWT_SECRET  || "k8s-pod-visualizer-secret-change-in-production";
@@ -100,6 +103,225 @@ export function requireNamespaceAccess(req, res, next) {
     next();
   });
 }
+
+/**
+ * requireCapability — middleware que verifica se o usuário Squad tem uma capacidade específica.
+ * SRE e Admin passam automaticamente (têm todas as capacidades).
+ * Squad precisa ter a capacidade concedida explicitamente pelo SRE.
+ *
+ * Uso: requireCapability('scale_replicas')(req, res, next)
+ */
+export function requireCapability(capability) {
+  return function(req, res, next) {
+    requireAuth(req, res, () => {
+      const { role, sub } = req.user;
+      // SRE e Admin têm acesso total
+      if (role === 'sre' || role === 'admin') return next();
+      // Squad: verificar permissão granular
+      if (role === 'squad') {
+        if (hasSquadCapability(sub, capability)) return next();
+        return res.writeHead(403).end(JSON.stringify({
+          error: `Permissão negada: capacidade '${capability}' não concedida para este usuário.`,
+          capability,
+          code: 'CAPABILITY_DENIED',
+        }));
+      }
+      return res.writeHead(403).end(JSON.stringify({ error: 'Acesso negado' }));
+    });
+  };
+}
+
+// ── Handlers de permissões granulares Squad ─────────────────────────────────────────────────────
+
+/**
+ * GET /api/squad-permissions/:userId
+ * Retorna todas as permissões de um usuário Squad.
+ * Acessível por SRE, Admin, e pelo próprio usuário Squad.
+ */
+export function handleGetSquadPermissions(req, res) {
+  requireAuth(req, res, () => {
+    const targetId = parseInt(req.params?.userId);
+    const caller = req.user;
+    // Squad só pode ver as próprias permissões
+    if (caller.role === 'squad' && caller.sub !== targetId) {
+      return res.writeHead(403).end(JSON.stringify({ error: 'Acesso negado' }));
+    }
+    const permissions = getSquadPermissions(targetId);
+    // Retorna como mapa { capability: { granted, grantedByName, reason, updatedAt } }
+    const map = {};
+    for (const p of permissions) {
+      map[p.capability] = {
+        granted: p.granted === 1,
+        grantedByName: p.granted_by_name,
+        reason: p.reason,
+        updatedAt: p.updated_at,
+      };
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ userId: targetId, permissions: map }));
+  });
+}
+
+/**
+ * PUT /api/squad-permissions/:userId
+ * Concede ou revoga uma única capacidade para um usuário Squad.
+ * Body: { capability, granted, reason }
+ * Apenas SRE e Admin.
+ */
+export function handleSetSquadPermission(req, res) {
+  requireSRE(req, res, () => {
+    const targetId = parseInt(req.params?.userId);
+    const { capability, granted, reason } = req.body || {};
+    if (!capability) {
+      return res.writeHead(400).end(JSON.stringify({ error: 'capability é obrigatório' }));
+    }
+    // Validar capability contra lista permitida
+    if (!ALLOWED_CAPABILITIES.has(capability)) {
+      return res.writeHead(400).end(JSON.stringify({ error: `Capacidade desconhecida: ${capability}` }));
+    }
+    const target = findUserById(targetId);
+    if (!target || target.role !== 'squad') {
+      return res.writeHead(404).end(JSON.stringify({ error: 'Usuário Squad não encontrado' }));
+    }
+    setSquadCapability({
+      userId: targetId,
+      username: target.username,
+      capability,
+      granted: granted !== false,
+      grantedBy: req.user.sub,
+      grantedByName: req.user.username,
+      reason: reason || null,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, userId: targetId, capability, granted: granted !== false }));
+  });
+}
+
+/**
+ * PUT /api/squad-permissions/:userId/bulk
+ * Aplica um perfil pré-configurado ou conjunto de capacidades de uma vez.
+ * Body: { capabilities: [{ capability, granted }], reason, preset? }
+ * Apenas SRE e Admin.
+ */
+export function handleBulkSetSquadPermissions(req, res) {
+  requireSRE(req, res, () => {
+    const targetId = parseInt(req.params?.userId);
+    const { capabilities, reason, preset } = req.body || {};
+    const target = findUserById(targetId);
+    if (!target || target.role !== 'squad') {
+      return res.writeHead(404).end(JSON.stringify({ error: 'Usuário Squad não encontrado' }));
+    }
+    // Se veio um preset, expandir para lista de capabilities
+    let caps = capabilities || [];
+    if (preset && PERMISSION_PRESETS[preset]) {
+      caps = PERMISSION_PRESETS[preset];
+    }
+    // Validar todas as capabilities
+    for (const { capability } of caps) {
+      if (!ALLOWED_CAPABILITIES.has(capability)) {
+        return res.writeHead(400).end(JSON.stringify({ error: `Capacidade desconhecida: ${capability}` }));
+      }
+    }
+    bulkSetSquadCapabilities({
+      userId: targetId,
+      username: target.username,
+      capabilities: caps,
+      grantedBy: req.user.sub,
+      grantedByName: req.user.username,
+      reason: reason || (preset ? `Perfil pré-configurado: ${preset}` : null),
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, userId: targetId, applied: caps.length, preset: preset || null }));
+  });
+}
+
+/**
+ * GET /api/squad-permissions/:userId/audit
+ * Retorna histórico de auditoria de permissões de um usuário.
+ * Apenas SRE e Admin.
+ */
+export function handleGetSquadPermissionsAudit(req, res) {
+  requireSRE(req, res, () => {
+    const targetId = parseInt(req.params?.userId);
+    const limit = parseInt(req.query?.limit) || 100;
+    const audit = getSquadPermissionsAudit(targetId, limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(audit));
+  });
+}
+
+/**
+ * GET /api/squad-permissions/audit/all
+ * Retorna todo o histórico de auditoria de permissões.
+ * Apenas SRE e Admin.
+ */
+export function handleGetAllSquadPermissionsAudit(req, res) {
+  requireSRE(req, res, () => {
+    const limit = parseInt(req.query?.limit) || 500;
+    const audit = getAllSquadPermissionsAudit(limit);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(audit));
+  });
+}
+
+// ── Catálogo de capacidades e perfis pré-configurados ─────────────────────────────────────────────────────
+
+// Lista completa de capacidades válidas (imutável no servidor)
+export const CAPABILITIES_CATALOG = [
+  // Observação (liberadas por padrão para todo Squad)
+  { key: 'view_pods',        label: 'Visualizar pods',           group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_logs',        label: 'Visualizar logs',           group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_events',      label: 'Visualizar eventos',        group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_metrics',     label: 'Visualizar consumo CPU/MEM',group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_services',    label: 'Visualizar Services',       group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_ingress',     label: 'Visualizar Ingress',        group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_pvc',         label: 'Visualizar PVCs',           group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_configmaps',  label: 'Visualizar ConfigMaps',     group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_hpa',         label: 'Visualizar HPA',            group: 'observacao', risk: 'none',   defaultGranted: true  },
+  { key: 'view_jobs',        label: 'Visualizar Jobs/CronJobs',  group: 'observacao', risk: 'none',   defaultGranted: true  },
+  // Operação
+  { key: 'restart_rollout',  label: 'Restart de rollout',        group: 'operacao',   risk: 'low',    defaultGranted: false },
+  { key: 'pause_rollout',    label: 'Pause/resume de rollout',   group: 'operacao',   risk: 'low',    defaultGranted: false },
+  { key: 'rollback_rollout', label: 'Rollback para revisão anterior', group: 'operacao', risk: 'low', defaultGranted: false },
+  { key: 'scale_replicas',   label: 'Escalar réplicas',          group: 'operacao',   risk: 'medium', defaultGranted: false },
+  { key: 'delete_pod',       label: 'Deletar pod',               group: 'operacao',   risk: 'medium', defaultGranted: false },
+  { key: 'trigger_job',      label: 'Disparar Job manualmente',  group: 'operacao',   risk: 'medium', defaultGranted: false },
+  { key: 'suspend_cronjob',  label: 'Suspender/reativar CronJob',group: 'operacao',   risk: 'medium', defaultGranted: false },
+  { key: 'pod_terminal',     label: 'Acessar terminal do pod',   group: 'operacao',   risk: 'high',   defaultGranted: false },
+  // Edição
+  { key: 'edit_image',       label: 'Alterar image/tag',         group: 'edicao',     risk: 'high',   defaultGranted: false },
+  { key: 'edit_env_vars',    label: 'Alterar variáveis de ambiente', group: 'edicao', risk: 'medium', defaultGranted: false },
+  { key: 'edit_resources',   label: 'Alterar requests e limits', group: 'edicao',     risk: 'medium', defaultGranted: false },
+  { key: 'edit_probes',      label: 'Alterar probes (readiness/liveness/startup)', group: 'edicao', risk: 'high', defaultGranted: false },
+  { key: 'edit_configmaps',  label: 'Editar ConfigMaps',         group: 'edicao',     risk: 'medium', defaultGranted: false },
+  { key: 'edit_annotations', label: 'Editar annotations/labels', group: 'edicao',     risk: 'low',    defaultGranted: false },
+  // Rede
+  { key: 'edit_service',     label: 'Editar Service (ports/selector)', group: 'rede', risk: 'high',   defaultGranted: false },
+  { key: 'edit_ingress',     label: 'Editar Ingress (rules/paths)',    group: 'rede', risk: 'high',   defaultGranted: false },
+  { key: 'edit_hpa',         label: 'Editar HPA (min/max replicas)',   group: 'rede', risk: 'medium', defaultGranted: false },
+  // Armazenamento
+  { key: 'create_pvc',       label: 'Criar PVC',                 group: 'armazenamento', risk: 'high', defaultGranted: false },
+  { key: 'resize_pvc',       label: 'Redimensionar PVC',         group: 'armazenamento', risk: 'high', defaultGranted: false },
+];
+
+export const ALLOWED_CAPABILITIES = new Set(CAPABILITIES_CATALOG.map(c => c.key));
+
+// Perfis pré-configurados (ponto de partida para o SRE)
+export const PERMISSION_PRESETS = {
+  observador: CAPABILITIES_CATALOG
+    .filter(c => c.group === 'observacao')
+    .map(c => ({ capability: c.key, granted: true })),
+  operador: CAPABILITIES_CATALOG
+    .filter(c => c.group === 'observacao' || ['restart_rollout','pause_rollout','rollback_rollout','scale_replicas','delete_pod'].includes(c.key))
+    .map(c => ({ capability: c.key, granted: true })),
+  editor: CAPABILITIES_CATALOG
+    .filter(c => c.group === 'observacao' || c.group === 'operacao' || c.group === 'edicao')
+    .filter(c => !['pod_terminal'].includes(c.key))
+    .map(c => ({ capability: c.key, granted: true })),
+  avancado: CAPABILITIES_CATALOG
+    .filter(c => !['create_pvc','resize_pvc'].includes(c.key))
+    .map(c => ({ capability: c.key, granted: true })),
+};
 
 // ── Setup e Login ─────────────────────────────────────────────────────────────
 

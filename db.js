@@ -303,6 +303,42 @@ const migrations = [
       CREATE INDEX IF NOT EXISTS idx_reh_action   ON resource_edit_history(action, recorded_at DESC);
     `,
   },
+  // v7 — Permissões granulares por usuário Squad
+  {
+    version: 7,
+    sql: `
+      -- Tabela principal de permissões granulares por usuário Squad
+      CREATE TABLE IF NOT EXISTS squad_permissions (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        capability   TEXT NOT NULL,   -- ex: 'scale_replicas', 'edit_image', 'view_logs'
+        granted      INTEGER NOT NULL DEFAULT 1,  -- 1=concedido, 0=revogado
+        granted_by   INTEGER REFERENCES users(id),  -- ID do SRE que concedeu
+        granted_by_name TEXT,         -- username do SRE (desnormalizado para auditoria)
+        reason       TEXT,            -- justificativa da concessão
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(user_id, capability)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sqperm_user ON squad_permissions(user_id, capability);
+      CREATE INDEX IF NOT EXISTS idx_sqperm_cap  ON squad_permissions(capability);
+
+      -- Histórico de alterações de permissões (auditoria imutável)
+      CREATE TABLE IF NOT EXISTS squad_permissions_audit (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id      INTEGER NOT NULL,
+        username     TEXT NOT NULL,
+        capability   TEXT NOT NULL,
+        action       TEXT NOT NULL,  -- 'grant' | 'revoke' | 'bulk_grant' | 'bulk_revoke'
+        granted_by   INTEGER,
+        granted_by_name TEXT,
+        reason       TEXT,
+        recorded_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_sqpaud_user ON squad_permissions_audit(user_id, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_sqpaud_by   ON squad_permissions_audit(granted_by, recorded_at DESC);
+    `,
+  },
 ];
 
 // Aplicar migrações pendentes dentro de uma transação
@@ -1109,6 +1145,124 @@ export function pruneOldResourceEdits(days = 90) {
   const result = rehStmts.prune.run({ days: `-${days} days` });
   console.log(`[db] Pruned ${result.changes} old resource edits (>${days} days)`);
   return result.changes;
+}
+
+// ── squad_permissions ────────────────────────────────────────────────────────
+// Statements preparados para permissões granulares de Squad
+const sqpStmts = {
+  upsert: db.prepare(`
+    INSERT INTO squad_permissions (user_id, capability, granted, granted_by, granted_by_name, reason, updated_at)
+    VALUES (@user_id, @capability, @granted, @granted_by, @granted_by_name, @reason, datetime('now'))
+    ON CONFLICT(user_id, capability) DO UPDATE SET
+      granted = excluded.granted,
+      granted_by = excluded.granted_by,
+      granted_by_name = excluded.granted_by_name,
+      reason = excluded.reason,
+      updated_at = datetime('now')
+  `),
+  getByUser: db.prepare(`
+    SELECT capability, granted, granted_by_name, reason, updated_at
+    FROM squad_permissions WHERE user_id = @user_id
+  `),
+  hasCapability: db.prepare(`
+    SELECT granted FROM squad_permissions
+    WHERE user_id = @user_id AND capability = @capability AND granted = 1
+  `),
+  deleteByUser: db.prepare(`DELETE FROM squad_permissions WHERE user_id = @user_id`),
+  auditInsert: db.prepare(`
+    INSERT INTO squad_permissions_audit (user_id, username, capability, action, granted_by, granted_by_name, reason)
+    VALUES (@user_id, @username, @capability, @action, @granted_by, @granted_by_name, @reason)
+  `),
+  auditByUser: db.prepare(`
+    SELECT * FROM squad_permissions_audit WHERE user_id = @user_id ORDER BY recorded_at DESC LIMIT @limit
+  `),
+  auditAll: db.prepare(`
+    SELECT * FROM squad_permissions_audit ORDER BY recorded_at DESC LIMIT @limit
+  `),
+  auditByGrantor: db.prepare(`
+    SELECT * FROM squad_permissions_audit WHERE granted_by = @granted_by ORDER BY recorded_at DESC LIMIT @limit
+  `),
+};
+
+/**
+ * Concede ou revoga uma capacidade específica para um usuário Squad.
+ * Registra automaticamente na tabela de auditoria.
+ */
+export function setSquadCapability({ userId, username, capability, granted, grantedBy, grantedByName, reason }) {
+  sqpStmts.upsert.run({
+    user_id: userId,
+    capability,
+    granted: granted ? 1 : 0,
+    granted_by: grantedBy || null,
+    granted_by_name: grantedByName || null,
+    reason: reason || null,
+  });
+  sqpStmts.auditInsert.run({
+    user_id: userId,
+    username,
+    capability,
+    action: granted ? 'grant' : 'revoke',
+    granted_by: grantedBy || null,
+    granted_by_name: grantedByName || null,
+    reason: reason || null,
+  });
+}
+
+/**
+ * Aplica um conjunto de capacidades de uma vez (bulk).
+ * capabilities: Array<{ capability: string, granted: boolean }>
+ */
+export function bulkSetSquadCapabilities({ userId, username, capabilities, grantedBy, grantedByName, reason }) {
+  const tx = db.transaction(() => {
+    for (const { capability, granted } of capabilities) {
+      sqpStmts.upsert.run({
+        user_id: userId, capability,
+        granted: granted ? 1 : 0,
+        granted_by: grantedBy || null,
+        granted_by_name: grantedByName || null,
+        reason: reason || null,
+      });
+      sqpStmts.auditInsert.run({
+        user_id: userId, username, capability,
+        action: granted ? 'bulk_grant' : 'bulk_revoke',
+        granted_by: grantedBy || null,
+        granted_by_name: grantedByName || null,
+        reason: reason || null,
+      });
+    }
+  });
+  tx();
+}
+
+/** Retorna todas as permissões de um usuário Squad */
+export function getSquadPermissions(userId) {
+  return sqpStmts.getByUser.all({ user_id: userId });
+}
+
+/** Verifica se um usuário Squad tem uma capacidade específica */
+export function hasSquadCapability(userId, capability) {
+  const row = sqpStmts.hasCapability.get({ user_id: userId, capability });
+  return !!row;
+}
+
+/** Remove todas as permissões de um usuário (ex: ao deletar) */
+export function clearSquadPermissions(userId) {
+  sqpStmts.deleteByUser.run({ user_id: userId });
+}
+
+/** Retorna histórico de auditoria de permissões de um usuário */
+export function getSquadPermissionsAudit(userId, limit = 100) {
+  return sqpStmts.auditByUser.all({ user_id: userId, limit });
+}
+
+/** Retorna todo o histórico de auditoria de permissões */
+export function getAllSquadPermissionsAudit(limit = 500) {
+  return sqpStmts.auditAll.all({ limit });
+}
+
+/** Retorna auditoria de permissões concedidas por um SRE específico */
+export function getSquadPermissionsAuditByGrantor(grantedBy, limit = 200) {
+  return sqpStmts.auditByGrantor.all({ granted_by: grantedBy, limit });
 }
 
 // ── Manutenção automática ─────────────────────────────────────────────────────

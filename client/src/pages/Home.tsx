@@ -37,6 +37,7 @@ import { AppAccessPanel } from "@/components/AppAccessPanel";
 import TopologyGraph from "@/components/TopologyGraph";
 import { DbStatusPanel } from "@/components/DbStatusPanel";
 import { SecurityPanel } from "@/components/SecurityPanel";
+import { SquadDashboard } from "@/components/SquadDashboard";
 import { useAuth } from "@/contexts/AuthContext";
 import { SpotEvictionAlert } from "@/components/SpotEvictionAlert";
 import { OomRiskBanner } from "@/components/OomRiskPanel";
@@ -69,7 +70,7 @@ export default function Home() {
   const [showDbStatus, setShowDbStatus] = useState(false);
   const [securitySeverity, setSecuritySeverity] = useState<"CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "OK" | null>(null);
   const [securityMode, setSecurityMode] = useState(false);
-  const { user, isSRE, isAdmin, logout } = useAuth();
+  const { user, isSRE, isAdmin, isSquad, logout } = useAuth();
   // Nome do deployment a ser destacado ao abrir o painel (vazio = sem destaque)
   const [deployMonitorTarget, setDeployMonitorTarget] = useState("");
   const [selectedDeployment, setSelectedDeployment] = useState("");
@@ -397,6 +398,8 @@ export default function Home() {
         onLogout={logout}
         isSRE={isSRE}
         isAdmin={isAdmin}
+        isSquad={isSquad}
+        squadNamespaces={user?.namespaces ?? []}
         currentUser={user ? { displayName: user.displayName, username: user.username, role: user.role } : undefined}
         clusterName={effectiveClusterName}
         statusFilter={statusFilter}
@@ -439,8 +442,17 @@ export default function Home() {
           securityMode={securityMode}
           onToggleSecurityMode={() => setSecurityMode(v => !v)}
           allNamespaces={allNamespaces.length > 0 ? allNamespaces : undefined}
+          isSquad={isSquad}
+          squadNamespaces={user?.namespaces ?? []}
         />
 
+        {/* SquadDashboard — painel lateral direito exclusivo para Squad */}
+        {isSquad && (
+          <SquadDashboard
+            pods={pods}
+            onSelectPod={(pod) => setSelectedPod(pod)}
+          />
+        )}
          {/* Canvas principal */}
         <main className="flex-1 relative overflow-hidden grid-bg scanlines">
           {/* ── Alerta de Spot Eviction iminente ──────────────────────────── */}

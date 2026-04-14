@@ -39,6 +39,8 @@ interface ClusterHeaderProps {
   onLogout?: () => void;
   isSRE?: boolean;
   isAdmin?: boolean;
+  isSquad?: boolean;
+  squadNamespaces?: string[];
   currentUser?: { displayName?: string; username: string; role: string };
   clusterName?: string;
   statusFilter: StatusFilter;
@@ -72,6 +74,8 @@ export function ClusterHeader({
   onLogout,
   isSRE,
   isAdmin,
+  isSquad,
+  squadNamespaces = [],
   currentUser,
   clusterName,
   statusFilter,
@@ -269,6 +273,33 @@ export function ClusterHeader({
         </div>
       )}
 
+      {/* Namespaces do Squad — exibidos no header quando isSquad */}
+      {isSquad && squadNamespaces.length > 0 && (
+        <>
+          <div className="hidden md:block w-px h-5 shrink-0" style={{ background: "oklch(0.28 0.04 250)" }} />
+          <div className="hidden md:flex items-center gap-1 shrink-0">
+            <Shield size={11} style={{ color: "oklch(0.55 0.22 142)" }} />
+            {squadNamespaces.slice(0, 3).map((ns) => (
+              <span
+                key={ns}
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded"
+                style={{
+                  background: "oklch(0.55 0.22 142 / 0.12)",
+                  border: "1px solid oklch(0.55 0.22 142 / 0.30)",
+                  color: "oklch(0.65 0.18 142)",
+                }}
+              >
+                {ns}
+              </span>
+            ))}
+            {squadNamespaces.length > 3 && (
+              <span className="text-[9px] font-mono" style={{ color: "oklch(0.45 0.015 250)" }}>
+                +{squadNamespaces.length - 3}
+              </span>
+            )}
+          </div>
+        </>
+      )}
       {/* Nome do cluster */}
       {clusterName && (
         <>
@@ -369,7 +400,7 @@ export function ClusterHeader({
           </button>
         )}
 
-        {onShowNodeMonitor && (
+        {onShowNodeMonitor && !isSquad && (
           <button
             onClick={onShowNodeMonitor}
             className="relative p-2 rounded-lg transition-all hover:bg-white/5"
@@ -396,7 +427,7 @@ export function ClusterHeader({
           </button>
         )}
 
-        {onShowDeployMonitor && (
+        {onShowDeployMonitor && !isSquad && (
           <button
             onClick={onShowDeployMonitor}
             className="relative p-2 rounded-lg transition-all hover:bg-white/5"
@@ -423,7 +454,7 @@ export function ClusterHeader({
           </button>
         )}
 
-        {onShowCapacity && (
+        {onShowCapacity && !isSquad && (
           <button
             onClick={onShowCapacity}
             className="relative p-2 rounded-lg transition-all hover:bg-white/5"
@@ -470,7 +501,7 @@ export function ClusterHeader({
           </button>
         )}
 
-        {onShowTrace && (
+        {onShowTrace && !isSquad && (
           <button
             onClick={onShowTrace}
             className="p-2 rounded-lg transition-all hover:bg-white/5"
@@ -481,7 +512,7 @@ export function ClusterHeader({
           </button>
         )}
 
-        {onShowTopology && (
+        {onShowTopology && !isSquad && (
           <button
             onClick={onShowTopology}
             className="p-2 rounded-lg transition-all hover:bg-white/5"

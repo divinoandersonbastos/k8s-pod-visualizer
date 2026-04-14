@@ -6,6 +6,22 @@ O formato segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.0.0/) e o 
 
 ---
 
+## [5.37.0] — 2026-04-13
+
+### Added
+- **Squad Dashboard** — painel lateral direito exclusivo para o perfil Squad, exibindo:
+  - Identidade do usuário (namespaces autorizados, role)
+  - Resumo de pods nos namespaces do Squad (total, OK, alerta, crítico)
+  - Lista de pods problemáticos com acesso rápido ao painel de detalhes
+  - Permissões granulares organizadas por categoria (Observação, Operação, Edição, Rede, Storage)
+  - Indicador de nível de risco por capability
+  - Barra de progresso de permissões concedidas
+- **Hook `useSquadCapabilities`** — busca e expõe as permissões granulares do usuário Squad via `/api/squad-permissions/:userId`
+- **Header Squad** — namespaces do Squad exibidos no header com badges verdes
+- **Sidebar Squad** — seção "Meu Acesso" no ClusterSidebar com botões de filtro rápido por namespace autorizado
+
+---
+
 ## [3.5.0] — 2026-03-25
 
 ### Removido

@@ -36,6 +36,10 @@ interface ClusterSidebarProps {
   securityMode?: boolean;
   onToggleSecurityMode?: () => void;
   allNamespaces?: string[];
+  /** Quando true, exibe visão simplificada focada no Squad */
+  isSquad?: boolean;
+  /** Namespaces do Squad (para destaque) */
+  squadNamespaces?: string[];
 }
 
 function StatCard({ label, value, sub, color }: { label: string; value: string | number; sub?: string; color?: string }) {
@@ -102,6 +106,8 @@ export function ClusterSidebar({
   securityMode = false,
   onToggleSecurityMode,
   allNamespaces,
+  isSquad = false,
+  squadNamespaces = [],
 }: ClusterSidebarProps) {
   const [nsExpanded, setNsExpanded]     = useState(true);
   const [nodeExpanded, setNodeExpanded] = useState(true);
@@ -194,6 +200,42 @@ export function ClusterSidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-4">
+        {/* Seção Squad — Meu Acesso (namespaces autorizados) */}
+        {isSquad && squadNamespaces.length > 0 && (
+          <div
+            className="rounded-lg p-2.5 space-y-2"
+            style={{
+              background: "oklch(0.55 0.22 142 / 0.06)",
+              border: "1px solid oklch(0.55 0.22 142 / 0.22)",
+            }}
+          >
+            <div className="flex items-center gap-1.5">
+              <Shield size={10} style={{ color: "oklch(0.65 0.22 142)" }} />
+              <span className="text-[9px] font-mono uppercase tracking-widest" style={{ color: "oklch(0.55 0.22 142)" }}>
+                Meu Acesso
+              </span>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {squadNamespaces.map((ns) => {
+                const isSelected = selectedNamespace === ns;
+                return (
+                  <button
+                    key={ns}
+                    onClick={() => onNamespaceChange(isSelected ? "" : ns)}
+                    className="text-[9px] font-mono px-1.5 py-0.5 rounded transition-all"
+                    style={{
+                      background: isSelected ? "oklch(0.55 0.22 142 / 0.25)" : "oklch(0.55 0.22 142 / 0.10)",
+                      border: `1px solid ${isSelected ? "oklch(0.65 0.22 142 / 0.60)" : "oklch(0.55 0.22 142 / 0.25)"}`,
+                      color: isSelected ? "oklch(0.80 0.20 142)" : "oklch(0.65 0.18 142)",
+                    }}
+                  >
+                    {ns}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {/* Live toggle */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
